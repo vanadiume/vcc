@@ -661,6 +661,41 @@ fn test_function_bodies_write_an_unwind_table_the_header_indexes() {
 	assert se32(bytes, second_fde + 12) == 16
 }
 
+// The entry a weak import gets says both things about it, and the two are separate
+// questions: the type nibble says the name stands for an object, which is what the
+// declaration says, and the binding says a loader does not have to find it, which
+// is why the slot it is reached through is allowed to stay at zero. A reader of the
+// table that took the object for a function would be reading a claim this compiler
+// knows to be wrong, and the object writer already says object for the same
+// declaration in a relocatable file.
+fn test_an_imported_weak_object_says_object_and_weak_in_the_table() {
+	target := se_target()
+	mut program := image.Program{}
+	program.text = [u8(0x90)]
+	program.imports << 'slot'
+	program.object_imports['slot'] = true
+	program.weak_imports['slot'] = true
+	bytes := write(program, target, .program) or {
+		panic('the program was not written: ${err.msg()}')
+	}
+	tables := se_tables(bytes, target.load_base)
+	symbol := se_symbol_of(bytes, tables, 'slot')
+	assert symbol.name == 'slot'
+	assert symbol.info == symbol_weak_object
+	// An imported function is still a function, so the type is read per name and
+	// not from the binding.
+	mut callable := image.Program{}
+	callable.text = [u8(0x90)]
+	callable.imports << 'slot'
+	callable.weak_imports['slot'] = true
+	callable_bytes := write(callable, target, .program) or {
+		panic('the program was not written: ${err.msg()}')
+	}
+	callable_tables := se_tables(callable_bytes, target.load_base)
+	callable_symbol := se_symbol_of(callable_bytes, callable_tables, 'slot')
+	assert callable_symbol.info == symbol_weak_function
+}
+
 // An image with no function body writes no table and no header, and its header
 // count is the one the kind always had: the unwind table's header is not carried
 // when there is nothing to index.

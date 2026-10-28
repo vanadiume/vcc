@@ -918,7 +918,13 @@ fn emit_symbols(mut output []u8, program image.Program, sections Sections, symbo
 			}
 			at := sections.dynsym + indices[i] * elf_symbol_size
 			put_u32(mut output, at, u32(symbol_names[name]))
-			output[at + 4] = if name in program.weak_imports {
+			// The type nibble says what the name is, and the binding whether a
+			// loader has to find it: a weak import is one it does not, which is
+			// why the loader leaves that symbol's slot at zero instead of
+			// stopping the program.
+			output[at + 4] = if name in program.object_imports {
+				if name in program.weak_imports { symbol_weak_object } else { symbol_global_object }
+			} else if name in program.weak_imports {
 				symbol_weak_function
 			} else {
 				symbol_global_function
