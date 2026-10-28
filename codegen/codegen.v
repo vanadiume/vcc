@@ -13157,6 +13157,35 @@ fn (mut e Emitter) place_global(asked int) int {
 	return e.program.globals_blob.len
 }
 
+// weak_object_import says the name is an object this unit declares and does not
+// define, with the weak symbol binding: an undefined weak symbol, which ELF gives
+// the value zero. No library has to answer for it and there is no storage to copy,
+// so a reference to it is read out of the global offset table rather than taken
+// from a place in this image.
+//
+// The line is whether any declaration of the name here gives it storage, not
+// whether the one that carries the attribute does. A weak declaration beside a
+// definition in the same file is a definition, and gcc emits the same binding
+// whichever of the two is written first.
+fn (e Emitter) weak_object_import(name string) bool {
+	mut weak := false
+	for global in e.unit.globals {
+		if global.name != name {
+			continue
+		}
+		if !global.external {
+			return false
+		}
+		weak = weak || global.weak
+	}
+	for global in e.unit.extern_objects {
+		if global.name == name && global.weak {
+			weak = true
+		}
+	}
+	return weak
+}
+
 // global_of is the storage a top-level object has in the image, laid out the
 // first time the name is used: the bytes of its constant initializer, or zeros,
 // at the width of one element, with every object starting at a word boundary so
@@ -13176,6 +13205,17 @@ fn (mut e Emitter) global_of(name string) ?image.GlobalSlot {
 	}
 	object := e.global_definition(name) or { return none }
 	if object.external {
+		// An object this unit declares weak and nothing here defines is a name
+		// no library has to answer: ELF gives an undefined weak symbol the
+		// value zero, so the image holds no storage for it and no loader is
+		// asked to copy one in. It is imported and left undefined, which is
+		// what gcc writes for the same declaration, and the reference is read
+		// out of the slot the loader leaves at zero.
+		if e.weak_object_import(name) {
+			e.import_object(name)
+			e.program.weak_imports[name] = true
+			return e.global_shape(name)
+		}
 		// An object another object defines. An object file leaves the name
 		// undefined and every reference to it is one a linker resolves: the
 		// symbol is imported with no storage here and the relocation names it.
@@ -13458,6 +13498,20 @@ fn (mut e Emitter) write_data_address(address ast.AddressInit, at int) {
 			e.diagnostics << problem(address.line, address.col, 'unsupported: ${address.name} is a scalar object, and its bare name as a file-scope initializer is its value, which is not a constant expression')
 			return
 		}
+		if e.weak_object_import(address.name) {
+			// An undefined weak object has no address in this image to write,
+			// and the eight bytes hold the one the loader has: the field is
+			// left to the loader, which writes the symbol's value and so
+			// writes zero when nothing defines it. gcc writes the same
+			// relocation for `static int *p = &slot;`.
+			e.program.data_fixups << image.DataFixup{
+				offset: at
+				kind:   .import_address
+				name:   address.name
+				addend: address.offset
+			}
+			return
+		}
 		e.program.data_fixups << image.DataFixup{
 			offset: at
 			kind:   .global_address
@@ -13689,7 +13743,28 @@ fn (mut e Emitter) reference(bytes []u8, kind image.FixupKind, name string, regi
 // link refuses. An object with internal linkage cannot be defined elsewhere, so
 // it keeps the direct reference even there, which is what makes its relocation
 // unchanged whether -fPIC is given or not.
+//
+// An undefined weak object is the third case, and it takes the table in every
+// mode: the name stands for the address zero when nothing defines it, and the
+// only place that answer can come from is the slot the loader fills.
 fn (mut e Emitter) reference_object_address(register backend.Register, name string) {
+	if e.weak_object_import(name) {
+		// An undefined weak object has no place in this image to point at, and
+		// the answer the reference wants is the one the loader has: the value
+		// of the name's global offset table slot, which is the object's
+		// address when a library defines it and zero when nothing does. gcc
+		// writes that reference in a non-position-independent program and in a
+		// relocatable object alike, which is why `&slot` is null there rather
+		// than the address of a copy nothing filled.
+		if e.compile_only {
+			// A relocatable object has no slots of its own, so the reference is
+			// the one a linker builds the slot for.
+			e.reference(e.target.load_slot_value(register, 0), .got_address, name, e.target.name_of(register))
+		} else {
+			e.reference(e.target.load_slot_value(register, 0), .import_address, name, e.target.name_of(register))
+		}
+		return
+	}
 	if e.compile_only && e.pic && !e.internal[name] {
 		e.reference(e.target.load_slot_value(register, 0), .got_address, name, e.target.name_of(register))
 		return
