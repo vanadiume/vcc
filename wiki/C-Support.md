@@ -116,7 +116,8 @@ count-leading and count-trailing builtins.
 arithmetic operators and `==`/`!=`; the imaginary constants `1.0i`, `1.0if`
 and `1.0iL`; `__real__` and `__imag__`; the conversions of 6.3.1.5 to 6.3.1.7
 in both directions; `sizeof`; and calls and returns that hand one over, at each
-of the three widths. `_Imaginary` is refused by name where it is written: no
+of the three widths. `_Imaginary` is refused by name where it is written, with
+a note saying the type is deprecated and drafted for removal in C2y: no
 imaginary type is implemented, which 6.2.5 leaves to the implementation.
 
 ## What is verified

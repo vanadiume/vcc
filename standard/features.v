@@ -342,28 +342,43 @@ pub const features = [
 		pedantic:  'the _Static_assert declaration'
 		status:    .implemented
 	},
-	// The C99 types the type model resolves and the back end has no form for.
-	// The tree reads each of them, so a prototype naming one is read and kept;
-	// a definition is storage, and a definition of one is refused by location.
-	// The two complex types stay `.unimplemented` because C6's last tier is
-	// where their arithmetic lands, and the floats and `_Bool` say
-	// `.implemented` because the tree does read them and the refusal is the back
-	// end's rather than the reader's.
+	// The C99 types. `_Bool` and the three floats are read and emitted at their
+	// own widths, and so is `_Complex`, so their rows are the standard's answer
+	// and not a description of a gap. Measured on gcc 16.2.1, `_Complex` is one
+	// of the two that no mode refuses outright: `double _Complex z = 1.0;` is
+	// accepted silently under -std=c89 and under every later mode, and
+	// -pedantic-errors reports `ISO C90 does not support complex types` under
+	// c89 and under gnu89 alike. So the row is a pedantic message rather than an
+	// invalid construct, and `gnu: false` is right: a GNU dialect of C90 does
+	// not grant the type.
 	//
-	// Which name that refusal uses depends on the path, and the difference is
-	// recorded rather than smoothed over. A function return type is the one path
-	// that names the type in full, because the answer is about the construct and
-	// not about a word of it: measured, `long double f(void) { return 0; }` and
-	// `double _Complex f(void) { return 0; }` report `unsupported: <type> is a
-	// type this compiler does not emit yet, so a function cannot return it`.
-	// Everywhere else the answer is the first word of the type as written, which
-	// is the word the emitter stopped at: measured, `long long x;` reports
-	// `unsupported type long`, `unsigned long long x;` reports `unsupported type
-	// unsigned`, and `double _Complex z = 0;` in a body reports `unsupported type
-	// double`. A definition's parameter list names what the parameter was
-	// declared with, so `int h(double _Complex z) { return 0; }` reports
-	// `unsupported type double _Complex`; the same list in a prototype is a
-	// promise and is kept.
+	// What the tree reads under the row is the whole of the type: the three
+	// widths and a bare `_Complex` for the double one, the four arithmetic
+	// operators and `==`/`!=`, the imaginary constants `1.0i`, `1.0if` and
+	// `1.0iL`, `__real__` and `__imag__`, the conversions 6.3.1.5 to 6.3.1.7 in
+	// both directions, `sizeof`, and calls and returns that hand one over at
+	// each width. Two shapes are still refused by name: an object in the image
+	// initialized from a complex expression, and a complex value written in a
+	// brace initializer for a real member. Both are file-scope constant folding
+	// and neither is the type.
+	//
+	// `_Imaginary` is the one row here that stays `.unimplemented`. C99 makes
+	// the imaginary types optional (6.2.5p13) and this compiler models none of
+	// them, so the word is refused wherever a type is written, with the message
+	// `'_Imaginary' is unsupported` and the note that says the draft of the next
+	// standard removes the type. A row that answered the dialect question would
+	// be a pedantic message about a type no compile can produce, which is the
+	// shape `Status.unimplemented` is for: the reader's refusal is the whole
+	// answer.
+	//
+	// Which name a refusal for any other unsupported type uses depends on the
+	// path, and the difference is recorded rather than smoothed over. A function
+	// return type is the one path that names the type in full, because the
+	// answer is about the construct and not about a word of it. Everywhere else
+	// the answer is the first word of the type as written, which is the word the
+	// emitter stopped at: measured, `long float x;` reports `unsupported type
+	// long` and `unsigned double d;` reports `unsupported type unsigned`. A
+	// definition's parameter list names what the parameter was declared with.
 	//
 	// `long long` and `long double` have no row, and cannot have one: a row is
 	// found by the text of a single token, and both are written as two tokens
@@ -446,8 +461,14 @@ pub const features = [
 		gnu:       false
 		extension: ''
 		pedantic:  'the _Complex type'
-		status:    .unimplemented
+		status:    .implemented
 	},
+	// C99's imaginary types are optional (6.2.5p13), and no program this compiler
+	// can compile is one: the reader refuses the word wherever a type is written,
+	// with the message `'_Imaginary' is unsupported` and the note that the type is
+	// deprecated and drafted for removal in C2y. The row is the table's record of
+	// the type rather than a message a mode prints, which is what
+	// `Status.unimplemented` says.
 	Feature{
 		spellings: ['_Imaginary']
 		since:     .c99

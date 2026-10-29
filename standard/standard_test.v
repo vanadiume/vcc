@@ -63,6 +63,34 @@ fn test_a_mode_can_be_written_back() {
 	assert Mode.other.spelling() == ''
 }
 
+// The complex types are read and emitted at their three widths, so the row is
+// the standard's answer. Measured on gcc 16.2.1: `double _Complex z = 1.0;` is
+// accepted silently under -std=c89 and under every later mode, and
+// `-std=c89 -pedantic-errors` reports `ISO C90 does not support complex types`.
+// gnu89 reports it too, so the row carries no GNU exemption, and every mode from
+// C99 on takes the type without a word.
+fn test_the_complex_row_is_a_pedantic_message_before_c99() {
+	rows := features.filter(it.spellings.contains('_Complex'))
+	assert rows.len == 1
+	assert rows[0].status == .implemented
+	assert rows[0].since == .c99
+	assert !rows[0].gnu
+	assert rows[0].extension == ''
+	assert rows[0].pedantic == 'the _Complex type'
+	tokens := [token('double'), token('_Complex'), token('z')]
+	old := pedantic_messages(tokens, asking(.c89))
+	assert old.len == 1
+	assert old[0].msg == 'ISO C90 forbids the _Complex type'
+	assert old[0].class == .pedantic
+	assert old[0].warning
+	// A GNU dialect of C90 is the same standard and does not grant the type.
+	assert pedantic_messages(tokens, asking(.gnu89)).len == 1
+	// C99 made it standard, and every mode after it includes C99.
+	for mode in [Mode.c99, .c11, .c17, .c23, .c29, .gnu99, .gnu23, .gnu29] {
+		assert pedantic_messages(tokens, asking(mode)).len == 0, mode.spelling()
+	}
+}
+
 fn test_a_digraph_comes_with_c99_and_not_with_c89() {
 	// Measured on gcc 16.2.1 over `%:define A 41`: -std=c89 answers `error:
 	// expected identifier or '('` at 1:1, and every other mode, gnu89 included,
