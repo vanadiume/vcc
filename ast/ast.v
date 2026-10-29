@@ -722,17 +722,21 @@ pub type Expr = Binary
 // program that uses `I` needs this node.
 //
 // The suffix decides the component type the way it does for a real constant: a
-// constant with an `f` is a `float _Complex` and one without is a
-// `double _Complex`. `value` is the coefficient the file wrote, which is the
-// imaginary part; the real part is zero and is not carried, because a written
-// imaginary constant never has one.
+// constant with an `f` is a `float _Complex`, one with an `l` a `long double
+// _Complex`, and one with neither a `double _Complex`. `value` is the
+// coefficient the file wrote, which is the imaginary part; the real part is zero
+// and is not carried, because a written imaginary constant never has one.
+// `long_value` holds the coefficient of a constant written with an `l` suffix,
+// which is an extended value an f64 does not hold, and `value` is zero for it the
+// way it is for a long double real constant.
 pub struct ComplexLit {
 pub:
-	value f64
-	text  string
-	typ   types.Type
-	line  int
-	col   int
+	value      f64
+	long_value ?types.LongDouble
+	text       string
+	typ        types.Type
+	line       int
+	col        int
 }
 
 // StmtExpr is a GNU statement expression, `({ ... })`: a brace-enclosed

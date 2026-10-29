@@ -791,37 +791,59 @@ fn is_imaginary_constant(text string) bool {
 	return imaginary
 }
 
+// ImaginaryConstant is one imaginary constant as its reader answers it: the
+// coefficient, and the complex type its suffix names. 6.4.4.2 makes the suffix
+// name the type, so `1.0if` is a `float _Complex`, `1.0i` a `double _Complex` and
+// `1.0iL` a `long double _Complex`. The coefficient of the extended one is the
+// extended value, which no f64 holds, and `value` is zero for it.
+struct ImaginaryConstant {
+	value      f64
+	long_value ?types.LongDouble
+	kind       types.Kind
+}
+
 // parse_imaginary_literal reads an imaginary constant into the value of its
-// imaginary part and says whether the component type is float rather than
-// double. 6.4.4.2 leaves the real part zero, so `1.0i` is the value 1.0 in the
-// imaginary position and nothing in the real one, and the value is the one the
-// floating reader gives the coefficient.
+// imaginary part and the type its suffix names. 6.4.4.2 leaves the real part
+// zero, so `1.0i` is the value 1.0 in the imaginary position and nothing in the
+// real one, and the value is the one the floating reader gives the coefficient.
 //
-// The suffix attaches to a floating constant, and the two refusals here are the
-// spellings that are not one. A `long double _Complex` is named and refused here
-// because this constant reader carries the extended value of a real constant and
-// has no form for the imaginary one: the type is carried now, so the refusal is
-// the reader's, at the constant, and not the compiler's. An
-// integer coefficient is refused as well, because gcc 16.2.1 reads `1i` as a
-// `float _Complex` and answering a `double _Complex` for it would be a type the
-// program did not write.
-fn parse_imaginary_literal(text string) !(f64, bool) {
+// The suffix attaches to a floating constant, and the one refusal here is the
+// spelling that is not one: an integer coefficient, because gcc 16.2.1 reads
+// `1i` as a `float _Complex` and answering a `double _Complex` for it would be a
+// type the program did not write.
+fn parse_imaginary_literal(text string) !ImaginaryConstant {
 	body, imaginary := imaginary_suffix_removed(text)
 	if !imaginary || body == '' {
 		return error('${text}: not an imaginary constant')
 	}
-	if body.ends_with('l') || body.ends_with('L') {
-		return error('${text}: a long double imaginary constant names a long double complex, which this constant reader does not carry; write the value as a real long double constant times `I` instead')
-	}
 	if !is_floating_constant(body) {
 		return error('${text}: an imaginary constant is written on a floating constant, and ${body} is not one')
+	}
+	if body.ends_with('l') || body.ends_with('L') {
+		// The extended coefficient is read by the reader that rounds once, to
+		// the extended format, and carried at that width. Measured on gcc
+		// 16.2.1: `1.0iL`, `1.0Li` and `1.0il` are each a 32-byte
+		// `long double _Complex`, and rounding the coefficient to a double
+		// first would be a value the extended format does not hold.
+		value := parse_long_double_literal(body) or { return error(err.msg()) }
+		return ImaginaryConstant{
+			long_value: value
+			kind:       .complex_long_double
+		}
 	}
 	value := parse_floating_literal(body) or { return error(err.msg()) }
 	// The floating suffix, which the reader above has already rounded for, is
 	// what names the component type: `1.0if` is a float complex and `1.0i` is a
 	// double one.
-	single := body.ends_with('f') || body.ends_with('F')
-	return value, single
+	kind := if body.ends_with('f') || body.ends_with('F') {
+		types.Kind.complex_float
+	} else {
+		types.Kind.complex_double
+	}
+	return ImaginaryConstant{
+		value: value
+		kind:  kind
+	}
 }
 
 // parse_hex_floating_literal reads a hexadecimal floating constant, which C99

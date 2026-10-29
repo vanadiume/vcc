@@ -3819,6 +3819,32 @@ fn test_a_complex_value_converts_to_a_real_type_by_its_real_part() {
 	assert run_image(emitted.bytes) == 0
 }
 
+// An imaginary constant written with an `l` suffix is a `long double _Complex`
+// (6.4.4.2): thirty-two bytes with a zero real part and the coefficient as the
+// imaginary part, at the extended format's precision, where the two other
+// suffixes name the register widths. Measured on gcc 16.2.1, `1.0iL`, `1.0Li`
+// and `1.0il` are each 32 bytes and each has the coefficient in the imaginary
+// part.
+fn test_a_long_double_imaginary_constant_is_two_extended_components() {
+	source := 'int main(void) {' +
+		' long double _Complex a = 1.5iL;' +
+		' if (sizeof a != 32) { return 1; }' +
+		' if (__real__ a != 0.0L) { return 2; }' +
+		' if (__imag__ a != 1.5L) { return 3; }' +
+		' long double _Complex b = 2.0Li;' +
+		' if (__imag__ b != 2.0L) { return 4; }' +
+		' long double _Complex c = 3.0L + 0.5iL;' +
+		' if (__real__ c != 3.0L || __imag__ c != 0.5L) { return 5; }' +
+		' double _Complex d = 0.5i;' +
+		' float _Complex e = 0.5if;' +
+		' if (sizeof d != 16 || sizeof e != 8) { return 6; }' +
+		' if (__imag__ d != 0.5 || __imag__ e != 0.5f) { return 7; }' +
+		' return 0; }'
+	emitted := emit(translation_unit(source), Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 0
+}
+
 fn test_a_double_comparison_answers_the_int_a_branch_reads() {
 	// A comparison of two doubles reads the flags the floating compare leaves,
 	// which are not the integer ones: the sign of a double lives in the top bit of

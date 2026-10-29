@@ -2832,16 +2832,17 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 		// point, which would otherwise send it to the floating reader and
 		// refuse the `i` as a character no floating constant holds.
 		if is_imaginary_constant(t.text) {
-			value, single := parse_imaginary_literal(t.text) or {
+			constant := parse_imaginary_literal(t.text) or {
 				p.error_at(t, err.msg())
 				return error('bad imaginary literal')
 			}
 			return ast.Expr(ast.ComplexLit{
-				value: value
-				text:  t.text
-				typ:   if single { types.complex_float_type() } else { types.complex_double_type() }
-				line:  t.line
-				col:   t.col
+				value:      constant.value
+				long_value: constant.long_value
+				text:       t.text
+				typ:        types.scalar(constant.kind) or { types.Type{} }
+				line:       t.line
+				col:        t.col
 			})
 		}
 		if is_floating_constant(t.text) {

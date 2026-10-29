@@ -127,9 +127,9 @@ fn test_an_imaginary_constant_reads_to_the_value_gcc_produces() {
 		ImagSingle{'0x1p-1fI', u32(0x3f000000)},
 	]
 	for c in singles {
-		value, single := parse_imaginary_literal(c.text) or { panic(err) }
-		assert single, '${c.text} is a float _Complex and this reader did not say so'
-		assert math.f32_bits(f32(value)) == c.bits, '${c.text} read to the wrong bits'
+		constant := parse_imaginary_literal(c.text) or { panic(err) }
+		assert constant.kind == .complex_float, '${c.text} is a float _Complex and this reader did not say so'
+		assert math.f32_bits(f32(constant.value)) == c.bits, '${c.text} read to the wrong bits'
 	}
 	doubles := [
 		ImagDouble{'0.1i', u64(0x3fb999999999999a)},
@@ -140,9 +140,9 @@ fn test_an_imaginary_constant_reads_to_the_value_gcc_produces() {
 		ImagDouble{'0x1p3i', u64(0x4020000000000000)},
 	]
 	for c in doubles {
-		value, single := parse_imaginary_literal(c.text) or { panic(err) }
-		assert !single, '${c.text} is a double _Complex and this reader did not say so'
-		assert math.f64_bits(value) == c.bits, '${c.text} read to the wrong bits'
+		constant := parse_imaginary_literal(c.text) or { panic(err) }
+		assert constant.kind == .complex_double, '${c.text} is a double _Complex and this reader did not say so'
+		assert math.f64_bits(constant.value) == c.bits, '${c.text} read to the wrong bits'
 	}
 	// The real part is zero, which is what 6.4.4.2 leaves it as and what the
 	// node carries: neither reader above answers with a real part at all.
@@ -153,14 +153,40 @@ fn test_an_imaginary_constant_reads_to_the_value_gcc_produces() {
 	assert !is_imaginary_constant('0x1p3')
 }
 
+// An `l` suffix names a `long double _Complex`, and the coefficient is carried
+// in the extended format: rounding it to a double first would be a value a
+// double holds and the program did not write. Measured on gcc 16.2.1, `1.0iL`,
+// `1.0Li` and `1.0il` are each a `long double _Complex`, and `0.1L` is not the
+// extended value of the double 0.1, which is what the last assertion says.
+fn test_a_long_double_imaginary_constant_is_carried_at_its_own_width() {
+	for text in ['0.1iL', '0.1Li', '0.1il', '0.1IL'] {
+		constant := parse_imaginary_literal(text) or { panic(err) }
+		assert constant.kind == .complex_long_double, '${text} is a long double _Complex'
+		extended := constant.long_value or { panic('no extended value for ${text}') }
+		reference := parse_long_double_literal('0.1L') or { panic(err) }
+		assert extended.mantissa == reference.mantissa, '${text} read to the wrong bits'
+		assert extended.sign_exp == reference.sign_exp, '${text} read to the wrong exponent'
+		assert constant.value == 0.0
+	}
+	// The double 0.1 widened is not the extended 0.1, so a reader that rounded
+	// through a double would answer the first and not the second.
+	constant := parse_imaginary_literal('0.1iL') or { panic(err) }
+	extended := constant.long_value or { panic('no value') }
+	widened := types.long_double_from_double(0.1)
+	assert extended.mantissa != widened.mantissa || extended.sign_exp != widened.sign_exp
+	// The exponent is the constant's own, not one a double can hold.
+	large := parse_imaginary_literal('1.0e4000Li') or { panic(err) }
+	assert large.kind == .complex_long_double
+	large_value := large.long_value or { panic('no value') }
+	assert large_value.exponent() > 1024
+}
+
 // An imaginary constant this compiler has no value for is refused by name, and
 // the name says which spelling asked for it. gcc 16.2.1 reads `1i` as a
 // `float _Complex`, which is what an integer coefficient is refused for: the
 // answer this compiler would give is a double one, and a type the program did
 // not write is worse than a refusal.
 fn test_a_refused_imaginary_constant_is_named() {
-	assert imaginary_reject('1.0il').contains('a long double complex')
-	assert imaginary_reject('1.0li').contains('a long double complex')
 	assert imaginary_reject('1i').contains('written on a floating constant')
 	assert imaginary_reject('1iF').contains('written on a floating constant')
 	// Two markers are not one marker: the last one comes off and what is left
