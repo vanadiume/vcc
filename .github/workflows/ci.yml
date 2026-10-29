@@ -9,11 +9,15 @@ name: ci
 # has no number a change can be held to yet: it writes its numbers into the
 # run's summary. The self compile beside it gates, because it can pass.
 #
-# Four jobs: the gate, the compliance corpus on a runner of its own, the
-# regression corpus on a runner of its own, and a run against whatever V master
-# is today, which is allowed to fail. The last three each build the pinned V,
-# because a job is one machine and the pin is the only thing they must share;
-# see the comment on each for why it is worth the build.
+# Three jobs: the gate, the compliance corpus on a runner of its own, and the
+# regression corpus on a runner of its own. The last two each build the pinned V,
+# because a job is one machine and the pin is the only thing they must share; see
+# the comment on each for why it is worth the build.
+#
+# Nothing runs against V master. This tree promises one compiler, and a job that
+# was allowed to fail would be the one nobody reads: a pin that no longer builds
+# has to be a red run and a bump, and the pin comment below is what keeps that
+# honest.
 
 on:
   push:
@@ -61,6 +65,10 @@ env:
   # snapshot through a local mirror whose master is the pinned commit, so make's
   # own `pull` cannot carry it past the pin. Both values are named in the three
   # workflows and the Dockerfile, and `tools/gate.vsh` refuses a set that disagrees.
+  #
+  # The pin is not V master, and cannot be: master refuses this tree at
+  # ast/ast.v:1051, a sum type field that closes a cycle without a reference, so
+  # moving there is a change to this tree rather than a bump.
   V_COMMIT: c6bb06f5c04d78f9f6d22a57c257d27e835ba40a
   VC_COMMIT: bcfdc7f33e7b7908ee40f76d059c0e2894fb4a3b
   V_DIR: /opt/v
@@ -340,28 +348,3 @@ jobs:
           # HEAD has no branch to merge into, and HEAD:main rather than a bare
           # push because checkout can leave a detached HEAD on some events.
           git pull --rebase --quiet origin main && git push origin HEAD:main
-
-  master:
-    name: newer V (allowed to fail)
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    # V master is not the version this tree promises to build with. Running it
-    # anyway is how the next bump is noticed before it is a surprise rather than
-    # after it is an outage.
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: build V master
-        run: |
-          git clone --quiet --depth 1 https://github.com/vlang/v "$V_DIR"
-          make -C "$V_DIR"
-          echo "$V_DIR" >> "$GITHUB_PATH"
-          # $GITHUB_PATH reaches the steps after this one, not this one, so the
-          # binary built here is named by its path and the next step gets `v`.
-          "$V_DIR/v" version
-
-      - name: build and test
-        run: |
-          v -o vcc .
-          v test .
