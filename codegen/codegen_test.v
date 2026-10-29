@@ -4745,6 +4745,67 @@ fn test_a_weak_declaration_answers_for_the_name_it_declares() {
 	assert !plain.program.weak_imports['h']
 }
 
+// An object declaration marked weak is the same question about storage that a
+// weak prototype is about code: the name is an undefined weak symbol, ELF gives
+// it the address zero, and this image has no storage of its own to point at. The
+// reference reads the slot the loader leaves at zero, which is the shape gcc
+// writes for the declaration in a non-position-independent program as well.
+//
+// It is not a copy object. The copy machinery asks a library for the object's
+// bytes and has the loader copy them in, which is a shape that needs a definition
+// to exist, and it is where a reference to one of these used to be refused.
+fn test_an_undefined_weak_object_is_read_through_the_table() {
+	source := 'extern int slot __attribute__((weak));\nint main(void) { if (&slot != 0) { return 1; } return 0; }'
+	emitted := emit(translation_unit(source), Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 0
+	// The same declaration with nothing written out: the name is an import the
+	// link does not have to answer, and no storage is held for it.
+	linked := emit(translation_unit(source), Options{ link: true })
+	assert linked.diagnostics.len == 0
+	assert 'slot' in linked.program.imports
+	assert linked.program.weak_imports['slot']
+	assert linked.program.object_imports['slot']
+	assert linked.program.copy_objects.len == 0
+	assert 'slot' !in linked.program.globals
+	// A relocatable object cannot point at storage this unit does not have
+	// either, so the reference asks for the table slot and a linker builds it.
+	// gcc writes R_X86_64_REX_GOTPCRELX for the same declaration, which is the
+	// same shape, and this linker reads that object and links it.
+	object := emit(translation_unit(source), Options{
+		compile_only: true
+	})
+	assert object.diagnostics.len == 0
+	mut through_table := false
+	for fixup in object.program.fixups {
+		if fixup.kind == .got_address && fixup.name == 'slot' {
+			through_table = true
+		}
+	}
+	assert through_table
+}
+
+// A pointer defined at file scope that holds the address of one of these is the
+// same zero: the field is left to the loader, which writes the symbol's value and
+// so writes nothing when no library defines it. gcc writes the same eight-byte
+// absolute relocation for `int *p = &slot;`.
+fn test_an_undefined_weak_object_initializes_a_pointer_to_null() {
+	emitted := emit(translation_unit('extern int slot __attribute__((weak));\nint *p = &slot;\nint main(void) { if (p != 0) { return 1; } return 0; }'),
+		Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 0
+}
+
+// The line the fix must not cross: a weak declaration beside a definition in the
+// same file is a definition, so its address is this image's storage and not the
+// zero an undefined weak symbol stands for.
+fn test_a_weak_object_declaration_beside_its_definition_is_the_definition() {
+	emitted := emit(translation_unit('extern int slot __attribute__((weak));\nint slot = 5;\nint main(void) { if (&slot == 0) { return 1; } return slot; }'),
+		Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 5
+}
+
 // A file-scope `static` function is a definition like any other to the program
 // itself: its body is emitted and a call in the file binds to it, and the
 // program runs. Only the object's symbol table treats it differently, and that

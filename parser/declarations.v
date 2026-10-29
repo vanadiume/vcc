@@ -1443,6 +1443,13 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 				typ:      data_type
 				resolved: data_clause
 				count:    data_count
+				// The attribute belongs to the name whether or not this
+				// declaration defines it: an `extern int slot
+				// __attribute__((weak));` is an undefined weak symbol, which
+				// ELF gives the address zero, and a reader that dropped the
+				// attribute here left the name looking like a plain undefined
+				// one, which a link has to find a definition for.
+				weak:     data_weak
 				external: true
 				line:     data_at.line
 				col:      data_at.col

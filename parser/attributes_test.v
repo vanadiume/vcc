@@ -73,6 +73,31 @@ fn test_aligned_on_a_top_level_object_is_recorded() {
 	assert result.unit.globals[0].alignment == 16
 }
 
+// The weak attribute belongs to the name rather than to the declaration that
+// happens to write it, so an `extern` declaration keeps it too. Dropping it here
+// made `extern int slot __attribute__((weak));` look like a plain undefined
+// object, which a link has to find a definition for, and gcc links the same
+// declaration with the address zero.
+fn test_a_weak_extern_object_keeps_the_attribute() {
+	result := attributes_of('extern int slot __attribute__((weak));')
+	assert result.diagnostics.len == 0
+	assert result.unit.globals.len == 0
+	assert result.unit.extern_objects.len == 1
+	assert result.unit.extern_objects[0].name == 'slot'
+	assert result.unit.extern_objects[0].weak
+	assert result.unit.extern_objects[0].external
+}
+
+// The same name with no attribute is the ordinary undefined object, and the two
+// declarations are what the compiler tells apart: only the one that asked for the
+// binding is an undefined weak symbol.
+fn test_an_extern_object_without_the_attribute_is_not_weak() {
+	result := attributes_of('extern int slot;')
+	assert result.diagnostics.len == 0
+	assert result.unit.extern_objects.len == 1
+	assert !result.unit.extern_objects[0].weak
+}
+
 // An attribute after the declarator belongs to the same declaration, and the two
 // that change the object are read there too: `int g __attribute__((aligned(32)));`
 // asks for the same alignment as the spelling in front of the specifiers.
