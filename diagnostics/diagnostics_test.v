@@ -5,6 +5,15 @@ fn test_a_warning_carries_a_label_and_an_error_does_not() {
 	assert render('a.c', 1, 2, .error, 'something wrong') == 'a.c:1:2: something wrong'
 }
 
+// A note is the second line of a diagnostic, at the same place and with its own
+// label. It is not a diagnostic of its own: the severity that decides whether the
+// message is printed decides the note too, so the two are always printed or
+// dropped together.
+fn test_a_note_is_a_second_line_at_the_same_place() {
+	assert render_note('a.c', 1, 2, 'why it is refused') == 'a.c:1:2: note: why it is refused'
+	assert render_note('/usr/include/stdio.h', 12, 5, 'a reason') == '/usr/include/stdio.h:12:5: note: a reason'
+}
+
 fn test_the_class_a_name_names() {
 	pedantic := class_of('pedantic') or { panic('pedantic is a class') }
 	cpp := class_of('cpp') or { panic('cpp is a class') }

@@ -250,3 +250,15 @@ pub fn render(where string, line int, col int, severity Severity, msg string) st
 	}
 	return '${where}:${line}:${col}: ${label}${msg}'
 }
+
+// render_note writes the second line of a diagnostic: the location the
+// diagnostic pointed at, the label `note:`, and the reason it carries. It is the
+// shape gcc and clang print one in, and a line of its own because the message
+// above it is already a complete sentence about the program.
+//
+// Whether the note is printed at all is the caller's question and it is the same
+// question the diagnostic's own severity answers: a note belongs to its
+// diagnostic and is not reported on its own.
+pub fn render_note(where string, line int, col int, note string) string {
+	return '${where}:${line}:${col}: note: ${note}'
+}

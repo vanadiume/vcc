@@ -1871,14 +1871,16 @@ fn test_a_typedef_of_a_pointer_reads_through_it() {
 // A typedef of a type the back end has no form for is refused by that type and
 // not by the name: the name is a spelling of the type, and the type is what the
 // image has to hold. The refusal is at the declaration, so an object nothing uses
-// is refused too rather than dropped quietly.
+// is refused too rather than dropped quietly. The imaginary type is the one such
+// type left, and its refusal is the one that carries a note.
 fn test_a_typedef_of_a_type_with_no_form_is_refused_by_that_type() {
 	program := 'typedef long double _Imaginary Wide;\nWide x;\nint main(void) { return 0; }\n'
 	lexed := tokenize.lex(program)
 	assert lexed.diagnostics.len == 0
 	parsed := parser.parse(lexed.tokens)
 	assert parsed.diagnostics.len == 1
-	assert parsed.diagnostics[0].msg == 'unsupported type long'
+	assert parsed.diagnostics[0].msg == "'_Imaginary' is unsupported"
+	assert parsed.diagnostics[0].note == 'imaginary types are deprecated in C and drafted for removal in C2y'
 	assert parsed.diagnostics[0].line == 2
 }
 

@@ -3975,6 +3975,24 @@ fn (mut p Parser) error_at(t tokenize.Token, msg string) {
 	p.report_at(t.line, t.col, if t.file != '' { t.file } else { p.file }, msg, false, .cpp)
 }
 
+// error_at_with_note reports a diagnostic and the note printed under it, at the
+// token the reader was looking at. The note is for a refusal whose reason is not
+// about the program's text; see tokenize.Diagnostic.note.
+fn (mut p Parser) error_at_with_note(t tokenize.Token, msg string, note string) {
+	p.report_with_note(t.line, t.col, if t.file != '' { t.file } else { p.file }, msg, note)
+}
+
+// report_with_note is report_at with the second line a diagnostic may carry.
+fn (mut p Parser) report_with_note(line int, col int, file string, msg string, note string) {
+	p.diagnostics << tokenize.Diagnostic{
+		line: line
+		col:  col
+		msg:  msg
+		file: file
+		note: note
+	}
+}
+
 // error_span reports a diagnostic at a position that came from a node rather than
 // from a token: the argument of a call is where its own expression started, which
 // is the line and column a reader of the source will look at. A node carries no

@@ -1755,7 +1755,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 	// initializer has not been read for yet.
 	if !incomplete && !spec.auto_deduced {
 		if offender := p.unsupported_type_word(spec, 0) {
-			p.error_at(spec.start, 'unsupported type ${offender}')
+			p.unsupported_type(spec.start, offender)
 			// The declaration is refused for its type, and the name it declares is
 			// still a name this file declares: recording it here is what keeps a later
 			// use of it from being reported a second time as a name nothing declares,
@@ -1781,7 +1781,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// name possible. The object rule below is asked of everything else.
 		if incomplete && !spec.is_typedef {
 			if offender := p.unsupported_type_word(spec, d.pointer_count()) {
-				p.error_at(spec.start, 'unsupported type ${offender}')
+				p.unsupported_type(spec.start, offender)
 				// A declaration of a tag with no body is refused here rather than
 				// before the declarator, so the name it declares is recorded the
 				// same way the pre-declarator refusal records one.

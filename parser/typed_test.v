@@ -298,9 +298,15 @@ fn test_a_static_function_nothing_names_is_stepped_over() {
 	// unsupported type is refused where it is written. `long double` is read
 	// now, and so is its complex form, so the type that makes the point is
 	// `_Imaginary`, which C99 leaves optional and this compiler has no value for.
+	// The definition writes the word twice - as its return type and as the
+	// parameter's - and each use is refused at its own location, which is the
+	// shape every other use of the word has.
 	reached := parsed('static long double _Imaginary id (long double _Imaginary x) { return x; }\nint main() { id(1); return 0; }')
-	assert reached.diagnostics.len == 1
-	assert reached.diagnostics[0].msg.contains('unsupported type long')
+	assert reached.diagnostics.len == 2
+	assert reached.diagnostics[0].msg == "'_Imaginary' is unsupported"
+	assert reached.diagnostics[0].col == 35
+	assert reached.diagnostics[1].msg == "'_Imaginary' is unsupported"
+	assert reached.diagnostics[1].col == 1
 }
 
 fn test_a_read_through_an_address_is_typed_as_what_it_points_at() {
@@ -1330,19 +1336,18 @@ fn test_a_member_of_something_without_members_is_refused() {
 
 fn test_a_typedef_of_a_type_the_emitter_has_no_form_for_is_refused_by_that_type() {
 	// The name is not what is asked about, the type it names is: `Wide` is a
-	// `long double _Imaginary` here, and the refusal names the first word of it
-	// rather than `Wide`. It happens at the declaration, which is where the
-	// object is defined and not only where something uses it.
+	// `long double _Imaginary` here, and the refusal is about the imaginary
+	// type rather than about `Wide`. It happens at the declaration of the
+	// object, which is where the type is used and not only where it is named.
 	wider := parsed('typedef long double _Imaginary Wide;\nWide x;')
 	assert wider.diagnostics.len == 1
-	assert wider.diagnostics[0].msg == 'unsupported type long'
+	assert wider.diagnostics[0].msg == "'_Imaginary' is unsupported"
 	assert wider.diagnostics[0].line == 2
 	// A parameter is the same question, asked where the call's frame is laid
-	// out, and a parameter is the one place a type of several words is spelled
-	// in full.
+	// out, and the answer is the same one.
 	parameter := parsed('typedef long double _Imaginary Wide;\nint f(Wide b) { return 0; }')
 	assert parameter.diagnostics.len == 1
-	assert parameter.diagnostics[0].msg.contains('unsupported type long double _Imaginary')
+	assert parameter.diagnostics[0].msg == "'_Imaginary' is unsupported"
 	// A `long double` is not that case either: the type has a width and a form,
 	// and the calling convention a value of it travels by is written now, so a
 	// parameter of the type is read. Its complex form is a value of that same
@@ -1408,24 +1413,35 @@ fn test_the_three_complex_types_the_back_end_moves_are_read() {
 	assert long_parameter.unit.decls[0].params[0].resolved.same(types.complex_long_double_type())
 	long_local := parsed('int main(void) { long double _Complex z = 0; return 0; }')
 	assert long_local.diagnostics.len == 0
-	// `_Imaginary` is optional in C99 and this compiler has no model for it.
+	// `_Imaginary` is optional in C99 and this compiler has no model for it, so
+	// a definition whose return type is one is refused where the word is
+	// written, with the note the word carries.
 	imaginary := parsed('_Imaginary g(void) { return 0; }')
 	assert imaginary.diagnostics.len == 1
-	assert imaginary.diagnostics[0].msg == 'unsupported type _Imaginary'
+	assert imaginary.diagnostics[0].msg == "'_Imaginary' is unsupported"
+	assert imaginary.diagnostics[0].note == 'imaginary types are deprecated in C and drafted for removal in C2y'
 }
 
-fn test_a_type_the_emitter_has_no_form_for_is_refused_by_its_first_word() {
-	// The wording for a definition of an object: the emitter stops at the first
-	// word of the type, and that is the message the compiler has published. The
-	// narrow integer spellings, `short` among them, are not that case any more,
-	// and neither is `long double`, whose type this compiler now lays out: the
-	// type here is one that is still two words with no form, a `typedef` of a
-	// `long double _Imaginary`, where the message names the first word rather
-	// than the word that makes it imaginary.
-	wider := parsed('typedef long double _Imaginary Wide;\nWide h;')
-	assert wider.diagnostics.len == 1
-	assert wider.diagnostics[0].msg == 'unsupported type long'
-	assert wider.diagnostics[0].line == 2
+fn test_a_run_of_words_that_names_no_type_is_refused_by_its_first_word() {
+	// The wording for a declaration whose words name no type at all: the run is
+	// refused by its first word, which is what the compiler has published. The
+	// runs below are not spellings the standard has, and the model has no type
+	// for either, so the word that opens the run is the one named. Measured on
+	// gcc 16.2.1, both are refused there too (`both 'long' and 'float' in
+	// declaration specifiers`, `both 'unsigned' and 'double' in declaration
+	// specifiers`).
+	run := parsed('long float x;\nint main(void) { return 0; }')
+	assert run.diagnostics.len == 1
+	assert run.diagnostics[0].msg == 'unsupported type long'
+	other := parsed('unsigned double d;\nint main(void) { return 0; }')
+	assert other.diagnostics.len == 1
+	assert other.diagnostics[0].msg == 'unsupported type unsigned'
+	// A type the emitter has no form for is a different answer, and it is the
+	// word that makes the type rather than the first word of the run: the
+	// imaginary type is the one such type left, and its refusal carries a note.
+	imaginary := parsed('long double _Imaginary h;')
+	assert imaginary.diagnostics.len == 1
+	assert imaginary.diagnostics[0].msg == "'_Imaginary' is unsupported"
 	// A `long double` object is a declaration this compiler reads, lays out and
 	// initialises, so it is not refused at all.
 	wide := parsed('long double h;')
@@ -1522,13 +1538,20 @@ fn test_an_imaginary_constant_is_the_complex_value_6_4_4_2_names() {
 	} as ast.ComplexLit
 	assert wide_lit.typ.same(types.complex_double_type())
 	assert wide_lit.value == 2.0
-	// `l` names a `long double _Complex`, which this compiler has no value for,
-	// and it is refused by name at the constant rather than read as a double.
-	// The declaration is the accepted `float _Complex` so the constant is what
-	// is refused, and not the type it is assigned to.
+	// `l` names a `long double _Complex`, which is read at its own width: the
+	// node carries the extended coefficient, and the type is the thirty-two
+	// byte one. The declaration is a `float _Complex`, so the literal is
+	// converted into it, which is the narrowing the components of a complex
+	// value take.
 	long_imaginary := parsed('int main(void) { float _Complex z = 1.0il; return 0; }')
-	assert long_imaginary.diagnostics.len == 1
-	assert long_imaginary.diagnostics[0].msg.contains('long double complex')
+	assert long_imaginary.diagnostics.len == 0
+	long_lit := first('int main(void) { long double _Complex z = 1.0il; return 0; }').body[0].init or {
+		assert false
+		return
+	} as ast.ComplexLit
+	assert long_lit.typ.same(types.complex_long_double_type())
+	assert long_lit.value == 0.0
+	assert long_lit.long_value != none
 }
 
 fn test_a_float_constant_is_not_the_double_of_the_same_digits() {
