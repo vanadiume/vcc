@@ -25,7 +25,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  V_COMMIT: a6826c4db0e28d306160fcc9e96baca90ea78f40
+  V_COMMIT: c6bb06f5c04d78f9f6d22a57c257d27e835ba40a
+  # The vlang/vc snapshot that builds that commit; the two are bumped together.
+  # `.github/workflows/ci.yml` says why the snapshot is pinned.
+  VC_COMMIT: bcfdc7f33e7b7908ee40f76d059c0e2894fb4a3b
   V_DIR: /opt/v
 
 jobs:
@@ -74,6 +77,9 @@ jobs:
         run: |
           git clone --quiet https://github.com/vlang/v "$V_DIR"
           git -C "$V_DIR" checkout --quiet "$V_COMMIT"
+          git clone --quiet https://github.com/vlang/vc "$(dirname "$V_DIR")/vc-pinned"
+          git -C "$(dirname "$V_DIR")/vc-pinned" checkout --quiet -B master "$VC_COMMIT"
+          git clone --quiet "$(dirname "$V_DIR")/vc-pinned" "$V_DIR/vc"
           make -C "$V_DIR"
           echo "$V_DIR" >> "$GITHUB_PATH"
           "$V_DIR/v" version
