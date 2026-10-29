@@ -357,10 +357,14 @@ pub const features = [
 	// operators and `==`/`!=`, the imaginary constants `1.0i`, `1.0if` and
 	// `1.0iL`, `__real__` and `__imag__`, the conversions 6.3.1.5 to 6.3.1.7 in
 	// both directions, `sizeof`, and calls and returns that hand one over at
-	// each width. Two shapes are still refused by name: an object in the image
-	// initialized from a complex expression, and a complex value written in a
-	// brace initializer for a real member. Both are file-scope constant folding
-	// and neither is the type.
+	// each width. Three refusals are left. An object in the image initialized
+	// from a complex expression, and a complex value written in a brace
+	// initializer for a real member, are file-scope constant folding and neither
+	// is the type. The scalar operators `!`, `&&` and `||` are the third: a
+	// complex value is a scalar (6.2.5p21), so `z && w` is a short-circuit test
+	// of two values and not an ordering comparison, and the message this tree
+	// prints for it (`C99 defines no order on the complex types`) describes
+	// `==` and `!=`. The last two are open items.
 	//
 	// `_Imaginary` is the one row here that stays `.unimplemented`. C99 makes
 	// the imaginary types optional (6.2.5p13) and this compiler models none of
