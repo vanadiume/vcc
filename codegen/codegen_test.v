@@ -3758,6 +3758,32 @@ fn test_the_extended_complex_type_is_two_extended_components() {
 	assert run_image(emitted.bytes) == 0
 }
 
+// A value of the extended complex type narrowed to one of the two register
+// widths converts each component on its own: the extended component is read
+// onto the x87 stack and stored back as a double, and rounded once more to a
+// float where the destination holds floats. The two narrow types converted
+// between each other before this, so the case that went wrong was the one where
+// a sixteen-byte component was read by the eight-byte instruction: the real part
+// came back as something nobody wrote. Measured on gcc 16.2.1, this program
+// exits 0.
+fn test_the_extended_complex_type_narrows_to_the_register_widths() {
+	source := 'long double _Complex widen(double _Complex z) { return z; }' +
+		' int main(void) {' +
+		' double _Complex z = 1.0 + 2.0i;' +
+		' long double _Complex l = widen(z);' +
+		' if (__real__ l != 1.0L || __imag__ l != 2.0L) { return 1; }' +
+		' double _Complex back = l;' +
+		' if (__real__ back != 1.0) { return 2; }' +
+		' if (__imag__ back != 2.0) { return 3; }' +
+		' float _Complex narrow = l;' +
+		' if (__real__ narrow != 1.0f) { return 4; }' +
+		' if (__imag__ narrow != 2.0f) { return 5; }' +
+		' return 0; }'
+	emitted := emit(translation_unit(source), Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 0
+}
+
 fn test_a_double_comparison_answers_the_int_a_branch_reads() {
 	// A comparison of two doubles reads the flags the floating compare leaves,
 	// which are not the integer ones: the sign of a double lives in the top bit of

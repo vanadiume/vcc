@@ -214,6 +214,39 @@ fn (mut e Emitter) convert_complex_to_extended(dest Slot, source Slot, source_ty
 	}
 }
 
+// convert_extended_to_complex narrows a `long double _Complex` value to one of
+// the two register widths, one component at a time. An extended component is
+// sixteen bytes in memory and not a value in a floating-point register, so it
+// cannot be read by the component instruction the two narrow types use: the
+// component is loaded onto the x87 stack, stored back as a double, and rounded
+// once more to a float where the destination's components are four bytes. The
+// roundings are the ones 6.3.1.6 asks for, one per component, and the double
+// step in the middle is exact for every value the extended format holds at a
+// float's precision.
+fn (mut e Emitter) convert_extended_to_complex(dest Slot, destination types.Type, source Slot, line int,
+	col int) !void {
+	frame := e.frame_pointer(line, col)!
+	value := e.float_accumulator(line, col)!
+	single := complex_component_single(destination)
+	mut which := 0
+	for which < 2 {
+		from := source.offset + which * complex_long_double_component
+		to := dest.offset + complex_component_offset(destination, which)
+		temporary := e.reserve(8)
+		register := e.accumulator(line, col)!
+		e.append(e.target.address_of_slot(frame, i32(from), register))
+		e.append(e.target.load_extended(register)!)
+		e.append(e.target.address_of_slot(frame, i32(temporary.offset), register))
+		e.append(e.target.store_double_extended(register)!)
+		e.append(e.target.load_double_slot(frame, i32(temporary.offset), value)!)
+		if single {
+			e.append(e.target.double_to_float(value, value)!)
+		}
+		e.store_complex_component(frame, value, to, single)!
+		which++
+	}
+}
+
 // emit_complex_long_double_return leaves a value of the extended complex type
 // where a caller of this function finds it: on the x87 stack, st(0) the real
 // part and st(1) the imaginary one. Measured on gcc 16.2.1, which returns one
