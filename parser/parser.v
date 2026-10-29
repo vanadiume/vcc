@@ -125,6 +125,11 @@ mut:
 	// assert hands `__PRETTY_FUNCTION__` to __assert_fail under a GNU dialect,
 	// so the C this compiler has to compile reads one.
 	current_function string
+	// returning is the type the body being read returns, and the zero type
+	// outside a body. A `return` expression converts into it, which is where
+	// 6.3.1.7 applies to a complex value returned from a function whose return
+	// type is a real one; see converted_into.
+	returning types.Type
 	// function_symbol and enclosing_symbol are the same two functions as the
 	// back end mangles them. A nested function's name is its enclosing
 	// function's symbol and its own name joined by a dot, which a C identifier
@@ -840,7 +845,7 @@ fn (mut p Parser) parse_assignment_expression() !ast.Expr {
 	}
 	target_type := p.value_type(left)
 	if op.text == '=' {
-		value := p.parse_assignment_expression()!
+		value := p.converted_into(target_type, p.parse_assignment_expression()!)
 		p.check_assignment(target_type, value, op)
 		return ast.Expr(ast.Assign{
 			op:     op.text
@@ -865,14 +870,14 @@ fn (mut p Parser) parse_assignment_expression() !ast.Expr {
 		...op
 		text: arithmetic
 	}
-	value := ast.Expr(ast.Binary{
+	value := p.converted_into(target_type, ast.Expr(ast.Binary{
 		op:    arithmetic
 		left:  left
 		right: right
 		typ:   p.binary_type(operator, left, right)
 		line:  left.line
 		col:   left.col
-	})
+	}))
 	p.check_assignment(target_type, value, op)
 	return ast.Expr(ast.Assign{
 		op:     op.text
@@ -1925,6 +1930,56 @@ fn (mut p Parser) real_or_imaginary(op tokenize.Token, operand ast.Expr) ast.Exp
 	return p.zero_value(op, value)
 }
 
+// converted_into is an expression as it is converted into a type the language
+// converts an arithmetic value to. 6.3.1.7 discards the imaginary part of a
+// complex value converted to a real type and converts the real part, and the
+// node the tree already has for one component of a complex value says exactly
+// that: `__real__ z` is the real part at the component's own type, and every
+// conversion the destination asks for is then the one a real value of that type
+// takes. Written any other way the conversion would be a second implementation
+// of the component read, in a stage that does not know where the object is.
+//
+// Two destinations do not take the component. A complex destination converts
+// the components of the source or gives a real value a zero imaginary part,
+// which the emitter's complex paths answer for. A `_Bool` keeps the complex
+// value too, because 6.3.1.2 asks whether the value is unequal to zero and a
+// complex value is unequal to zero when either component is: measured on gcc
+// 16.2.1, `_Bool b = 0.0 + 2.0i;` leaves 1 in b, where the real part alone would
+// leave 0. The node that says that is the comparison the standard names.
+fn (p Parser) converted_into(destination types.Type, value ast.Expr) ast.Expr {
+	if !destination.is_arithmetic() || destination.is_complex() {
+		return value
+	}
+	source := p.value_type(value)
+	if !source.is_complex() {
+		return value
+	}
+	if destination.kind == .bool_ {
+		return ast.Expr(ast.Binary{
+			op:    '!='
+			left:  value
+			right: ast.Expr(ast.IntLit{
+				value: 0
+				text:  '0'
+				typ:   types.int_type()
+				line:  value.line
+				col:   value.col
+			})
+			typ:   types.int_type()
+			line:  value.line
+			col:   value.col
+		})
+	}
+	kind := source.kind.complex_component() or { return value }
+	return ast.Expr(ast.Unary{
+		op:   '__real__'
+		expr: value
+		typ:  types.scalar(kind) or { types.Type{} }
+		line: value.line
+		col:  value.col
+	})
+}
+
 // complex_part is the value `__real__ z` or `__imag__ z` is worth when z has a
 // complex type: one component of the pair, at the component's own type. The node
 // carries the operand so the back end can read the component the operator names
@@ -2033,8 +2088,8 @@ fn (mut p Parser) postfix_on(base ast.Expr) !ast.Expr {
 			// a dereferenced pointer, or a parenthesised expression. The base
 			// is the callee, and what it has to be is checked where the call
 			// is built.
-			args := p.parse_arguments()!
-			expr = p.call(expr, args)!
+			mut args := p.parse_arguments()!
+			expr = p.call(expr, mut args)!
 			continue
 		}
 		if t.kind == .punct && t.text == '[' {
@@ -2298,7 +2353,7 @@ fn (mut p Parser) parse_cast_or_compound(at tokenize.Token) !ast.Expr {
 	}
 	return ast.Expr(ast.Cast{
 		spelling: p.conversion_spelling(spec, d, destination)
-		expr:     decayed_operand(operand)
+		expr:     p.converted_into(destination, decayed_operand(operand))
 		typ:      destination
 		line:     at.line
 		col:      at.col
@@ -3263,7 +3318,7 @@ fn (p Parser) is_callable(name string) bool {
 // here - has nothing to check against and answers with the zero type. A call
 // through a parameter list that named no parameters has nothing to check either,
 // because such a declaration says nothing about the call.
-fn (mut p Parser) call_type(name tokenize.Token, args []ast.Expr) types.Type {
+fn (mut p Parser) call_type(name tokenize.Token, mut args []ast.Expr) types.Type {
 	// 6.5.2.2: what a call calls has to be a function or a pointer to one. A name
 	// the unit declares as something else is refused here rather than written,
 	// because the emitter resolves the call to whatever the name is and the image
@@ -3277,7 +3332,7 @@ fn (mut p Parser) call_type(name tokenize.Token, args []ast.Expr) types.Type {
 		return types.Type{}
 	}
 	signature := p.signature(name.text) or { return types.Type{} }
-	return p.checked_arguments(signature, args, name, name.text)
+	return p.checked_arguments(signature, mut args, name, name.text)
 }
 
 // checked_arguments checks one call's arguments against the function type its
@@ -3288,7 +3343,7 @@ fn (mut p Parser) call_type(name tokenize.Token, args []ast.Expr) types.Type {
 //
 // A function type that named no parameters - `int f()` - says nothing about the
 // call, so nothing is checked against nothing.
-fn (mut p Parser) checked_arguments(signature types.Type, args []ast.Expr, at tokenize.Token, what string) types.Type {
+fn (mut p Parser) checked_arguments(signature types.Type, mut args []ast.Expr, at tokenize.Token, what string) types.Type {
 	// A function type's return type can carry an aggregate the tag namespace has
 	// completed since it was written: V's own generated C names a result structure
 	// in an encoder's function-pointer typedef before the structure's body, and the
@@ -3307,7 +3362,14 @@ fn (mut p Parser) checked_arguments(signature types.Type, args []ast.Expr, at to
 		if index >= parameters.len {
 			break
 		}
-		problem := types.assignment_problem(parameters[index].typ, p.value_type(argument), p.is_null_constant(argument)) or {
+		// The argument converts into the parameter's type, which is the
+		// conversion an assignment makes (6.5.2.2), and 6.3.1.7 is part of it:
+		// a complex argument passed to a real parameter is its real part. See
+		// converted_into. The wrapped argument is written back into the list,
+		// which is the list the call node carries.
+		converted := p.converted_into(parameters[index].typ, argument)
+		args[index] = converted
+		problem := types.assignment_problem(parameters[index].typ, p.value_type(converted), p.is_null_constant(converted)) or {
 			continue
 		}
 		p.problem_span(argument.line, argument.col, problem)
@@ -3322,7 +3384,7 @@ fn (mut p Parser) checked_arguments(signature types.Type, args []ast.Expr, at to
 // name the back end resolves. Every other callee - an element, a dereference, a
 // parenthesised expression - has to be worth a function or a pointer to one, and
 // anything else is refused by name here, where the call is written.
-fn (mut p Parser) call(callee ast.Expr, args []ast.Expr) !ast.Expr {
+fn (mut p Parser) call(callee ast.Expr, mut args []ast.Expr) !ast.Expr {
 	if callee is ast.Ident {
 		name := (callee as ast.Ident).name
 		// A nested function is visible under the name it was written with and
@@ -3336,7 +3398,7 @@ fn (mut p Parser) call(callee ast.Expr, args []ast.Expr) !ast.Expr {
 			line: callee.line
 			col:  callee.col
 		}
-		typ := p.call_type(at, args)
+		typ := p.call_type(at, mut args)
 		if p.object_holds_a_function_pointer(name) {
 			return ast.Expr(ast.Call{
 				callee: callee
@@ -3368,7 +3430,7 @@ fn (mut p Parser) call(callee ast.Expr, args []ast.Expr) !ast.Expr {
 	return ast.Expr(ast.Call{
 		callee: callee
 		args:   args
-		typ:    p.checked_arguments(signature, args, at, what)
+		typ:    p.checked_arguments(signature, mut args, at, what)
 		line:   callee.line
 		col:    callee.col
 	})

@@ -31,6 +31,39 @@ fn first(source string) ast.FnDecl {
 	return result.unit.decls[0]
 }
 
+// 6.3.1.7 is the conversion of a complex value into a real type, and the tree
+// carries it as the node `__real__` already is: the real part at the component's
+// own type. What the emitter is handed is therefore a real value, and no second
+// implementation of the component read sits in the back end. A `_Bool` keeps the
+// whole value, so the conversion is the comparison 6.3.1.2 names.
+fn test_a_complex_value_converted_to_a_real_type_carries_its_real_part() {
+	result := checked('int main(void) { double _Complex z = 3.0 + 4.0i; double d = z; _Bool b = z; if (b) { return 0; } return (int)d; }')
+	decl := result.unit.decls[0]
+	initializer := decl.body[1].init or {
+		assert false
+		return
+	}
+	part := initializer as ast.Unary
+	assert part.op == '__real__'
+	assert part.typ.same(types.double_type())
+	// The comparison a `_Bool` conversion is worth is a `!=` against zero, and
+	// its type is the int a comparison has.
+	boolean := decl.body[2].init or {
+		assert false
+		return
+	}
+	comparison := boolean as ast.Binary
+	assert comparison.op == '!='
+	assert comparison.typ.same(types.int_type())
+	// A return converts into the function's own return type, which the reader
+	// knows while it reads the body.
+	returned := first('int f(double _Complex z) { return z; }').body[0].expr or {
+		assert false
+		return
+	}
+	assert (returned as ast.Unary).op == '__real__'
+}
+
 fn test_a_definition_carries_its_return_type_and_its_function_type() {
 	decl := first('int add(int a, int b) { return a + b; }')
 	assert decl.ret == 'int'

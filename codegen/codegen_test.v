@@ -3784,6 +3784,41 @@ fn test_the_extended_complex_type_narrows_to_the_register_widths() {
 	assert run_image(emitted.bytes) == 0
 }
 
+// A complex value converted to a real type converts its real part and drops
+// the imaginary one (6.3.1.7), which is the conversion an initialization, an
+// assignment, an argument, a return and a cast each make. A `_Bool` is the one
+// real destination that keeps the whole value: 6.3.1.2 asks whether it is
+// unequal to zero, and a complex value is when either part is. The answers here
+// are the ones gcc 16.2.1 gives for the same program.
+fn test_a_complex_value_converts_to_a_real_type_by_its_real_part() {
+	source := 'static double as_double(double _Complex z) { return z; }' +
+		' static int as_int(double _Complex z) { return z; }' +
+		' static _Bool as_bool(double _Complex z) { return z; }' +
+		' int main(void) {' +
+		' double _Complex z = 3.0 + 4.0i;' +
+		' double _Complex imaginary_only = 0.0 + 2.0i;' +
+		' int n = z;' +
+		' double d = z;' +
+		' float f = z;' +
+		' char c = z;' +
+		' unsigned u = z;' +
+		' _Bool nonzero = imaginary_only;' +
+		' _Bool zero = 0.0 + 0.0i;' +
+		' if (n != 3 || d != 3.0 || f != 3.0f || c != 3 || u != 3) { return 1; }' +
+		' if (nonzero != 1 || zero != 0) { return 2; }' +
+		' if (as_double(z) != 3.0 || as_int(z) != 3 || as_bool(imaginary_only) != 1) { return 3; }' +
+		' if ((double)z != 3.0 || (int)z != 3 || (float)z != 3.0f) { return 4; }' +
+		' double _Complex negative = -2.5 - 7.0i;' +
+		' if ((int)negative != -2) { return 5; }' +
+		' int total = 1;' +
+		' total += z;' +
+		' if (total != 4) { return 6; }' +
+		' return 0; }'
+	emitted := emit(translation_unit(source), Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 0
+}
+
 fn test_a_double_comparison_answers_the_int_a_branch_reads() {
 	// A comparison of two doubles reads the flags the floating compare leaves,
 	// which are not the integer ones: the sign of a double lives in the top bit of
