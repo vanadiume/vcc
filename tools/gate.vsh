@@ -216,7 +216,6 @@ fn check_tests(root string) []string {
 // the disagreement it is.
 fn check_workflows(root string) []string {
 	mut problems := []string{}
-	mut pinned := map[string]string{}
 	workflows := os.walk_ext(os.join_path(root, '.github', 'workflows'), '.yml')
 	if workflows.len == 0 {
 		problems << 'no workflows under .github/workflows'
@@ -224,15 +223,8 @@ fn check_workflows(root string) []string {
 	}
 	for file in workflows {
 		name := os.file_name(file)
-		mut commit := ''
 		for line in os.read_lines(file) or { continue } {
 			trimmed := line.trim_space()
-			if trimmed.starts_with('V_COMMIT:') {
-				commit = value_after(trimmed, ':')
-				if commit.len != 40 || !is_hex(commit) {
-					problems << '${name}: V_COMMIT is not a 40-character commit hash'
-				}
-			}
 			if trimmed.starts_with('- uses:') || trimmed.starts_with('uses:') {
 				target := value_after(trimmed, 'uses:')
 				at := target.last_index('@') or { -1 }
@@ -241,8 +233,37 @@ fn check_workflows(root string) []string {
 				}
 			}
 		}
+	}
+	// The V this tree is built with and the snapshot its bootstrap comes from are
+	// both pinned, and both have to agree across the workflows: a job built by
+	// another compiler answers a question nobody asked.
+	problems << check_one_pin(workflows, 'V_COMMIT')
+	problems << check_one_pin(workflows, 'VC_COMMIT')
+	return problems
+}
+
+// check_one_pin reads one commit variable out of every workflow, refuses a value
+// that is not a commit hash, and reports the set when the workflows name more than
+// one. A workflow with no value at all is a problem too: it would run against
+// whatever its steps fetch, which is how a job comes to build with a compiler no
+// other job used.
+fn check_one_pin(workflows []string, variable string) []string {
+	mut problems := []string{}
+	mut pinned := map[string]string{}
+	for file in workflows {
+		name := os.file_name(file)
+		mut commit := ''
+		for line in os.read_lines(file) or { continue } {
+			trimmed := line.trim_space()
+			if trimmed.starts_with('${variable}:') {
+				commit = value_after(trimmed, ':')
+				if commit.len != 40 || !is_hex(commit) {
+					problems << '${name}: ${variable} is not a 40-character commit hash'
+				}
+			}
+		}
 		if commit == '' {
-			problems << '${name}: no V_COMMIT, so nothing says which V it runs against'
+			problems << '${name}: no ${variable}, so nothing says which commit its jobs build with'
 			continue
 		}
 		pinned[name] = commit
@@ -260,7 +281,7 @@ fn check_workflows(root string) []string {
 		for commit, names in by_commit {
 			described << '${commit[..8]} (${names.join(', ')})'
 		}
-		problems << 'the workflows pin different V commits: ${described.join('; ')}'
+		problems << 'the workflows pin different ${variable} commits: ${described.join('; ')}'
 	}
 	return problems
 }

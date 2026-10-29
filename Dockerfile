@@ -27,8 +27,12 @@
 FROM ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffbb1bf33ca3 AS build
 
 # The V this tree is built and tested with, as a commit rather than a release
-# tag. Kept equal to .github/workflows/ci.yml.
-ARG V_COMMIT=a6826c4db0e28d306160fcc9e96baca90ea78f40
+# tag. Kept equal to .github/workflows/ci.yml, the snapshot beside it too: `make`
+# builds its bootstrap from vlang/vc, and a snapshot that has moved past the pin
+# refuses the pinned source. The snapshot is cloned through a mirror whose master
+# is the pinned commit so make's own update step leaves it alone.
+ARG V_COMMIT=c6bb06f5c04d78f9f6d22a57c257d27e835ba40a
+ARG VC_COMMIT=bcfdc7f33e7b7908ee40f76d059c0e2894fb4a3b
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -45,9 +49,14 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Build V at the pinned commit. This step uses the system gcc; vcc itself is
-# then built by the tcc and V this produces, not by gcc.
+# then built by the tcc and V this produces, not by gcc. The bootstrap snapshot is
+# cloned through a mirror whose master is the pinned vc commit, so make's own
+# update step cannot carry the snapshot past the source it has to build.
 RUN git clone --quiet https://github.com/vlang/v /opt/v \
  && git -C /opt/v checkout --quiet "${V_COMMIT}" \
+ && git clone --quiet https://github.com/vlang/vc /opt/vc-pinned \
+ && git -C /opt/vc-pinned checkout --quiet -B master "${VC_COMMIT}" \
+ && git clone --quiet /opt/vc-pinned /opt/v/vc \
  && make -C /opt/v
 ENV PATH=/opt/v:$PATH
 

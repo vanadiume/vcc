@@ -13,9 +13,9 @@ name: wiki
 # wiki. If it is ever refused, a fine-grained token with read and write on
 # Contents, stored as WIKI_TOKEN, replaces it on the clone line below.
 #
-# `tools/gate.vsh` reads a V_COMMIT out of every file under .github/workflows and
-# refuses two different values, so this file names the same pin as the others
-# even though no step here runs V.
+# `tools/gate.vsh` reads a V_COMMIT and a VC_COMMIT out of every file under
+# .github/workflows and refuses two different values, so this file names the same
+# pair as the others even though no step here runs V.
 
 on:
   push:
@@ -33,7 +33,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  V_COMMIT: a6826c4db0e28d306160fcc9e96baca90ea78f40
+  V_COMMIT: c6bb06f5c04d78f9f6d22a57c257d27e835ba40a
+  VC_COMMIT: bcfdc7f33e7b7908ee40f76d059c0e2894fb4a3b
 
 jobs:
   publish:
