@@ -14038,6 +14038,16 @@ fn (mut e Emitter) emit_complex_into_type(dest Slot, destination types.Type, exp
 		// two register-sized ones, so it takes a path of its own.
 		return e.emit_long_double_complex_into(dest, expr, depth)
 	}
+	if expr.typ.kind == .complex_long_double {
+		// The other direction: a value of the extended complex type is
+		// narrowed to one of the two register widths, one component at a
+		// time. This is not the same question as the two register widths
+		// converting between each other, because an extended component is
+		// sixteen bytes and lives in memory rather than in a floating-point
+		// register.
+		source := e.complex_object_as(expr, expr.typ, depth + 1)!
+		return e.convert_extended_to_complex(dest, destination, source, line, col)
+	}
 	// A real value is the case a hand-over needs, and the imaginary part is
 	// written as zero rather than left: the object may be storage that held
 	// something else, and a program reading the imaginary part would read it.

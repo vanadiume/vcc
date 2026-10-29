@@ -156,8 +156,35 @@ fn (mut e Emitter) emit_long_double_complex_into(dest Slot, expr ast.Expr, depth
 		return e.copy_address_object(source_address, destination_address, complex_long_double_bytes,
 			line, col)
 	}
+	if expr is ast.ComplexLit {
+		// An imaginary constant of this type: the real part is a zero of the
+		// extended format and the coefficient is the component above it.
+		return e.store_long_double_imaginary_constant(dest, expr)
+	}
 	e.diagnostics << problem(line, col, 'unsupported: a value of type ${types.complex_long_double_type().describe()} written as this expression is not one this back end computes')
 	return error('unsupported long double complex value')
+}
+
+// store_long_double_imaginary_constant writes an imaginary constant whose
+// component is the extended format, which is the constant 6.4.4.2 makes:
+// thirty-two bytes with the real part a zero and the coefficient the imaginary
+// part. The zero is written rather than left alone, because the object is
+// storage that may have held something else.
+fn (mut e Emitter) store_long_double_imaginary_constant(dest Slot, expr ast.ComplexLit) !void {
+	value := expr.long_value or {
+		e.diagnostics << problem(expr.line, expr.col, 'internal: a long double imaginary constant reached the emitter with no value of the extended type')
+		return error('long double imaginary constant without a value')
+	}
+	frame := e.frame_pointer(expr.line, expr.col)!
+	register := e.accumulator(expr.line, expr.col)!
+	e.append(e.target.address_of_slot(frame, i32(dest.offset), register))
+	e.append(e.target.extended_zero())
+	e.append(e.target.store_extended(register)!)
+	imaginary := Slot{
+		offset: dest.offset + complex_long_double_component
+		width:  complex_long_double_component
+	}
+	e.put_extended(imaginary, value, expr.line, expr.col)!
 }
 
 // emit_real_into_complex_long_double writes a real value into an extended
@@ -210,6 +237,39 @@ fn (mut e Emitter) convert_complex_to_extended(dest Slot, source Slot, source_ty
 		e.append(e.target.load_double_extended(register)!)
 		e.append(e.target.address_of_slot(frame, i32(to), register))
 		e.append(e.target.store_extended(register)!)
+		which++
+	}
+}
+
+// convert_extended_to_complex narrows a `long double _Complex` value to one of
+// the two register widths, one component at a time. An extended component is
+// sixteen bytes in memory and not a value in a floating-point register, so it
+// cannot be read by the component instruction the two narrow types use: the
+// component is loaded onto the x87 stack, stored back as a double, and rounded
+// once more to a float where the destination's components are four bytes. The
+// roundings are the ones 6.3.1.6 asks for, one per component, and the double
+// step in the middle is exact for every value the extended format holds at a
+// float's precision.
+fn (mut e Emitter) convert_extended_to_complex(dest Slot, destination types.Type, source Slot, line int,
+	col int) !void {
+	frame := e.frame_pointer(line, col)!
+	value := e.float_accumulator(line, col)!
+	single := complex_component_single(destination)
+	mut which := 0
+	for which < 2 {
+		from := source.offset + which * complex_long_double_component
+		to := dest.offset + complex_component_offset(destination, which)
+		temporary := e.reserve(8)
+		register := e.accumulator(line, col)!
+		e.append(e.target.address_of_slot(frame, i32(from), register))
+		e.append(e.target.load_extended(register)!)
+		e.append(e.target.address_of_slot(frame, i32(temporary.offset), register))
+		e.append(e.target.store_double_extended(register)!)
+		e.append(e.target.load_double_slot(frame, i32(temporary.offset), value)!)
+		if single {
+			e.append(e.target.double_to_float(value, value)!)
+		}
+		e.store_complex_component(frame, value, to, single)!
 		which++
 	}
 }

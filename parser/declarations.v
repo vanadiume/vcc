@@ -38,8 +38,10 @@ const type_qualifiers = ['const', 'volatile', 'restrict', '_Atomic', '__const', 
 //
 // A word here that no kind in `types/` answers is a type the language has and
 // this compiler does not write, and the reader refuses it by name: that is what
-// `_Imaginary` and the decimal types below are, a refusal with a location rather
-// than the parse accident a word nothing recognises would cause.
+// `_Imaginary` is, a refusal with a location rather than the parse accident a
+// word nothing recognises would cause. Its refusal carries a note as well,
+// because the type is one the draft of the next standard removes; see
+// Parser.unsupported_type.
 const builtin_types = ['void', 'char', 'short', 'int', 'long', 'signed', 'unsigned', 'float', 'double',
 	'_Bool', '_Complex', '_Imaginary', '_Decimal32', '_Decimal64', '_Decimal128', '__int128',
 	'__float128']
@@ -816,12 +818,15 @@ fn (mut p Parser) parse_declaration() []ast.FnDecl {
 				previous_enclosing := p.enclosing_symbol
 				previous_names := p.nested_names
 				previous_declared := p.nested_declared
+				previous_returning := p.returning
 				p.current_function = d.name
 				p.function_symbol = d.name
 				p.enclosing_symbol = ''
 				p.nested_names = map[string]string{}
 				p.nested_declared = map[string]tokenize.Token{}
+				p.returning = p.return_type(spec.clause, d)
 				body := p.parse_block()
+				p.returning = previous_returning
 				p.current_function = previous_function
 				p.function_symbol = previous_symbol
 				p.enclosing_symbol = previous_enclosing
@@ -1492,7 +1497,9 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 	// so the answer is the same helper. A prototype can promise anything; a
 	// definition cannot promise a type this back end has no width for.
 	if offender := p.unsupported_type_word(spec, data_stars) {
-		p.error_at(data_at, 'unsupported type ${offender}')
+		// The diagnostic is about the type, so it points at the specifiers that
+		// wrote it rather than at the name the declaration gives the object.
+		p.unsupported_type(spec.start, offender)
 		return false
 	}
 	if data_stars == 0 && (spec.clause.kind in [types.Kind.struct_, .union_] || data_bytes > 0) {
@@ -4407,7 +4414,7 @@ fn (mut p Parser) check_definition(spec DeclSpec, d Declarator) {
 	// refused by its `_Complex` word below because no form for its component
 	// exists.
 	if offender := p.unsupported_type_word(spec, d.pointer_count()) {
-		p.error_at(spec.start, 'unsupported type ${offender}')
+		p.unsupported_type(spec.start, offender)
 		return
 	}
 	if d.param_problem.len > 0 {
@@ -4452,7 +4459,7 @@ fn (p Parser) word_problem(word string) ?string {
 			// `unsigned int` and `unsigned long` are three spellings and two
 			// kinds, and asking about the kind is what keeps the third from
 			// being read as the answer to the first.
-			kind := types.from_specifiers(words) or { return words[0] }
+			kind := types.from_specifiers(words) or { return imaginary_or_first(words, spelling) }
 			if kind in emitted_kinds {
 				return none
 			}
@@ -4470,6 +4477,18 @@ fn (p Parser) word_problem(word string) ?string {
 		}
 	}
 	return word
+}
+
+// imaginary_or_first answers the word a refusal is about for a run of words that
+// names no type this compiler has: the whole spelling when it carries the
+// imaginary word, so that the message can name the construct the program asked
+// for, and its first word otherwise, which is the word the compiler has always
+// named a run of words by.
+fn imaginary_or_first(words []string, spelling string) string {
+	if words.contains('_Imaginary') {
+		return spelling
+	}
+	return words[0]
 }
 
 // incomplete_aggregate says a declaration's clause is a tag with no body, or one
@@ -4609,6 +4628,16 @@ fn (p Parser) unsupported_type_word(spec DeclSpec, stars int) ?string {
 	// word when that type is not one the emitter has a form for. A run of words
 	// the table does not have at all names no type, and its first word is named
 	// the same way.
+	//
+	// `_Imaginary` is asked about first, because it is the one word of a run
+	// that the answer is about: `long double _Imaginary` is refused for the
+	// imaginary type the program asked for and not for the `long` in front of
+	// it, and the caller prints the dedicated message the word carries.
+	for word in spec.type_words {
+		if word == '_Imaginary' {
+			return word
+		}
+	}
 	kind := types.from_specifiers(spec.type_words) or { return spec.type_words[0] }
 	if kind in emitted_kinds {
 		return none
@@ -4618,11 +4647,30 @@ fn (p Parser) unsupported_type_word(spec DeclSpec, stars int) ?string {
 	// `_Complex`, which is what the message said before the 64-bit spellings
 	// were read, and `double` on its own is a type this compiler reads.
 	for word in spec.type_words {
-		if word in ['_Complex', '_Imaginary'] {
+		if word == '_Complex' {
 			return word
 		}
 	}
 	return spec.type_words[0]
+}
+
+// unsupported_type reports a type this compiler does not read, at the place the
+// declaration wrote it. The imaginary type is the one refusal that carries a
+// note: 6.2.5 leaves the imaginary types optional and the draft of the next
+// standard removes them, so the message names the word and the note says why the
+// type is going away rather than saying this compiler is behind.
+//
+// The word is looked for among the words of the type, because a type is written
+// as a run of them: `long double _Imaginary` is one type, and the word the
+// message is about is the third.
+fn (mut p Parser) unsupported_type(at tokenize.Token, written string) {
+	for word in written.split(' ') {
+		if word == '_Imaginary' {
+			p.error_at_with_note(at, "'_Imaginary' is unsupported", 'imaginary types are deprecated in C and drafted for removal in C2y')
+			return
+		}
+	}
+	p.error_at(at, 'unsupported type ${written}')
 }
 
 // parse_decl_specifiers reads the words in front of a declarator. It accepts
@@ -5972,7 +6020,15 @@ fn (mut p Parser) parse_parameter_list(depth int) !Params {
 			} else if !p.parameter_type_is_known(spec, d.pointer_count()) {
 				// The type as the parameter wrote it, so that `double _Complex`
 				// and `long long` are named rather than a word of them.
-				params.note_problem('unsupported type ${p.parameter_spelling(spec)}', spec.start)
+				written := p.parameter_spelling(spec)
+				if written.split(' ').contains('_Imaginary') {
+					// The one refusal with a note of its own; it is reported
+					// here rather than through the parameter list because the
+					// note travels with the diagnostic.
+					p.unsupported_type(spec.start, written)
+				} else {
+					params.note_problem('unsupported type ${written}', spec.start)
+				}
 			}
 		}
 		if p.at_punct(',') {

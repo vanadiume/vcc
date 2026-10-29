@@ -960,3 +960,12 @@ it owns the change, which is the same vocabulary the commits use.
   (059089b)
 * backend/os/elf: a name the image defines gets its own global offset table slot
   (7b1104c)
+
+## 2026-10-29
+
+* codegen: narrow a long double _Complex value to the register widths (a40d322)
+* regression: a narrowed long double _Complex value keeps its parts (e6ff6e7)
+* parser: a complex value converts to a real type (5e2a786)
+* parser, codegen: read a long double imaginary constant (af4d6a3)
+* parser, diagnostics: refuse _Imaginary by name with a note (d7c3277)
+* standard: the _Complex row is implemented (98d7126)

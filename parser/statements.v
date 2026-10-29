@@ -573,10 +573,11 @@ fn (mut p Parser) parse_deref_assignment(start tokenize.Token, target ast.Expr, 
 			// The object written to is the one the pointer points at, so the
 			// value converts to the pointed-at type the same way it does into
 			// a name.
-			p.check_assignment(target.typ, value, op)
+			written := p.converted_into(target.typ, value)
+			p.check_assignment(target.typ, written, op)
 			return ast.Stmt{
 				kind:  .assign
-				expr:  value
+				expr:  written
 				extra: &ast.StmtExtra{
 					deref: ast.Expr(target)
 				}
@@ -764,10 +765,11 @@ fn (mut p Parser) parse_assignment() !ast.Stmt {
 					line: t.line
 					col:  t.col
 				})
-				p.check_assignment(element, expr, op)
+				value := p.converted_into(element, expr)
+				p.check_assignment(element, value, op)
 				return ast.Stmt{
 					kind:  .assign
-					expr:  expr
+					expr:  value
 					extra: &ast.StmtExtra{
 						subscript: ast.Expr(ast.Index{
 							base:  base
@@ -782,13 +784,15 @@ fn (mut p Parser) parse_assignment() !ast.Stmt {
 				}
 			}
 		}
-		p.check_assignment(p.assignment_target_type(t.text, index, field), expr, op)
+		target_type := p.assignment_target_type(t.text, index, field)
+		value := p.converted_into(target_type, expr)
+		p.check_assignment(target_type, value, op)
 		return ast.Stmt{
 			kind:   .assign
 			target: t.text
 			index:  index
 			field:  field
-			expr:   expr
+			expr:   value
 			line:   t.line
 			col:    t.col
 		}
@@ -847,14 +851,18 @@ fn (mut p Parser) compound_expansion(op tokenize.Token, arithmetic string, left 
 		...op
 		text: arithmetic
 	}
-	return ast.Expr(ast.Binary{
+	// The sum is what the assignment writes, and a sum of a complex value with
+	// a real one is complex: `n += z` on an int writes the real part of
+	// `n + z`, which is the conversion 6.3.1.7 defines for the assignment the
+	// expansion stands for.
+	return p.converted_into(p.value_type(left), ast.Expr(ast.Binary{
 		op:    arithmetic
 		left:  left
 		right: right
 		typ:   p.binary_type(operator, left, right)
 		line:  op.line
 		col:   op.col
-	})
+	}))
 }
 
 // parse_subscript_assignment reads `E1[E2] = value` where the target's base is
@@ -868,7 +876,7 @@ fn (mut p Parser) parse_subscript_assignment(index ast.Index) !ast.Stmt {
 		p.error_at(op, 'unsupported: the compound assignment ${op.text} to an element is not implemented')
 		return error('compound assignment to an element')
 	}
-	value := p.parse_assignment_expression()!
+	value := p.converted_into(index.typ, p.parse_assignment_expression()!)
 	p.check_assignment(index.typ, value, op)
 	return ast.Stmt{
 		kind:  .assign
@@ -904,7 +912,7 @@ fn (mut p Parser) parse_member_assignment(member ast.Field) !ast.Stmt {
 			col:      member.col
 		}
 	}
-	value := p.parse_assignment_expression()!
+	value := p.converted_into(member.typ, p.parse_assignment_expression()!)
 	p.check_assignment(member.typ, value, op)
 	return ast.Stmt{
 		kind:  .assign
@@ -1747,7 +1755,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 	// initializer has not been read for yet.
 	if !incomplete && !spec.auto_deduced {
 		if offender := p.unsupported_type_word(spec, 0) {
-			p.error_at(spec.start, 'unsupported type ${offender}')
+			p.unsupported_type(spec.start, offender)
 			// The declaration is refused for its type, and the name it declares is
 			// still a name this file declares: recording it here is what keeps a later
 			// use of it from being reported a second time as a name nothing declares,
@@ -1773,7 +1781,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// name possible. The object rule below is asked of everything else.
 		if incomplete && !spec.is_typedef {
 			if offender := p.unsupported_type_word(spec, d.pointer_count()) {
-				p.error_at(spec.start, 'unsupported type ${offender}')
+				p.unsupported_type(spec.start, offender)
 				// A declaration of a tag with no body is refused here rather than
 				// before the declarator, so the name it declares is recorded the
 				// same way the pre-declarator refusal records one.
@@ -1997,10 +2005,18 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 				// business: it is the one initializer that is not a value written
 				// into an object. A union's initializer is a value for its first
 				// member, so it is checked against that member and not the union.
+				//
+				// The value is converted into the object's type here, which is
+				// where 6.3.1.7 applies to a complex value whose destination is
+				// a real one; see converted_into.
 				if first := union_first {
-					p.check_initializer(first.typ, initializer)
+					converted := p.converted_into(first.typ, initializer)
+					init = converted
+					p.check_initializer(first.typ, converted)
 				} else if !(declared.is_array() && initializer is ast.StrLit) {
-					p.check_initializer(declared, initializer)
+					converted := p.converted_into(declared, initializer)
+					init = converted
+					p.check_initializer(declared, converted)
 				}
 			}
 		} else if spec.auto_deduced {
@@ -2769,10 +2785,13 @@ fn (mut p Parser) parse_nested_function(spec DeclSpec, d Declarator) ?ast.Stmt {
 	previous_function := p.current_function
 	previous_symbol := p.function_symbol
 	previous_enclosing := p.enclosing_symbol
+	previous_returning := p.returning
 	p.current_function = d.name
 	p.function_symbol = mangled
 	p.enclosing_symbol = parent
+	p.returning = p.return_type(spec.clause, d)
 	body := p.parse_block()
+	p.returning = previous_returning
 	p.current_function = previous_function
 	p.function_symbol = previous_symbol
 	p.enclosing_symbol = previous_enclosing
@@ -2831,10 +2850,10 @@ fn (mut p Parser) parse_return_statement() []ast.Stmt {
 	// reader; the statement is skipped so the rest of the function still parses
 	// and the file reports once. The value is a full expression, so an
 	// assignment stands in it: `return *p = *q = 8;` writes both.
-	expr := p.parse_assignment_expression() or {
+	expr := p.converted_into(p.returning, p.parse_assignment_expression() or {
 		p.skip_statement()
 		return []ast.Stmt{}
-	}
+	})
 	if !p.expect_punct(';') {
 		p.skip_statement()
 		return []ast.Stmt{}

@@ -1099,6 +1099,9 @@ fn report(path string, raised []tokenize.Diagnostic, policy diagnostics.Policy) 
 		// the compiler was handed is the fallback for everything else.
 		where := if diagnostic.file != '' { diagnostic.file } else { path }
 		eprintln(diagnostics.render(where, diagnostic.line, diagnostic.col, severity, diagnostic.msg))
+		if diagnostic.note != '' {
+			eprintln(diagnostics.render_note(where, diagnostic.line, diagnostic.col, diagnostic.note))
+		}
 		if severity == .error {
 			errors++
 		}

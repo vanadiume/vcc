@@ -107,9 +107,18 @@ asks for it and a record when `-fno-vcc-exts=` turns it off.
 
 What the tree reads includes `typeof`, `__typeof__`, `__typeof` and
 `typeof_unqual`; C23 `auto`; `_Generic`; `_Static_assert`; `_BitInt(128)`;
-`__int128`; GNU statement expressions; `__asm__`; a postfix `__attribute__`;
-the `__atomic_*` operations; and the count-leading and count-trailing
-builtins.
+`__int128`; `_Complex` at all three widths; GNU statement expressions;
+`__asm__`; a postfix `__attribute__`; the `__atomic_*` operations; and the
+count-leading and count-trailing builtins.
+
+`_Complex` is read as C99 defines it: `float _Complex`, `double _Complex`,
+`long double _Complex` and a bare `_Complex` for the double one; the four
+arithmetic operators and `==`/`!=`; the imaginary constants `1.0i`, `1.0if`
+and `1.0iL`; `__real__` and `__imag__`; the conversions of 6.3.1.5 to 6.3.1.7
+in both directions; `sizeof`; and calls and returns that hand one over, at each
+of the three widths. `_Imaginary` is refused by name where it is written, with
+a note saying the type is deprecated and drafted for removal in C2y: no
+imaginary type is implemented, which 6.2.5 leaves to the implementation.
 
 ## What is verified
 
@@ -144,10 +153,9 @@ runs the same checks a pull request has to pass.
   2026 or early Q1 2027. [[Interop]] has what V asks of a C compiler.
 - Other targets. It is Linux x86-64 only. arm64, macOS and Windows are back
   ends that do not exist yet.
-- `_Complex` and `_Imaginary`, which the dialect table carries as
-  unimplemented. The C99 float types and `_Bool` are read, but the back end
-  has no form for them yet, so a definition of one is refused by name and
-  location.
+- `_Imaginary`, which the dialect table carries as unimplemented: C99 makes the
+  imaginary types optional and this compiler has none, so a use of the word is
+  refused by name and location. `_Complex` is read; see above.
 
 ## Refusals
 

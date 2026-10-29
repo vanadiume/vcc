@@ -1883,15 +1883,16 @@ fn test_a_definition_may_return_a_pointer() {
 // value of it travels by is written, so both a pointer to one and a value of one
 // are accepted. `_Imaginary` is the type that still has no form, because C99
 // leaves it optional and this compiler models no value for it; `long double
-// _Complex` used to make the point and is now carried.
+// _Complex` used to make the point and is now carried. The imaginary word's
+// refusal is the one that carries a note.
 fn test_a_pointer_to_a_type_the_emitter_has_no_form_for_is_refused_by_name() {
 	pointer := declarations_of('long double _Imaginary *f(void) { return 0; }')
 	assert pointer.diagnostics.len == 1
-	assert pointer.diagnostics[0].msg.contains('unsupported type long')
+	assert pointer.diagnostics[0].msg == "'_Imaginary' is unsupported"
 
 	value := declarations_of('long double _Imaginary f(void) { return 0; }')
 	assert value.diagnostics.len == 1
-	assert value.diagnostics[0].msg.contains('unsupported type long')
+	assert value.diagnostics[0].msg == "'_Imaginary' is unsupported"
 
 	long_pointer := declarations_of('long double *f(void) { return 0; }')
 	assert long_pointer.diagnostics.len == 0

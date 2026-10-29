@@ -197,11 +197,13 @@ fn test_an_empty_statement_is_dropped_and_a_block_is_unwrapped() {
 }
 
 fn test_an_unsupported_type_names_the_type() {
-	// A type the emitter has no width for is named by the word the compiler has
-	// always named it by: `_Imaginary` is still not one of them.
+	// A type the emitter has no form for is named by the word the program wrote.
+	// `_Imaginary` is the one such type left, and its refusal is the one that
+	// carries a note.
 	result := parsed('_Imaginary f() { return 1; }')
-	assert result.diagnostics.len >= 1
-	assert result.diagnostics[0].msg.contains('_Imaginary')
+	assert result.diagnostics.len == 1
+	assert result.diagnostics[0].msg == "'_Imaginary' is unsupported"
+	assert result.diagnostics[0].note == 'imaginary types are deprecated in C and drafted for removal in C2y'
 	assert result.diagnostics[0].line == 1
 }
 
@@ -708,11 +710,14 @@ fn test_a_declaration_may_name_several_objects() {
 
 // The type is the one a definition's return type may be, so a word the emitter
 // has no form for is reported where the declaration is written, and what comes
-// after the declaration still parses.
+// after the declaration still parses. `_Imaginary` is the word, and its refusal
+// is the one that carries a note: C99 leaves the imaginary types optional and
+// the draft of the next standard removes them.
 fn test_a_local_declaration_with_an_unsupported_type_is_reported() {
 	result := parsed('int main() { _Imaginary n = 0; return 0; }')
 	assert result.diagnostics.len == 1
-	assert result.diagnostics[0].msg.contains('unsupported type _Imaginary')
+	assert result.diagnostics[0].msg == "'_Imaginary' is unsupported"
+	assert result.diagnostics[0].note == 'imaginary types are deprecated in C and drafted for removal in C2y'
 	assert result.unit.decls[0].body.len == 1
 	assert result.unit.decls[0].body[0].kind == .return_stmt
 }
@@ -1862,12 +1867,12 @@ fn test_a_name_nothing_declares_is_refused_with_the_name_and_its_location() {
 fn test_a_name_a_refused_declaration_declares_is_not_reported_again() {
 	result := parsed('int main(void) { _Imaginary u = 0; u = 1; return 0; }')
 	assert result.diagnostics.len == 1
-	assert result.diagnostics[0].msg.contains('unsupported type _Imaginary')
-	// The same at the top level, where the declarator was read before the type was
-	// refused and the name was recorded as a matter of course.
+	assert result.diagnostics[0].msg == "'_Imaginary' is unsupported"
+	// The same at the top level, where the declaration is refused before the
+	// name is read and the name is recorded as a matter of course.
 	global := parsed('_Imaginary g = 1;\nint main(void) { return g; }')
 	assert global.diagnostics.len == 1
-	assert global.diagnostics[0].msg.contains('unsupported type _Imaginary')
+	assert global.diagnostics[0].msg == "'_Imaginary' is unsupported"
 }
 
 // One diagnostic per name, however many times it is read: three uses of a name

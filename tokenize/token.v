@@ -73,6 +73,11 @@ pub:
 	// no stage classified takes the default, which is the class the compiler
 	// reports on its own account.
 	class diagnostics.Class = .cpp
+	// note is a second line printed under the diagnostic, at the same place
+	// and with the label `note:`. It carries the reason a construct is refused
+	// when the reason is not about the program's own text, which is the shape
+	// gcc and clang print one in. Empty for a diagnostic that has none.
+	note string
 }
 
 // errors are the diagnostics that stop the compiler: everything that is not a
