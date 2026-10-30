@@ -18,7 +18,8 @@ import time
 const default_steps = ['build', 'gate', 'compliance', 'regress']
 
 // What `all` runs, each step once; `corpora` is those two runners together.
-const every_step = ['build', 'gate', 'test', 'compliance', 'regress', 'bench', 'docker', 'version']
+const every_step = ['build', 'gate', 'test', 'compliance', 'regress', 'bench', 'libvcc', 'docker',
+	'version']
 
 struct Context {
 mut:
@@ -87,6 +88,7 @@ fn run_step(mut ctx Context, name string, args []string) Outcome {
 		'test' { outcome = step_runner(mut ctx, 'test', 'v -nocache test .', args) }
 		'gate' { outcome = step_runner(mut ctx, 'gate', 'v run tools/gate.vsh', args) }
 		'bench' { outcome = step_runner(mut ctx, 'bench', 'v run tools/bench.vsh', args) }
+		'libvcc' { outcome = step_libvcc(mut ctx) }
 		'compliance' { outcome = step_corpus(mut ctx, 'compliance', 'v run tools/compliance.vsh') }
 		'regress' { outcome = step_corpus(mut ctx, 'regress', 'v run tools/regress.vsh') }
 		'corpora' { outcome = step_corpora(mut ctx) }
@@ -100,20 +102,89 @@ fn run_step(mut ctx Context, name string, args []string) Outcome {
 
 // step_build is the one place a binary is asked for by name. With -o it lands
 // where the caller said, otherwise under the temp directory for the runners.
+// --experimental-libgcc compiles the binary that accepts --link-libgcc, and it
+// is the only way to get one: the flag does not exist in any other build.
 fn step_build(mut ctx Context, args []string) Outcome {
 	mut path := os.join_path(ctx.scratch, 'vcc')
-	if args.len > 0 {
-		if args[0] != '-o' || args.len < 2 {
-			return failed('build', 'only -o PATH is taken here')
+	mut defines := ''
+	mut rest := []string{}
+	for arg in args {
+		if arg == '--experimental-libgcc' {
+			// V's -d names a comptime identifier, so the define is underscored
+			// here while the flag keeps the spelling a person writes.
+			defines = '-d experimental_libgcc'
+			continue
 		}
-		path = args[1]
+		rest << arg
+	}
+	if rest.len > 0 {
+		if rest[0] != '-o' || rest.len < 2 {
+			return failed('build', 'only -o PATH and --experimental-libgcc are taken here')
+		}
+		path = rest[1]
 	}
 	os.mkdir_all(os.dir(path)) or {}
-	if run_in(ctx.root, 'v -o ${os.quoted_path(path)} .') != 0 {
+	if run_in(ctx.root, 'v ${defines} -o ${os.quoted_path(path)} .') != 0 {
 		return failed('build', 'the compiler did not build')
 	}
 	ctx.compiler = path
-	return Outcome{ verdict: .passed, name: 'build', detail: if args.len > 0 { path } else { '' } }
+	detail := if defines == '' {
+		if rest.len > 0 { path } else { '' }
+	} else if rest.len > 0 {
+		'${path}, experimental libgcc'
+	} else {
+		'scratch binary, experimental libgcc'
+	}
+	return Outcome{ verdict: .passed, name: 'build', detail: detail }
+}
+
+// step_libvcc builds the runtime library with the compiler this tree just built,
+// then links a program against that archive and runs it. The archive is libvcc,
+// and the program reaches into it for a helper this compiler's image cannot
+// define for itself: a link that pulls the member is the proof the archive is
+// found and read, and its exit status is the proof of what it computed.
+//
+// The sibling tree is where libvcc lives in a vanadium checkout. A tree without
+// it skips the step rather than failing: this compiler builds and runs without a
+// runtime archive beside it, and the missing tree is a fact about the checkout.
+fn step_libvcc(mut ctx Context) Outcome {
+	libvcc := os.join_path(os.dir(ctx.root), 'libvcc')
+	runner := os.join_path(libvcc, 'build.vsh')
+	if !os.exists(runner) {
+		return Outcome{
+			verdict: .skipped
+			name:    'libvcc'
+			detail:  'no ${runner}, so there is no runtime tree to build'
+		}
+	}
+	compiler := ensure_compiler(mut ctx)
+	if compiler == '' {
+		return failed('libvcc', 'the compiler did not build')
+	}
+	// libvcc's own build looks for vcc through $VCC before PATH, which is how it
+	// is handed the binary this step just built rather than whichever one a
+	// shell would find.
+	os.setenv('VCC', compiler, true)
+	if run_in(libvcc, 'v run build.vsh build --cc vcc') != 0 {
+		return failed('libvcc', 'libvcc did not build with the compiler')
+	}
+	archive := os.join_path(libvcc, 'target', 'vcc', 'libvcc.a')
+	if !os.exists(archive) {
+		return failed('libvcc', 'the build wrote no ${archive}')
+	}
+	os.mkdir_all(ctx.scratch) or {}
+	program := os.join_path(ctx.scratch, 'runtime_helper.c')
+	binary := os.join_path(ctx.scratch, 'runtime_helper')
+	body := 'long long __divdi3(long long a, long long b);\nint main(void) { return (int)__divdi3(84, 2); }\n'
+	os.write_file(program, body) or { return failed('libvcc', 'could not write a program: ${err}') }
+	if run_in(ctx.root, '${os.quoted_path(compiler)} ${os.quoted_path(program)} -L ${os.quoted_path(os.dir(archive))} -o ${os.quoted_path(binary)}') != 0 {
+		return failed('libvcc', 'the compiler could not link a program against ${archive}')
+	}
+	status := run_in('', os.quoted_path(binary))
+	if status != 42 {
+		return failed('libvcc', 'the program answered ${status}, and the helper it called divides 84 by 2')
+	}
+	return Outcome{ verdict: .passed, name: 'libvcc', detail: archive }
 }
 
 // step_runner passes arguments through, so bench keeps its flags.
@@ -308,13 +379,15 @@ fn failed(name string, detail string) Outcome {
 
 fn usage() {
 	println('usage: v run tools/build.vsh [STEP] [args]')
-	println('  build [-o PATH]   build the compiler only')
+	println('  build [-o PATH] [--experimental-libgcc]  build the compiler only')
 	println('  test              the unit suite, `v -nocache test .`')
 	println('  gate              tools/gate.vsh')
 	println('  compliance        the corpus under compliance/, a directory per standard')
 	println('  regress           the regression and golden corpora')
 	println('  corpora           compliance and regress together')
 	println('  bench [args]      tools/bench.vsh, args passed through')
+	println('  libvcc            build ../libvcc with this compiler, then link and run a')
+	println('                    program against the archive it writes')
 	println('  docker            build the image, then run the binary in it')
 	println('  version           the binary, v.mod, and the pinned V commit')
 	println('  all               every step, then a summary')
