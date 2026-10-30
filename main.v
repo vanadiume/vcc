@@ -260,15 +260,27 @@ fn main() {
 		println(printer.render(optimized))
 		return
 	}
+	// The runtime archive's names, read before the unit is emitted: the import
+	// check has to know which of the unit's names the link will answer from an
+	// archive rather than from a library, and a program that reaches one of them
+	// is handed to the link path below, which is the path that reads archives.
+	mut archive_names := map[string]bool{}
+	if !opts.compile_only && link_kind(opts) == .program && opts.default_libraries() {
+		if target := backend.resolve(opts.target) {
+			archive_names = runtime_archive_names(opts, target)
+		}
+	}
 	started = time.now()
 	image := codegen.emit(optimized, codegen.Options{
-		target:       opts.target
-		entry:        'main'
-		compile_only: opts.compile_only
-		pic:          opts.pic
-		link_kind:    link_kind(opts)
-		libraries:    opts.libraries
-		library_dirs: opts.library_dirs
+		target:               opts.target
+		entry:                'main'
+		compile_only:         opts.compile_only
+		pic:                  opts.pic
+		link_kind:            link_kind(opts)
+		libraries:            opts.libraries
+		library_dirs:         opts.library_dirs
+		no_default_libraries: !opts.default_libraries()
+		archive_names:        archive_names.keys()
 	})
 	phases << cli.Phase{
 		name:   'emit'
@@ -276,6 +288,21 @@ fn main() {
 	}
 	if report(path, image.diagnostics, opts.warnings) > 0 {
 		exit(1)
+	}
+	// A program that reaches a name the runtime archive answers is a link and not
+	// a wrapping: the archive is an input, and the path that reads archives is the
+	// linker's. The unit is compiled a second time there, and that is the price of
+	// the ordinary path staying one pass over one file, which is the path almost
+	// every program takes. The names come from the same read of the archive the
+	// import check was given, so the two cannot disagree about what the link will
+	// answer.
+	//
+	// A shared object is left out because its helper references are the loader's
+	// to resolve, and a static program never arrives here: it takes the link path
+	// above, where its archives are read.
+	if archive_names.len > 0 && program_reaches_archive(image.program, archive_names) {
+		link_inputs(opts)
+		return
 	}
 	out_path := if opts.output != '' {
 		opts.output
@@ -621,8 +648,24 @@ fn link_inputs(opts cli.Options) {
 			return
 		}
 	}
-	if output_kind != .static_program && output_kind != .shared {
-		support << target.base_library_archives(opts.library_dirs)
+	// -nostdlib and -nodefaultlibs are read here and not at the archive pull: a
+	// link with no default libraries is one whose every library the command line
+	// named, so the C library's archives and the runtime archive are not inputs
+	// at all, and nothing is left for the pull to keep out.
+	if opts.default_libraries() {
+		if output_kind != .static_program && output_kind != .shared {
+			support << target.base_library_archives(opts.library_dirs)
+		}
+		// The runtime archive is a program's. A shared object does not take it:
+		// its helper references are what the loader resolves from whatever maps
+		// it, and this compiler writes the archive for a program. A static link
+		// takes it through static_support_libraries, which is where the list of
+		// archives it resolves against is written down.
+		if output_kind == .program {
+			if runtime := runtime_archive(opts, target) {
+				support << runtime
+			}
+		}
 	}
 	for file in support {
 		source := read_source(file.path) or {
@@ -652,8 +695,13 @@ fn link_inputs(opts cli.Options) {
 	// directories a link searches, and they go around the units in the order a
 	// link puts them: crt1.o holds the entry point, so it is what the merged
 	// text begins with and what the image's entry point is.
-	reach := has_constructors(units) || (output_kind == .static_program
-		&& (needs_a_library(units) || has_tls(units)))
+	//
+	// -nostdlib is the one flag that takes them away, and the test is at the
+	// front because both halves of `reach` are reasons to put start files
+	// around a link: a constructor table wants the C library's startup to walk
+	// it, and a static link that reaches a library wants crt1.o to name it.
+	reach := opts.start_files() && (has_constructors(units) || (output_kind == .static_program
+		&& (needs_a_library(units) || has_tls(units))))
 	mut entry := if output_kind == .shared { '' } else { 'main' }
 	if reach {
 		before, after := target.start_file_paths(output_kind, opts.library_dirs) or {
@@ -678,9 +726,11 @@ fn link_inputs(opts cli.Options) {
 			}
 		}
 		// A static link resolves the library's own objects out of its archives, and
-		// static_support_libraries is where its list is written down.
-		if output_kind == .static_program {
-			for path in target.static_support_libraries(opts.library_dirs) {
+		// static_support_libraries is where its list is written down. A link with
+		// no default libraries has no such list: the C library is not one of its
+		// inputs, and neither is a runtime archive.
+		if output_kind == .static_program && opts.default_libraries() {
+			for path in target.static_support_libraries(opts.library_dirs, runtime_library_name(opts)) {
 				source := read_source(path) or {
 					abort('cannot read ${path}: ${err.msg()}')
 					return
@@ -694,8 +744,9 @@ fn link_inputs(opts cli.Options) {
 		entry = '_start'
 	} else if output_kind != .shared {
 		stub := codegen.start_stub(entry, codegen.Options{
-			target:    opts.target
-			link_kind: output_kind
+			target:               opts.target
+			link_kind:            output_kind
+			no_default_libraries: !opts.default_libraries()
 		})
 		// The stub is emitted from a constant entry name and the exit
 		// sequence, so it has nothing to report; a diagnostic here is this
@@ -710,22 +761,28 @@ fn link_inputs(opts cli.Options) {
 		// the C library's entry, and crtbegin.o is where __dso_handle is defined. A
 		// program built without them links with an undefined __dso_handle the moment
 		// the C library's non-shared archive is read, which is where atexit lives.
-		before, after := target.stub_start_file_paths(opts.library_dirs) or {
-			abort(err.msg())
-			return
-		}
-		mut i := before.len
-		for i > 0 {
-			i--
-			units.prepend(read_unit(before[i], target) or {
-				abort('${before[i]}: ${err.msg()}')
+		//
+		// There are none of them under -nostdlib: the flag takes the start files
+		// away from every link, including the one whose entry point is this
+		// compiler's own stub.
+		if opts.start_files() {
+			before, after := target.stub_start_file_paths(opts.library_dirs) or {
+				abort(err.msg())
 				return
-			})
-		}
-		for path in after {
-			units << read_unit(path, target) or {
-				abort('${path}: ${err.msg()}')
-				return
+			}
+			mut i := before.len
+			for i > 0 {
+				i--
+				units.prepend(read_unit(before[i], target) or {
+					abort('${before[i]}: ${err.msg()}')
+					return
+				})
+			}
+			for path in after {
+				units << read_unit(path, target) or {
+					abort('${path}: ${err.msg()}')
+					return
+				}
 			}
 		}
 	}
@@ -756,10 +813,11 @@ fn link_inputs(opts cli.Options) {
 	}
 	mut started := time.now()
 	merged := linking.link(units, linking.Options{
-		entry:        entry
-		target:       target
-		libraries:    opts.libraries
-		library_dirs: opts.library_dirs
+		entry:                entry
+		target:               target
+		libraries:            opts.libraries
+		library_dirs:         opts.library_dirs
+		no_default_libraries: !opts.default_libraries()
 	}) or {
 		abort(err.msg())
 		return
@@ -1114,6 +1172,64 @@ fn abort(message string) {
 	exit(1)
 }
 
+// runtime_library_name is the archive a link takes for the helpers the machine
+// has no instruction for: this compiler's own libvcc, or the toolchain's libgcc
+// when --link-libgcc asked for it. The two define the same helper names, so a
+// link takes one of them and never both.
+fn runtime_library_name(opts cli.Options) string {
+	if opts.link_libgcc {
+		return linux.libgcc_library
+	}
+	return linux.runtime_library
+}
+
+// runtime_archive is the runtime archive a link takes, or none when it has none
+// to take. --link-libgcc is a request and libgcc.a is not implicit in anything,
+// so a search that answers nothing is the flag failing rather than a link made
+// without the library it named. libvcc is implicit, so a tree that has none is a
+// link that takes one archive less, and a program that needed a helper is
+// refused by the name of the helper it called.
+fn runtime_archive(opts cli.Options, target backend.Target) ?backend.Library {
+	name := runtime_library_name(opts)
+	if archive := target.runtime_archive(name, opts.library_dirs, install_dir()) {
+		return archive
+	}
+	if opts.link_libgcc {
+		abort('--link-libgcc needs ${name}, and no directory this system searches has it: name the directory that holds it with -L')
+	}
+	return none
+}
+
+// runtime_archive_names are the names the runtime archive answers, which is the
+// set the single-input path hands its import check and the set it asks the
+// emitted unit against. The archive is read rather than guessed at, and a run
+// with no archive answers nothing: a link with no libvcc is a program refused by
+// the name of the helper it called.
+fn runtime_archive_names(opts cli.Options, target backend.Target) map[string]bool {
+	mut out := map[string]bool{}
+	runtime := runtime_archive(opts, target) or { return out }
+	bytes := read_source(runtime.path) or { return out }
+	parts := archive.read(bytes.bytes()) or { return out }
+	for name, _ in parts.index {
+		out[name] = true
+	}
+	return out
+}
+
+// program_reaches_archive says whether a program the single-input path emitted
+// reaches a name the runtime archive answers. The single-input path wraps its
+// image in the emitter and never reads an archive, so a program that calls a
+// helper cannot be finished there: this is the question whose answer hands the
+// run to the link, and the link pulls the member the name lives in.
+fn program_reaches_archive(program unit.Program, names map[string]bool) bool {
+	for name in program.imports {
+		if name in names {
+			return true
+		}
+	}
+	return false
+}
+
 // link_kind is which link the command line asked for, read off the two flags
 // that name one. Whether the two may both be given is decided where the run is
 // refused and not here, so this answers and does not judge.
@@ -1195,7 +1311,24 @@ fn external_link(opts cli.Options) {
 	} else {
 		'a.out'
 	}
-	args := target.external_link_arguments(link_kind(opts), objects, opts.library_dirs, opts.libraries, out_path) or {
+	// The three library flags reach the external link as the same facts the
+	// in-house link reads: whether the start files go around the objects, whether
+	// the C library is named, and which runtime archive is in the group. The
+	// archive is resolved here because a linker given the name `vcc` would not
+	// find a file this compiler keeps beside itself.
+	mut runtime_path := ''
+	if opts.default_libraries() && link_kind(opts) != .shared {
+		if runtime := runtime_archive(opts, target) {
+			runtime_path = runtime.path
+		}
+	}
+	link_options := linux.LinkOptions{
+		start_files:       opts.start_files()
+		default_libraries: opts.default_libraries()
+		runtime:           runtime_path
+	}
+	args := target.external_link_arguments(link_kind(opts), objects, opts.library_dirs, opts.libraries, out_path,
+		link_options) or {
 		abort(err.msg())
 		return
 	}

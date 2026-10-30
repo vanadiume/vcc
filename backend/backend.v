@@ -2,6 +2,7 @@ module backend
 
 import backend.arch.x86_64
 import backend.os.linux
+import os
 
 // MachineRegister is a register in the machine's own terms, the form the
 // machine's encodings take. It is the machine's Register under the name this
@@ -1617,19 +1618,49 @@ fn (t &Target) resolve_start_files(files linux.StartFiles, given []string) !([]s
 	return before, after
 }
 
+// runtime_archive is the archive a link takes as its runtime, named by file: this
+// compiler's own libvcc unless the command line asked for libgcc. The name is a
+// parameter because which of the two a link takes is the command line's decision
+// and not a fact about the target.
+//
+// The file is resolved where a -l name is resolved and then beside the compiler,
+// so a checkout can point at the archive its sibling tree built with -L and an
+// installed compiler finds the file it carries. An archive nothing answers is
+// none: the runtime library is implicit, and a program that reached into it for
+// a helper is refused by the name of that helper.
+pub fn (t &Target) runtime_archive(name string, given []string, install string) ?Library {
+	path := linux.find_runtime_library(name, t.link_dirs(given), install) or { return none }
+	return Library{
+		path:    path
+		soname:  os.base(path)
+		archive: true
+	}
+}
+
 // static_support_libraries are the archives a static link resolves against: the
-// C library, the part of it that lives in an archive of its own, and the
-// toolchain's two unwinding archives. They are files rather than -l names
-// because libc_nonshared.a is a file no -l name reaches, and because a static
-// link wants the archive even where a shared library of the same name is
-// installed beside it. A name this system does not have is left out; the link
-// reports the symbol that needed it.
-pub fn (t &Target) static_support_libraries(given []string) []string {
+// C library, the part of it that lives in an archive of its own, the runtime
+// archive the link was asked for, the toolchain's own archive, and its unwinding
+// archive. They are files rather than -l names because libc_nonshared.a is a
+// file no -l name reaches, and because a static link wants the archive even
+// where a shared library of the same name is installed beside it. A name this
+// system does not have is left out; the link reports the symbol that needed it.
+//
+// `runtime` is libvcc.a or libgcc.a, and it comes before libgcc.a because a name
+// both archives define is answered by the first one pulled, which is what makes
+// the flag decide which runtime answers a helper. libgcc.a is in the list either
+// way: a static link reads members of the C library's own archive that call
+// helpers libvcc has no code for - the soft-float and vector routines glibc's
+// static objects are built with - and dropping it makes a static program that
+// pushes a string onto stdout fail to link. It is the same file twice when the
+// runtime is libgcc.a, and it is listed once.
+pub fn (t &Target) static_support_libraries(given []string, runtime string) []string {
 	mut out := []string{}
-	for name in ['libc.a', 'libc_nonshared.a', 'libgcc.a', 'libgcc_eh.a'] {
-		if path := linux.find_file(name, t.link_dirs(given)) {
-			out << path
+	for name in ['libc.a', 'libc_nonshared.a', runtime, 'libgcc.a', 'libgcc_eh.a'] {
+		path := linux.find_file(name, t.link_dirs(given)) or { continue }
+		if path in out {
+			continue
 		}
+		out << path
 	}
 	return out
 }
@@ -1642,7 +1673,9 @@ pub fn (t &Target) static_support_libraries(given []string) []string {
 //
 // `kind` is which link was asked for, `objects` are the inputs in command-line
 // order, `given_dirs` are the -L directories the command line added,
-// `libraries` are its -l names, and `output` is where the file is written.
-pub fn (t &Target) external_link_arguments(kind linux.LinkKind, objects []string, given_dirs []string, libraries []string, output string) ![]string {
-	return linux.link_arguments(kind, t.interpreter, t.link_dirs(given_dirs), objects, libraries, output)
+// `libraries` are its -l names, `output` is where the file is written, and
+// `options` is what the library flags decided: the start files, the default
+// libraries, and the runtime archive the driver resolved.
+pub fn (t &Target) external_link_arguments(kind linux.LinkKind, objects []string, given_dirs []string, libraries []string, output string, options linux.LinkOptions) ![]string {
+	return linux.link_arguments(kind, t.interpreter, t.link_dirs(given_dirs), objects, libraries, output, options)
 }

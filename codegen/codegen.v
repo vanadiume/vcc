@@ -63,6 +63,17 @@ pub:
 	// library_dirs are the -L directories, which are searched for a -l name
 	// before the directories the system keeps its libraries in.
 	library_dirs []string
+	// no_default_libraries says the run names no default libraries: -nostdlib
+	// and -nodefaultlibs. The container names no C library, the unit's imports
+	// are not checked against the C library, and the process stub leaves
+	// through the kernel's exit rather than through the library's.
+	no_default_libraries bool
+	// archive_names are the names the link will answer from an archive it merges
+	// rather than from a library the image names: the runtime archive, which the
+	// link path reads and the single-input path cannot. The import check counts
+	// them as answered, and the driver keeps that true by handing a program that
+	// reaches one of them to the link, which is the path that reads archives.
+	archive_names []string
 }
 
 // Result carries the image to write, or the reasons it could not be produced.
@@ -334,6 +345,16 @@ struct Emitter {
 	// the image carries before anything is emitted.
 	libraries    []string
 	library_dirs []string
+	// no_default_libraries says the image runs against no default libraries:
+	// the container names no C library for it, the import check does not ask
+	// the C library for the names the unit reaches, and the process stub
+	// leaves through the kernel's exit rather than through a library's. It is
+	// the command line's -nostdlib and -nodefaultlibs, and it is one flag here
+	// because all three follow from the same fact: there is no library.
+	no_default_libraries bool
+	// archive_names is the set of names in the option above, for the check that
+	// asks it once per import.
+	archive_names map[string]bool
 mut:
 	program     image.Program
 	diagnostics []tokenize.Diagnostic
@@ -627,6 +648,17 @@ const max_emit_chain = 4096
 // the emitter asks this name for it.
 const wide_bytes = 16
 
+// archive_name_set is the option list as the set the import check asks. A list
+// is what the caller has, because it comes from an archive's index, and a set is
+// what the check wants, because it asks once per import.
+fn archive_name_set(names []string) map[string]bool {
+	mut out := map[string]bool{}
+	for name in names {
+		out[name] = true
+	}
+	return out
+}
+
 // emit turns a parsed translation unit into an executable image. Every function
 // with a body is emitted and the entry function is the one the image starts in.
 //
@@ -679,18 +711,20 @@ pub fn emit(unit ast.TranslationUnit, opts Options) Result {
 		}
 	}
 	mut emitter := Emitter{
-		target:         target
-		representation: types.from_target(target).representation
-		entry:          entry
-		compile_only:   opts.compile_only
-		link:           opts.link
-		start_only:     opts.start_only
-		pic:            opts.pic
-		link_kind:      opts.link_kind
-		internal:       internal
-		unit:           unit
-		libraries:      opts.libraries
-		library_dirs:   opts.library_dirs
+		target:               target
+		representation:       types.from_target(target).representation
+		entry:                entry
+		compile_only:         opts.compile_only
+		link:                 opts.link
+		start_only:           opts.start_only
+		pic:                  opts.pic
+		link_kind:            opts.link_kind
+		internal:             internal
+		unit:                 unit
+		libraries:            opts.libraries
+		library_dirs:         opts.library_dirs
+		no_default_libraries: opts.no_default_libraries
+		archive_names:        archive_name_set(opts.archive_names)
 	}
 	// Nothing is written from a tree the model did not type. The check runs
 	// before the layout, so a tree it refuses produces no image at all. A
@@ -771,11 +805,12 @@ pub fn start_stub(entry string, opts Options) Result {
 		}
 	}
 	mut emitter := Emitter{
-		target:         target
-		representation: types.from_target(target).representation
-		entry:          if entry == '' { 'main' } else { entry }
-		start_only:     true
-		link_kind:      opts.link_kind
+		target:               target
+		representation:       types.from_target(target).representation
+		entry:                if entry == '' { 'main' } else { entry }
+		start_only:           true
+		link_kind:            opts.link_kind
+		no_default_libraries: opts.no_default_libraries
 	}
 	emitter.emit_start() or {
 		if emitter.diagnostics.len == 0 {
@@ -1113,7 +1148,13 @@ fn (mut e Emitter) build() ![]u8 {
 	// library on this machine defines is still a name the object can be loaded
 	// with. The container refuses a name the file itself cannot leave
 	// unresolved when the kind is a static program, which is where that belongs.
-	if !e.compile_only && !e.link && e.link_kind != .shared {
+	//
+	// A run with no default libraries is left out for a plainer reason: there is
+	// no C library to ask, and the command line named every library the image
+	// runs against. A name left unresolved is then what -nostdlib and
+	// -nodefaultlibs mean the command line to answer, and refusing it here would
+	// make the flags useless for the one thing they are for.
+	if !e.compile_only && !e.link && e.link_kind != .shared && !e.no_default_libraries {
 		dirs := linux.search_dirs(e.library_dirs, e.target.library_dirs)
 		// The names a program reaches out of a library are the functions it
 		// calls and the objects it copies, and both have to bind: a copy is not
@@ -1129,8 +1170,18 @@ fn (mut e Emitter) build() ![]u8 {
 		// the runtime's own startup files reach their optional hooks with.
 		requested = requested.filter(it !in e.program.weak_imports)
 		unresolved := linux.unresolved_imports(requested, e.libraries, dirs)
-		if unresolved.len > 0 {
-			for name in unresolved {
+		// A name the runtime archive answers is not one a library owes an
+		// answer for: the link merges the archive's member, and the driver
+		// hands a program that reaches one of these names to the link rather
+		// than writing it here. The two answers come from the same set.
+		mut missing := []string{cap: unresolved.len}
+		for name in unresolved {
+			if name !in e.archive_names {
+				missing << name
+			}
+		}
+		if missing.len > 0 {
+			for name in missing {
 				e.diagnostics << problem(1, 1, 'undefined reference to `${name}`: no library the image names defines it')
 			}
 			return error('unresolved imports')
@@ -1143,6 +1194,10 @@ fn (mut e Emitter) build() ![]u8 {
 	if e.link {
 		return []u8{}
 	}
+	// The container reads from the program whether to name the C library, so
+	// the answer travels with the image rather than beside it: a merged
+	// program's answer is the link's, and this one's is the command line's.
+	e.program.no_default_libraries = e.no_default_libraries
 	// The same program, wrapped as one of two things: an object a linker takes as
 	// input, or a program a kernel starts. This is the last decision the emitter
 	// makes and the only one that depends on the mode.
@@ -1270,13 +1325,14 @@ fn (mut e Emitter) emit_start() !void {
 		return error('no result register')
 	}
 	e.reference(e.target.call_near(0), .call_local, e.entry, '')
-	if e.link_kind == .static_program {
-		// A static program leaves through the exit syscall. The library's exit
-		// is what flushes a buffered stream, and a program with no library has
-		// nothing to flush through it: the call would be the one import a
-		// static link cannot resolve, so the kernel's own exit takes its place.
-		// The status is already in the register the call to the entry function
-		// left it in, and the sequence moves it where the kernel reads it.
+	if e.link_kind == .static_program || e.no_default_libraries {
+		// A static program leaves through the exit syscall, and so does one the
+		// command line asked to build with no default libraries: the library's
+		// exit is what flushes a buffered stream, and a program with no library
+		// has nothing to flush through it. The call would be the one import such
+		// a link cannot resolve, so the kernel's own exit takes its place. The
+		// status is already in the register the call to the entry function left
+		// it in, and the sequence moves it where the kernel reads it.
 		e.append(e.target.exit_sequence_from(result)!)
 		e.append(e.target.halt())
 		return

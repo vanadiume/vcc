@@ -1,5 +1,6 @@
 module main
 
+import backend
 import backend.os.elf
 import cli
 import codegen
@@ -3878,6 +3879,84 @@ fn test_a_library_name_that_resolves_to_an_archive_is_pulled() {
 	assert !content.contains('libnamed.a')
 	result := os.execute(os.quoted_path(binary))
 	assert result.exit_code == 9
+}
+
+// The runtime archive is implicit. A program whose unit reaches a helper the
+// archive defines is a link: the link pulls the member that answers the name and
+// the program runs with that code in it. The archive is named by its file, so a
+// directory holding a libvcc.a is one -L away from a program that calls it.
+fn test_a_program_that_calls_a_runtime_helper_links_against_the_archive() {
+	directory := scratch('runtime_dir')
+	source := scratch('runtime_caller.c')
+	binary := scratch('runtime_caller')
+	os.mkdir(directory) or { panic(err) }
+	library := os.join_path(directory, 'libvcc.a')
+	helper := object_of('runtime_helper.c', 'long long __divdi3(long long a, long long b) { return a / b; }\n')
+	os.write_file_array(library, archive_of('runtime_helper.o', helper, ['__divdi3'])) or {
+		panic(err)
+	}
+	body := 'long long __divdi3(long long a, long long b);\nint main(void) { return (int)__divdi3(84, 2); }\n'
+	os.write_file(source, body) or { panic(err) }
+	opts := cli.parse([source, '-L', directory, '-o', binary]) or { panic(err) }
+	target := backend.resolve(opts.target) or { panic(err.msg()) }
+	names := runtime_archive_names(opts, target)
+	assert '__divdi3' in names
+	// The emitter counts the archive's names as answered, which is what lets a
+	// single input reach the link at all: the archive is an input, and the
+	// emitter reads none.
+	lexed := tokenize.lex(body)
+	parsed := parser.parse(lexed.tokens)
+	emitted := codegen.emit(parsed.unit, codegen.Options{
+		target:        opts.target
+		entry:         'main'
+		archive_names: names.keys()
+	})
+	assert emitted.diagnostics.len == 0
+	assert program_reaches_archive(emitted.program, names)
+	link_inputs(opts)
+	assert os.exists(binary)
+	assert os.execute(os.quoted_path(binary)).exit_code == 42
+}
+
+// -nostdlib takes the C library and the start files away, and the program that
+// comes out still runs: the stub this compiler writes leaves through the kernel's
+// exit when there is no library to leave through, and the image names no C
+// library for a loader to map.
+fn test_an_nostdlib_program_names_no_library_and_leaves_through_the_kernel() {
+	source := scratch('nostdlib.c')
+	binary := scratch('nostdlib_out')
+	body := 'int main(void) { return 7; }\n'
+	os.write_file(source, body) or { panic(err) }
+	opts := cli.parse(['-nostdlib', source, '-o', binary]) or { panic(err) }
+	assert !opts.default_libraries()
+	lexed := tokenize.lex(body)
+	parsed := parser.parse(lexed.tokens)
+	emitted := codegen.emit(parsed.unit, codegen.Options{
+		target:               opts.target
+		entry:                'main'
+		link_kind:            link_kind(opts)
+		no_default_libraries: !opts.default_libraries()
+	})
+	assert emitted.diagnostics.len == 0
+	assert emitted.program.no_default_libraries
+	os.write_file_array(binary, emitted.bytes) or { panic(err) }
+	os.chmod(binary, 0o755) or { panic(err) }
+	assert os.execute(os.quoted_path(binary)).exit_code == 7
+	content := os.read_file(binary) or { panic(err) }
+	assert !content.contains('libc.so.6')
+}
+
+// The archive a link takes is this compiler's own unless --link-libgcc asked for
+// the toolchain's. The flag is experimental, so this test has a branch per kind
+// of binary rather than one answer: a build without the define never sees it, and
+// its answer is the default.
+fn test_the_runtime_archive_is_libvcc_unless_the_experimental_flag_says_otherwise() {
+	plain := cli.parse(['a.c']) or { panic(err) }
+	assert runtime_library_name(plain) == 'libvcc.a'
+	$if experimental_libgcc ? {
+		asked := cli.parse(['--link-libgcc', 'a.c']) or { panic(err) }
+		assert runtime_library_name(asked) == 'libgcc.a'
+	}
 }
 
 // -static asks for a program with every library resolved into the file. The

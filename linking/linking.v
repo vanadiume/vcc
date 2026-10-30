@@ -34,6 +34,11 @@ pub:
 	libraries []string
 	// library_dirs are the -L directories, in order.
 	library_dirs []string
+	// no_default_libraries says the link names no default libraries: no C
+	// library, and no runtime archive. -nostdlib and -nodefaultlibs are the two
+	// flags that ask for it, and the two answers it changes are the library the
+	// merged program names and whether an import left to a library is refused.
+	no_default_libraries bool
 }
 
 // link merges the units of one link into a single program. units[0] is the
@@ -188,47 +193,51 @@ pub fn link(units []image.Program, options Options) !image.Program {
 	labels := merge_labels(units, layout)
 	place_of_entry := entry_place_of(units, layout, labels, options.entry)
 	mut merged := image.Program{
-		text:                merge_text(units, layout)
-		labels:              labels
-		stub:                has_stub(units)
-		entry_place:         place_of_entry
-		function_runs:       merge_function_runs(units, layout)
-		string_blob:         read_only.blob
-		strings:             read_only.strings
-		wide_strings:        read_only.wide_strings
-		doubles:             read_only.doubles
-		globals_blob:        merge_globals_blob(units, layout)
-		globals:             merge_globals(units, layout, names.definitions)
-		read_only_globals:   merge_read_only_globals(units, layout, names.definitions)
-		globals_alignment:   names.globals_alignment
-		read_only_alignment: names.read_only_alignment
-		defined:             names.defined
-		weak:                names.weak
-		internal:            names.internal
-		imports:             names.imports
-		object_imports:      names.object_imports
-		weak_imports:        names.weak_imports
-		tls_slots:           names.tls_slots
-		libraries:           names.libraries
-		copy_objects:        copies
-		bound:               bound
-		fixups:              merge_fixups(units, layout)
-		data_fixups:         merge_data_fixups(units, layout, names.definitions)
-		relocations:         merged_relocations
-		plts:                plts
-		tls_blob:            tls.blob
-		tls_size:            tls.size
-		tls_alignment:       tls.alignment
-		tls_labels:          tls.labels
-		init_array:          image.ConstructorTable{
+		text:                 merge_text(units, layout)
+		labels:               labels
+		stub:                 has_stub(units)
+		entry_place:          place_of_entry
+		function_runs:        merge_function_runs(units, layout)
+		string_blob:          read_only.blob
+		strings:              read_only.strings
+		wide_strings:         read_only.wide_strings
+		doubles:              read_only.doubles
+		globals_blob:         merge_globals_blob(units, layout)
+		globals:              merge_globals(units, layout, names.definitions)
+		read_only_globals:    merge_read_only_globals(units, layout, names.definitions)
+		globals_alignment:    names.globals_alignment
+		read_only_alignment:  names.read_only_alignment
+		defined:              names.defined
+		weak:                 names.weak
+		internal:             names.internal
+		imports:              names.imports
+		object_imports:       names.object_imports
+		weak_imports:         names.weak_imports
+		tls_slots:            names.tls_slots
+		libraries:            names.libraries
+		copy_objects:         copies
+		bound:                bound
+		fixups:               merge_fixups(units, layout)
+		data_fixups:          merge_data_fixups(units, layout, names.definitions)
+		relocations:          merged_relocations
+		plts:                 plts
+		tls_blob:             tls.blob
+		tls_size:             tls.size
+		tls_alignment:        tls.alignment
+		tls_labels:           tls.labels
+		init_array:           image.ConstructorTable{
 			offset: layout.constructor_base
 			count:  layout.init_len / 8
 		}
-		fini_array:          image.ConstructorTable{
+		fini_array:           image.ConstructorTable{
 			offset: layout.constructor_base + layout.init_len
 			count:  layout.fini_len / 8
 		}
-		ifuncs:              ifuncs
+		ifuncs:               ifuncs
+		// Whether the container names the C library is the link's answer, the
+		// same way the libraries it names are, so it travels on the merged
+		// program to whoever wraps it.
+		no_default_libraries: options.no_default_libraries
 	}
 	// Every reference that is still external has to be answerable by a library
 	// the image names, or the program dies at load with nothing on the
@@ -236,24 +245,31 @@ pub fn link(units []image.Program, options Options) !image.Program {
 	// copy is a name the loader has to find too, even though it is not an
 	// import in the image. The check is the one codegen already makes, so the
 	// message is its message.
-	mut requested := []string{cap: names.imports.len + copies.len}
-	for name in names.imports {
-		// A weak import is the one name a link does not have to answer, so it is
-		// not asked of any library: `unresolved_imports` would report it and this
-		// link would refuse a program that runs.
-		if name !in bound && name !in names.weak_imports {
-			requested << name
+	//
+	// A link with no default libraries is not checked: there is no C library in
+	// its image to ask, and the command line named every library it runs
+	// against. Whatever is left unresolved is that command line's answer to
+	// give, which is what -nostdlib and -nodefaultlibs are for.
+	if !options.no_default_libraries {
+		mut requested := []string{cap: names.imports.len + copies.len}
+		for name in names.imports {
+			// A weak import is the one name a link does not have to answer, so it
+			// is not asked of any library: `unresolved_imports` would report it
+			// and this link would refuse a program that runs.
+			if name !in bound && name !in names.weak_imports {
+				requested << name
+			}
 		}
-	}
-	for name in copies {
-		if name !in requested {
-			requested << name
+		for name in copies {
+			if name !in requested {
+				requested << name
+			}
 		}
-	}
-	dirs := linux.search_dirs(options.library_dirs, options.target.library_dirs)
-	unresolved := linux.unresolved_imports(requested, options.libraries, dirs)
-	if unresolved.len > 0 {
-		return error('undefined reference to `${unresolved[0]}`: no library the image names defines it')
+		dirs := linux.search_dirs(options.library_dirs, options.target.library_dirs)
+		unresolved := linux.unresolved_imports(requested, options.libraries, dirs)
+		if unresolved.len > 0 {
+			return error('undefined reference to `${unresolved[0]}`: no library the image names defines it')
+		}
 	}
 	return merged
 }

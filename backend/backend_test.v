@@ -1798,7 +1798,8 @@ fn test_the_dynamic_stride_multiply_is_the_bytes_that_scale_an_index() {
 // where the argument list itself is held to its shape.
 fn test_the_external_link_arguments_come_from_the_target() {
 	target := lookup('x86_64-linux') or { panic('the target description has no such name') }
-	args := target.external_link_arguments(.program, ['x.o'], ['/opt/lib'], ['m'], 'out') or {
+	args := target.external_link_arguments(.program, ['x.o'], ['/opt/lib'], ['m'], 'out',
+		linux.LinkOptions{}) or {
 		panic(err)
 	}
 	assert args[0] == '-dynamic-linker'
