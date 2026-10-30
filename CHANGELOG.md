@@ -969,3 +969,11 @@ it owns the change, which is the same vocabulary the commits use.
 * parser, codegen: read a long double imaginary constant (af4d6a3)
 * parser, diagnostics: refuse _Imaginary by name with a note (d7c3277)
 * standard: the _Complex row is implemented (98d7126)
+
+## 2026-10-30
+
+* cli: -nostdlib, -nodefaultlibs and --link-libgcc are read (ed029d8)
+* codegen, image, linking, backend, main: a program links the runtime archive
+  (3fd9b27)
+* tools: the front door builds libvcc and links a program against it (5b5af49)
+* docs: the runtime archive and the three flags (a028c6f)
