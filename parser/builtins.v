@@ -40,7 +40,13 @@ const builtin_expression_names = ['__builtin_types_compatible_p', '__builtin_cho
 	'__builtin_bswap32', '__builtin_bswap64', '__builtin_popcount', '__builtin_popcountl',
 	'__builtin_popcountll', '__builtin_parity', '__builtin_parityl', '__builtin_parityll',
 	'__builtin_add_overflow', '__builtin_sub_overflow', '__builtin_mul_overflow',
-	'__builtin_assume_aligned', '__builtin_alloca']
+	'__builtin_assume_aligned', '__builtin_alloca', 
+	// The memory and string builtins, which are the library functions under the
+	// compiler's own name. The reader routes them so their answers have the types
+	// the functions have; the back end emits the call.
+	'__builtin_memcpy', '__builtin_memmove', '__builtin_memset', '__builtin_memcmp', '__builtin_memchr',
+	'__builtin_strlen', '__builtin_strnlen', '__builtin_strcmp', '__builtin_strncmp', '__builtin_strcpy',
+	'__builtin_strncpy']
 
 // parse_builtin_expression reads one of them. The name has been read and the
 // cursor is at its opening parenthesis.
@@ -114,6 +120,11 @@ fn (mut p Parser) read_builtin_expression(at tokenize.Token) !ast.Expr {
 		}
 		'__builtin_assume_aligned' {
 			return p.parse_assume_aligned(at)
+		}
+		'__builtin_memcpy', '__builtin_memmove', '__builtin_memset', '__builtin_memcmp',
+		'__builtin_memchr', '__builtin_strlen', '__builtin_strnlen', '__builtin_strcmp',
+		'__builtin_strncmp', '__builtin_strcpy', '__builtin_strncpy' {
+			return p.parse_library_builtin(at)
 		}
 		'__builtin_constant_p' {
 			return p.parse_constant_p(at)
@@ -637,6 +648,74 @@ fn (mut p Parser) parse_bit_count(at tokenize.Token) !ast.Expr {
 		line: at.line
 		col:  at.col
 	})
+}
+
+// parse_library_builtin reads the builtins that are a library function under the
+// compiler's own name: the memory and string set. gcc treats each of them as the
+// function of the same name in the reserved namespace, so the value the
+// expression is worth is the function's value and the back end emits the call.
+// Nothing is folded here: a length is rarely a constant and the bytes belong to
+// the program, so the call stays a call.
+//
+// The answer's type is the one the library function has, which is why each name
+// carries its own: memcpy, memmove, memset and memchr answer a void pointer,
+// strcpy and strncpy a char pointer, the comparisons an int and the two lengths a
+// size_t. The arguments are handed over as they are written, because the call is a
+// call and the two sides agree on the convention. A count this reader does not have
+// for a name is a name that reached here from a list it is not in, which is this
+// compiler's mistake rather than the program's.
+fn (mut p Parser) parse_library_builtin(at tokenize.Token) !ast.Expr {
+	args := p.parse_arguments()!
+	wanted := library_builtin_arguments(at.text) or {
+		p.error_at(at, 'internal: ${at.text} is not a library builtin this reader knows')
+		return error('the name of ${at.text}')
+	}
+	if args.len != wanted {
+		p.error_at(at, 'unsupported: ${at.text} takes ${wanted} values')
+		return error('the arguments of ${at.text}')
+	}
+	typ := match at.text {
+		'__builtin_memcpy', '__builtin_memmove', '__builtin_memset', '__builtin_memchr' {
+			types.pointer_to(types.void_type())
+		}
+		'__builtin_strcpy', '__builtin_strncpy' {
+			types.pointer_to(types.char_type())
+		}
+		'__builtin_strlen', '__builtin_strnlen' {
+			types.unsigned_long_type()
+		}
+		else {
+			types.int_type()
+		}
+	}
+	return ast.Expr(ast.Call{
+		name: at.text
+		args: args
+		typ:  typ
+		line: at.line
+		col:  at.col
+	})
+}
+
+// library_builtin_arguments is how many arguments each of them takes, which is the
+// function's own count: one for strlen, two for the pair comparisons and the plain
+// copies, and three for the ones that also name a length.
+fn library_builtin_arguments(name string) ?int {
+	return match name {
+		'__builtin_memcpy', '__builtin_memmove', '__builtin_memset', '__builtin_memcmp',
+		'__builtin_memchr', '__builtin_strncmp', '__builtin_strncpy' {
+			3
+		}
+		'__builtin_strcmp', '__builtin_strcpy', '__builtin_strnlen' {
+			2
+		}
+		'__builtin_strlen' {
+			1
+		}
+		else {
+			none
+		}
+	}
 }
 
 // parse_first_set reads `__builtin_ffs`, `__builtin_ffsl` and `__builtin_ffsll`:
