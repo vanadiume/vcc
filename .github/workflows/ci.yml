@@ -5,14 +5,28 @@ name: ci
 # links between the documents, and the workflows. `tools/README.md` says what
 # each step checks.
 #
+# The suite is most of the gate's wall time, so it is dealt across three runners:
+# `tools/gate.vsh --only tests --shard K/3` runs a third of the test files, and
+# the gate job runs `--without tests`, which is every other step by name of what
+# it leaves out rather than what it takes, so a step added to the gate later runs
+# here without this file being edited. Every check is required, so a shard that
+# fails is a red run like any other, and the shards do not cancel each other
+# because which files are red is what a failure is read for.
+#
+# The pinned V is built once and carried in the actions cache: the key is the
+# pair of commits below, so a bump misses it, and every job confirms the binary it
+# ends up with is the pin's before it compiles anything. Only the gate job saves,
+# and only after its own build of the pin, so a failed or half-built toolchain
+# cannot reach the cache and answer for the pin afterwards.
+#
 # The benchmark step in the gate job is recorded rather than gated, because it
 # has no number a change can be held to yet: it writes its numbers into the
 # run's summary. The self compile beside it gates, because it can pass.
 #
-# Three jobs: the gate, the compliance corpus on a runner of its own, and the
-# regression corpus on a runner of its own. The last two each build the pinned V,
-# because a job is one machine and the pin is the only thing they must share; see
-# the comment on each for why it is worth the build.
+# Beside the gate and the three shards, the compliance corpus and the regression
+# corpus have a runner each: their cost is a compile per case rather than one test
+# suite, and a corpus that fails and a gate that fails are two different answers
+# to two different questions.
 #
 # Nothing runs against V master. This tree promises one compiler, and a job that
 # was allowed to fail would be the one nobody reads: a pin that no longer builds
@@ -89,7 +103,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The toolchain, from the cache when a run with this pair of commits has
+      # already built it: every job needs it, and building it is about six minutes
+      # of a two-core runner.
+      - name: restore the pinned V
+        id: toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.V_DIR }}
+          key: v-${{ env.V_COMMIT }}-${{ env.VC_COMMIT }}
+
       - name: build V at the pinned commit
+        id: build
+        if: steps.toolchain.outputs.cache-hit != 'true'
         run: |
           git clone --quiet https://github.com/vlang/v "$V_DIR"
           git -C "$V_DIR" checkout --quiet "$V_COMMIT"
@@ -102,13 +128,45 @@ jobs:
           git -C "$(dirname "$V_DIR")/vc-pinned" checkout --quiet -B master "$VC_COMMIT"
           git clone --quiet "$(dirname "$V_DIR")/vc-pinned" "$V_DIR/vc"
           make -C "$V_DIR"
-          echo "$V_DIR" >> "$GITHUB_PATH"
-          "$V_DIR/v" version
 
+      # Only this job writes the cache, so two runners cannot race for one key,
+      # and only after its own build of the pin, so what is saved is a toolchain
+      # that built. `always()` is what lets a run whose gate step failed still
+      # leave a good toolchain behind: the pin is not the tree.
+      - name: save the pinned V
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.V_DIR }}
+          key: v-${{ env.V_COMMIT }}-${{ env.VC_COMMIT }}
+
+      # The version string carries the commit `v` was built from, so this is where
+      # a restored toolchain is held to the pin rather than assumed to be it.
+      - name: put V on PATH
+        run: |
+          echo "$V_DIR" >> "$GITHUB_PATH"
+          # The version string carries the commit `v` was built from. A `case`
+          # rather than `| grep -q`, because grep leaves as soon as it matches and
+          # the runner's bash has pipefail on, which would read a SIGPIPE from the
+          # producer as a wrong toolchain.
+          version="$("$V_DIR/v" version)"
+          echo "$version"
+          case "$version" in
+            *"${V_COMMIT:0:7}"*) ;;
+            *)
+              echo "the V at $V_DIR is not the pinned commit ${V_COMMIT:0:7}"
+              exit 1
+              ;;
+          esac
+
+      # Every step but the tests: the suite has the three runners of the `tests`
+      # job below, and running it here as well would pay for it twice. Named as
+      # `--without` so a step added to gate.vsh runs here without this file
+      # changing; a step left out of CI is a check nobody meets until a merge.
       - name: gate
         run: |
           v version
-          v run tools/gate.vsh
+          v run tools/gate.vsh --without tests
 
       # The self-compile: this tree built by this tree, which is the first link
       # of the bootstrap chain. `v . -o vcc1` builds the compiler with V, and
@@ -205,6 +263,70 @@ jobs:
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
+  # The test suite, in three parts, because it is most of what the gate job used
+  # to wait for. `--shard K/3` deals the tree's test files into three groups and
+  # runs the Kth of them, so the three runners together run every file once. The
+  # deal is computed by the gate from the files themselves rather than listed
+  # here, so a test file added anywhere is in exactly one group without this file
+  # changing.
+  tests:
+    name: tests ${{ matrix.shard }}/3
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      # A failing shard fails this check; the others still finish, because which
+      # files are red is what a failure is read for.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: restore the pinned V
+        id: toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.V_DIR }}
+          key: v-${{ env.V_COMMIT }}-${{ env.VC_COMMIT }}
+
+      # No save here: the gate job owns the key, so three runners starting
+      # together do not race for it. A miss only costs this job its own build, and
+      # the next run takes the toolchain from the cache.
+      - name: build V at the pinned commit
+        if: steps.toolchain.outputs.cache-hit != 'true'
+        run: |
+          git clone --quiet https://github.com/vlang/v "$V_DIR"
+          git -C "$V_DIR" checkout --quiet "$V_COMMIT"
+          # The bootstrap snapshot, cloned through a mirror whose master is the
+          # pinned commit. make's own update step pulls from that mirror, so the
+          # snapshot stays where it is; cloning vlang/vc directly would leave the
+          # pull pointing at the rolling HEAD, which is what refuses the pinned
+          # source and takes every job down with it.
+          git clone --quiet https://github.com/vlang/vc "$(dirname "$V_DIR")/vc-pinned"
+          git -C "$(dirname "$V_DIR")/vc-pinned" checkout --quiet -B master "$VC_COMMIT"
+          git clone --quiet "$(dirname "$V_DIR")/vc-pinned" "$V_DIR/vc"
+          make -C "$V_DIR"
+
+      - name: put V on PATH
+        run: |
+          echo "$V_DIR" >> "$GITHUB_PATH"
+          # The version string carries the commit `v` was built from. A `case`
+          # rather than `| grep -q`, because grep leaves as soon as it matches and
+          # the runner's bash has pipefail on, which would read a SIGPIPE from the
+          # producer as a wrong toolchain.
+          version="$("$V_DIR/v" version)"
+          echo "$version"
+          case "$version" in
+            *"${V_COMMIT:0:7}"*) ;;
+            *)
+              echo "the V at $V_DIR is not the pinned commit ${V_COMMIT:0:7}"
+              exit 1
+              ;;
+          esac
+
+      - name: test suite, shard ${{ matrix.shard }} of 3
+        run: v run tools/gate.vsh --only tests --shard ${{ matrix.shard }}/3
+
   # The one check that measures this compiler against a C library rather than
   # against its own tests: the corpus under compliance/ is one small test per
   # answer, in a directory per C standard, and each one is compiled and run on
@@ -226,7 +348,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: restore the pinned V
+        id: toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.V_DIR }}
+          key: v-${{ env.V_COMMIT }}-${{ env.VC_COMMIT }}
+
       - name: build V at the pinned commit
+        if: steps.toolchain.outputs.cache-hit != 'true'
         run: |
           git clone --quiet https://github.com/vlang/v "$V_DIR"
           git -C "$V_DIR" checkout --quiet "$V_COMMIT"
@@ -239,8 +369,23 @@ jobs:
           git -C "$(dirname "$V_DIR")/vc-pinned" checkout --quiet -B master "$VC_COMMIT"
           git clone --quiet "$(dirname "$V_DIR")/vc-pinned" "$V_DIR/vc"
           make -C "$V_DIR"
+
+      - name: put V on PATH
+        run: |
           echo "$V_DIR" >> "$GITHUB_PATH"
-          "$V_DIR/v" version
+          # The version string carries the commit `v` was built from. A `case`
+          # rather than `| grep -q`, because grep leaves as soon as it matches and
+          # the runner's bash has pipefail on, which would read a SIGPIPE from the
+          # producer as a wrong toolchain.
+          version="$("$V_DIR/v" version)"
+          echo "$version"
+          case "$version" in
+            *"${V_COMMIT:0:7}"*) ;;
+            *)
+              echo "the V at $V_DIR is not the pinned commit ${V_COMMIT:0:7}"
+              exit 1
+              ;;
+          esac
 
       # The script builds the compiler from this tree itself, so the only thing
       # this job has to get right is which `v` is on PATH.
@@ -294,7 +439,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: restore the pinned V
+        id: toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.V_DIR }}
+          key: v-${{ env.V_COMMIT }}-${{ env.VC_COMMIT }}
+
       - name: build V at the pinned commit
+        if: steps.toolchain.outputs.cache-hit != 'true'
         run: |
           git clone --quiet https://github.com/vlang/v "$V_DIR"
           git -C "$V_DIR" checkout --quiet "$V_COMMIT"
@@ -307,8 +460,23 @@ jobs:
           git -C "$(dirname "$V_DIR")/vc-pinned" checkout --quiet -B master "$VC_COMMIT"
           git clone --quiet "$(dirname "$V_DIR")/vc-pinned" "$V_DIR/vc"
           make -C "$V_DIR"
+
+      - name: put V on PATH
+        run: |
           echo "$V_DIR" >> "$GITHUB_PATH"
-          "$V_DIR/v" version
+          # The version string carries the commit `v` was built from. A `case`
+          # rather than `| grep -q`, because grep leaves as soon as it matches and
+          # the runner's bash has pipefail on, which would read a SIGPIPE from the
+          # producer as a wrong toolchain.
+          version="$("$V_DIR/v" version)"
+          echo "$version"
+          case "$version" in
+            *"${V_COMMIT:0:7}"*) ;;
+            *)
+              echo "the V at $V_DIR is not the pinned commit ${V_COMMIT:0:7}"
+              exit 1
+              ;;
+          esac
 
       # The script builds the compiler from this tree itself, so the only thing
       # this job has to get right is which `v` is on PATH. The run's summary is
