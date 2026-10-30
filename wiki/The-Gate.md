@@ -9,6 +9,21 @@ request does not meet an opinion the author could not have run first.
 `v run tools/gate.vsh` runs seven steps, each reporting on its own line, and
 exits zero only when all seven pass.
 
+Two flags take part of it, for the runners that share the work: `--only` names
+the steps to take and `--without` names the steps to leave out, each by the key
+the step reports under (`format`, `pure`, `build`, `prod`, `tests`, `docs`,
+`workflows`), and `--shard K/N` runs the Kth of N groups of the test files. A run
+that took some of the steps says so on its last line instead of reporting the
+whole gate, and a step name it does not know is refused rather than ignored,
+since a typo would otherwise run nothing and exit zero.
+
+```sh
+v run tools/gate.vsh                            # every step, the whole suite
+v run tools/gate.vsh --without tests            # every step but the suite
+v run tools/gate.vsh --only format,pure         # two steps
+v run tools/gate.vsh --only tests --shard 1/3   # a third of the suite
+```
+
 The formatting step runs `v fmt -verify .`, the same formatter every
 contributor runs. It refuses a file that is not formatted.
 
@@ -225,10 +240,26 @@ what `v.mod` names, and the V commit `ci.yml` pins, because those three drift.
 
 `.github/workflows/ci.yml` builds V from source at the pinned commit and runs
 `gate.vsh`, so the checks a contributor runs locally are the checks CI runs.
-Four jobs: the gate, the compliance corpus on a runner of its own, the
-regression corpus on a runner of its own, and a run against V master that is
-allowed to fail. The last three each build the pinned V, because a job is one
-machine and the pin is the only thing they must share.
+Six checks: the gate, the test suite in three parts, the compliance corpus, and
+the regression corpus, each on a runner of its own.
+
+The suite is most of the gate's wall time, so it is dealt across three runners.
+The gate job runs `gate.vsh --without tests`, which takes every step but the
+suite by naming what it leaves out, so a step added to the gate later runs in CI
+without the workflow being edited. Each shard runs
+`gate.vsh --only tests --shard K/3`, which deals the tree's test files into three
+groups and runs the Kth. The deal is computed from the files
+themselves, so the three runners together run every test file once and a test
+file added anywhere needs no edit to the workflow. The shards do not cancel each
+other when one fails, because which files are red is what a failure is read for.
+
+Every job needs the pinned V, and building it is about six minutes of a two-core
+runner, so the built toolchain is carried in the actions cache under a key made
+of both pinned commits. A bump misses the cache. Every job checks the version the
+binary reports against the pin's commit before it compiles anything, so a
+restored toolchain is held to the pin rather than assumed to be it. Only the gate
+job writes the cache, and only after its own build of the pin succeeded, so a
+failed or half-built toolchain cannot be served to a later run.
 
 On a push to main the gate job counts the suite with `tests.vsh` and the
 compiler's lines with `lines.vsh`, writing the files the tests and lines

@@ -3,12 +3,24 @@
 // The local gate: the checks a pull request has to pass, runnable before pushing
 // so that CI never holds an opinion the author did not already know.
 //
-//   v run tools/gate.vsh
+//   v run tools/gate.vsh                            # every step, the whole suite
+//   v run tools/gate.vsh --without tests            # every step but the suite
+//   v run tools/gate.vsh --only format,pure         # named steps only
+//   v run tools/gate.vsh --only tests --shard 1/3   # one third of the suite
 //
 // Seven steps: formatting, the pure-V rule, the build, the production build, the
 // test suite, the links between the documents at the root, and the workflows.
 // Each one reports on its own line, and the exit status is zero only when all of
 // them pass.
+//
+// The flags exist so a runner can take part of the gate, which is what `ci.yml`
+// does with them: the gate job runs `--without tests` and three runners take a
+// third of the suite each with `--shard`. `--without` is what the gate job names
+// rather than `--only` with six names, so a step added to this file later runs in
+// CI without the workflow being edited to include it. A run that took some of the
+// steps says so on its last line rather than reporting the whole gate, because a
+// partial run read as the whole one is the failure these flags exist not to
+// cause.
 
 import os
 
@@ -19,23 +31,195 @@ const c_source_extensions = ['.c', '.h', '.cc', '.cpp', '.hpp', '.S', '.s']
 // regression/, and the recorded-output programs under goldens/.
 const test_c_directories = ['compliance/', 'regression/', 'goldens/']
 
+// Step is one check of the gate: the name it reports with, the key `--only`
+// names it by, and what runs it. The selection is handed to every check because
+// the tests step is the one that reads it.
+struct Step {
+	name  string
+	key   string
+	check fn (string, Selection) []string @[required]
+}
+
+const steps = [
+	Step{
+		name:  'formatting'
+		key:   'format'
+		check: check_formatting
+	},
+	Step{
+		name:  'pure V'
+		key:   'pure'
+		check: check_pure_v
+	},
+	Step{
+		name:  'build'
+		key:   'build'
+		check: check_build
+	},
+	Step{
+		name:  'prod build'
+		key:   'prod'
+		check: check_prod
+	},
+	Step{
+		name:  'tests'
+		key:   'tests'
+		check: check_tests
+	},
+	Step{
+		name:  'documents'
+		key:   'docs'
+		check: check_documents
+	},
+	Step{
+		name:  'workflows'
+		key:   'workflows'
+		check: check_workflows
+	},
+]
+
+// Selection is which steps this run takes and which slice of the test suite it
+// runs. The zero value takes every step and the whole suite.
+struct Selection {
+mut:
+	only     []string
+	skip     []string
+	shard    int
+	shard_of int
+}
+
+fn (selection Selection) runs(key string) bool {
+	if key in selection.skip {
+		return false
+	}
+	if selection.only.len == 0 {
+		return true
+	}
+	return key in selection.only
+}
+
+// parse_selection reads the flags and refuses the ones that would let a run mean
+// less than it says. An unknown step name is refused rather than ignored, since
+// `--only typo` would otherwise run nothing and exit zero.
+fn parse_selection() !Selection {
+	mut selection := Selection{}
+	mut args := os.args[1..].clone()
+	mut i := 0
+	for i < args.len {
+		arg := args[i]
+		if arg == '--only' || arg == '--without' {
+			if i + 1 >= args.len {
+				return error('${arg} needs a list of step names')
+			}
+			names := step_names(args[i + 1])!
+			if arg == '--only' {
+				selection.only = names
+			} else {
+				selection.skip = names
+			}
+			i += 2
+			continue
+		}
+		if arg.starts_with('--only=') || arg.starts_with('--without=') {
+			is_only := arg.starts_with('--only=')
+			names := step_names(arg[(if is_only { 7 } else { 10 })..])!
+			if is_only {
+				selection.only = names
+			} else {
+				selection.skip = names
+			}
+			i++
+			continue
+		}
+		if arg == '--shard' {
+			if i + 1 >= args.len {
+				return error('--shard needs K/N')
+			}
+			parsed := parse_shard(args[i + 1])!
+			selection.shard = parsed[0]
+			selection.shard_of = parsed[1]
+			i += 2
+			continue
+		}
+		if arg.starts_with('--shard=') {
+			parsed := parse_shard(arg[8..])!
+			selection.shard = parsed[0]
+			selection.shard_of = parsed[1]
+			i++
+			continue
+		}
+		return error('unknown argument ${arg}')
+	}
+	if selection.only.len > 0 && selection.skip.len > 0 {
+		return error('--only and --without answer one question the same way; give one of them')
+	}
+	// A shard is a part of the suite and not a part of the gate: the other six
+	// steps are not divisible, and a runner that took one of them would report a
+	// gate it half ran.
+	if selection.shard_of > 0 && (selection.only.len != 1 || selection.only[0] != 'tests') {
+		return error('a shard is part of the tests step, so --shard needs --only tests')
+	}
+	return selection
+}
+
+// step_names reads one flag's comma-separated list and refuses a name the table
+// does not have.
+fn step_names(text string) ![]string {
+	names := text.split(',').map(it.trim_space()).filter(it != '')
+	for name in names {
+		if name !in steps.map(it.key) {
+			return error('${name}: the steps are ${steps.map(it.key).join(', ')}')
+		}
+	}
+	return names
+}
+
+fn parse_shard(text string) ![]int {
+	parts := text.split('/')
+	if parts.len != 2 {
+		return error('${text} is not K/N')
+	}
+	shard := parts[0].int()
+	of := parts[1].int()
+	if of < 1 || shard < 1 || shard > of {
+		return error('${text} names no shard: K is between 1 and N')
+	}
+	return [shard, of]
+}
+
 fn main() {
 	root := os.dir(os.dir(@FILE))
+	selection := parse_selection() or {
+		eprintln('gate: ${err}')
+		exit(2)
+	}
 	println('gate: ${root}')
+	if selection.shard_of > 0 {
+		// The count is printed so the log of one runner says how much of the
+		// suite it took: three numbers that add up to the tree's test files are
+		// what reads as "the shards covered the suite".
+		count := shard_paths(root, selection.shard, selection.shard_of).len
+		println('gate: tests shard ${selection.shard} of ${selection.shard_of}, ${count} files')
+	}
 	mut failures := []string{}
-	report('formatting', check_formatting(root), mut failures)
-	report('pure V', check_pure_v(root), mut failures)
-	report('build', check_build(root), mut failures)
-	report('prod build', check_prod(root), mut failures)
-	report('tests', check_tests(root), mut failures)
-	report('documents', check_documents(root), mut failures)
-	report('workflows', check_workflows(root), mut failures)
+	mut ran := 0
+	for step in steps {
+		if !selection.runs(step.key) {
+			continue
+		}
+		report(step.name, step.check(root, selection), mut failures)
+		ran++
+	}
 	if failures.len > 0 {
 		eprintln('')
 		eprintln('gate: ${failures.len} step(s) failed: ${failures.join(', ')}')
 		exit(1)
 	}
 	println('')
+	if ran < steps.len {
+		println('gate: ${ran} of ${steps.len} steps, all pass')
+		return
+	}
 	println('gate: everything passes')
 }
 
@@ -56,7 +240,7 @@ fn report(name string, problems []string, mut failures []string) {
 
 // check_formatting asks `v fmt -verify`, the same formatter every contributor
 // runs. A gate using a different one would be a second opinion nobody asked for.
-fn check_formatting(root string) []string {
+fn check_formatting(root string, _ Selection) []string {
 	result := run(root, 'v fmt -verify .')
 	if result.exit_code == 0 {
 		return []
@@ -84,7 +268,7 @@ fn check_formatting(root string) []string {
 // no such exception for a test directory, because a .v file there is still this
 // compiler's source; tools/ and .omh/ are the only places skipped there, since
 // the scripts and the agent notes name these patterns on purpose.
-fn check_pure_v(root string) []string {
+fn check_pure_v(root string, _ Selection) []string {
 	mut problems := []string{}
 	for extension in c_source_extensions {
 		for file in os.walk_ext(root, extension) {
@@ -129,7 +313,7 @@ fn is_c_input_directory(file string, root string) bool {
 	return false
 }
 
-fn check_build(root string) []string {
+fn check_build(root string, _ Selection) []string {
 	binary := os.join_path(os.temp_dir(), 'vcc-gate-${os.getpid()}')
 	result := run(root, 'v -o ${os.quoted_path(binary)} .')
 	os.rm(binary) or {}
@@ -147,7 +331,7 @@ fn check_build(root string) []string {
 //
 // It is a build and not an artifact: the file is written under the temp
 // directory and removed here, so a gate run leaves nothing in the tree.
-fn check_prod(root string) []string {
+fn check_prod(root string, _ Selection) []string {
 	binary := os.join_path(os.temp_dir(), 'vcc-gate-prod-${os.getpid()}')
 	result := run(root, 'v -prod -o ${os.quoted_path(binary)} .')
 	os.rm(binary) or {}
@@ -157,14 +341,58 @@ fn check_prod(root string) []string {
 	return []
 }
 
-fn check_tests(root string) []string {
+// shard_paths deals the tree's test files into `of` groups and hands back the
+// ones in group `shard`, counting from one. The files are dealt in a snake (1, 2,
+// 3, 3, 2, 1) rather than a round robin, because they arrive in directory order
+// and a plain round robin leaves each directory's files bunched in the same
+// groups; the deal is computed from the walk rather than kept in a table, so a
+// test file added anywhere lands in exactly one group without anyone editing the
+// gate to say so.
+//
+// Measured on this tree, 51 test files, the three groups took 165, 236 and 227
+// seconds here (16 cores, -nocache) against 627 for the suite in one run. The
+// slowest group is what CI waits for, and that spread is the price of not keeping
+// a weight per file that would drift the moment a file moved.
+fn shard_paths(root string, shard int, of int) []string {
+	mut files := []string{}
+	for file in os.walk_ext(root, '_test.v') {
+		if file.contains('/.omh/') {
+			continue
+		}
+		files << file.replace('${root}/', '')
+	}
+	files.sort()
+	mut out := []string{}
+	for i, file in files {
+		position := i % (2 * of)
+		group := if position < of { position } else { 2 * of - 1 - position }
+		if group == shard - 1 {
+			out << file
+		}
+	}
+	return out
+}
+
+fn check_tests(root string, selection Selection) []string {
 	// -nocache, not `v test .`. The module cache makes the suite depend on which C
 	// compiler V uses for each file: V's implicit tcc cannot compile its own int128
 	// C, so the files that need it fall back to cc, which links the objects the
 	// earlier tcc pass cached and fails on a duplicate symbol, and V then retries
 	// with its 0.5.2 fallback that rejects this tree's `shared`. A cold cache fails
 	// 6 files that way on the runner; the same cache with -nocache passes 51 of 51.
-	result := run(root, 'v -nocache test .')
+	//
+	// A shard names the files it runs rather than the directory the suite lives in,
+	// so the three runners between them run every test file once and no file twice.
+	paths := if selection.shard_of > 0 {
+		shard_paths(root, selection.shard, selection.shard_of)
+	} else {
+		['.']
+	}
+	if paths.len == 0 {
+		return ['shard ${selection.shard} of ${selection.shard_of} names no test file, so this run would have checked nothing']
+	}
+	command := 'v -nocache test ${paths.map(os.quoted_path(it)).join(' ')}'
+	result := run(root, command)
 	if result.exit_code == 0 {
 		return []
 	}
@@ -214,7 +442,7 @@ fn check_tests(root string) []string {
 // Two workflows that pin different V commits would be testing two compilers and
 // calling it one CI, and the failure would look like flakiness rather than like
 // the disagreement it is.
-fn check_workflows(root string) []string {
+fn check_workflows(root string, _ Selection) []string {
 	mut problems := []string{}
 	workflows := os.walk_ext(os.join_path(root, '.github', 'workflows'), '.yml')
 	if workflows.len == 0 {
@@ -302,7 +530,7 @@ fn is_hex(text string) bool {
 
 // check_documents follows the relative links between the documents. One pointing
 // at a file that moved is worse than no link at all.
-fn check_documents(root string) []string {
+fn check_documents(root string, _ Selection) []string {
 	mut problems := []string{}
 	for file in os.walk_ext(root, '.md') {
 		if file.contains('/.omh/') {

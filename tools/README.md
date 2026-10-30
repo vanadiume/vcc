@@ -42,7 +42,10 @@ The checks a pull request has to pass, in one command, so CI never holds an
 opinion the author did not already have a chance to see.
 
 ```sh
-v run tools/gate.vsh
+v run tools/gate.vsh                            # every step, the whole suite
+v run tools/gate.vsh --without tests            # every step but the suite
+v run tools/gate.vsh --only format,pure         # named steps only
+v run tools/gate.vsh --only tests --shard 1/3   # a third of the suite
 ```
 
 Seven steps, each reporting on its own line, exit status zero only when all pass:
@@ -58,6 +61,15 @@ Seven steps, each reporting on its own line, exit status zero only when all pass
 - **documents**: every relative link between the markdown files resolves
 - **workflows**: the files under `.github/workflows` pin the same V commit,
   and every action is pinned to a version rather than a branch that moves
+
+`--only` names the steps to take and `--without` the steps to leave out, each by
+a key (`format`, `pure`, `build`, `prod`, `tests`, `docs`, `workflows`), and a
+name neither flag knows is refused; `--shard K/N` runs the Kth of N groups of the
+test files, dealt in a snake from the tree's own walk so every file is in exactly
+one group. `ci.yml` uses them to split the gate across runners, and the gate job
+names what it leaves out so a step added later runs there without an edit. A run
+that took some of the steps says so on its last line rather than reporting the
+whole gate.
 
 The pure-V step is the machine-checked half of the first constraint. It cannot
 prove the compiler is written in V, only that it has not started importing C.
