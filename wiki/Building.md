@@ -67,8 +67,20 @@ that contract. Beyond the set, vcc accepts its own flags:
 `-imacros`, the dependency flags `-M`/`-MM`/`-MD`/`-MMD`/`-MF`/`-MT`/`-MQ`,
 `-dM`, `-Wclass`/`-Wno-class`, `-femulation=NAME` (define the identity macros
 of gcc, clang or tcc instead of vcc's own), `-external-linker=NAME`,
-`-shared`, `-static`, and the gcc `-print-` family. `./vcc -hh` prints the
-annotated surface.
+`-shared`, `-static`, `-nostdlib`, `-nodefaultlibs`, `--link-libgcc`, and the
+gcc `-print-` family. `./vcc -hh` prints the annotated surface.
+
+A program links the runtime archive `libvcc.a`, where the helpers the machine has
+no instruction for live under libgcc's symbol names. It is looked for where a
+`-l` name is looked for and then beside the compiler, and only the members the
+program reaches are pulled, so an ordinary program carries none of it.
+`-nodefaultlibs` keeps the start files and takes the C library and libvcc away,
+`-nostdlib` takes the start files too, and `--link-libgcc` names the toolchain's
+`libgcc.a` instead. That last flag needs a compiler built with
+`-d experimental_libgcc`, which `v run tools/build.vsh build` takes as
+`--experimental-libgcc`; every other build refuses the flag by name.
+`v run tools/build.vsh libvcc` builds the archive from its sibling tree with
+this compiler and links a program against it.
 
 `-O` today turns on one optimizer pass: a call whose value the compiler knows
 (`abs`, `labs`, `llabs`) with a literal argument folds to that value. `-O0`
