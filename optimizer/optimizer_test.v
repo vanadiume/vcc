@@ -3,6 +3,7 @@ module optimizer
 import ast
 import parser
 import tokenize
+import types
 
 // The optimizer has no file of its own in the pipeline, so these tests reach
 // into the parser for input and check the tree that comes out the other side.
@@ -314,4 +315,108 @@ fn test_a_builtin_call_in_a_condition_is_folded_and_the_branches_survive() {
 	// not the branches or the kind.
 	assert stmt.kind == .if_stmt
 	assert stmt.then_body.len == 1
+}
+
+// The pass rebuilds every node it walks, and a field left out of a rebuild is a
+// field that reads as its zero value at every level above -O0 and as itself at
+// -O0. These tests pin the fields a rebuild has dropped before: the type the
+// reader resolved onto a step or an element, the part of a statement the emitter
+// sizes an object by, the member an assignment writes and the operator a
+// compound assignment was written with, and the linkage and types of a
+// definition.
+
+fn type_name(t types.Type) string {
+	return t.describe()
+}
+
+fn test_a_step_keeps_the_type_the_reader_resolved_for_it() {
+	// `x & (x - 1)` over two unsigned long longs was refused at -O1 and up as a
+	// bitwise operation on a pointer: the step had no type of its own, so the
+	// emitter sized the operand it computes at the width of an address.
+	expr := first_expression(optimize_source('unsigned long long f(unsigned long long x) { return x & (x - 1); }',
+		options(['-O2'])))
+	assert expr is ast.Binary
+	step := expr as ast.Binary
+	assert step.op == '&'
+	assert type_name(step.typ) == 'unsigned long long'
+	assert step.right is ast.Binary
+	assert type_name((step.right as ast.Binary).typ) == 'unsigned long long'
+}
+
+fn test_an_element_keeps_the_type_the_reader_resolved_for_it() {
+	unit := optimize_source('int main(void) { int a[3]; return a[1]; }', options(['-O2']))
+	stmt := unit.decls[0].body[1]
+	expr := stmt.expr or {
+		assert false
+		return
+	}
+	assert expr is ast.Index
+	assert type_name((expr as ast.Index).typ) == 'int'
+}
+
+fn test_a_declaration_keeps_the_part_the_emitter_sizes_it_by() {
+	// The resolved type, the byte count and the stride of an array are read by
+	// the emitter and are fields of the statement's extra part: a VLA lost its
+	// size and was refused at -O1 as an element of something that is not an
+	// array, while the same program compiled at -O0.
+	unit := optimize_source('int main(void) { int a[3]; return 0; }', options(['-O2']))
+	decl := unit.decls[0].body[0]
+	assert decl.resolved().is_array()
+	assert decl.decl_stride() == 4
+}
+
+fn test_a_member_store_keeps_the_member_it_writes() {
+	unit := optimize_source('struct P { int a; int b; };\nint main(void) { struct P p; p.a = 1; return 0; }',
+		options(['-O2']))
+	store := unit.decls[0].body[1]
+	object := unit.decls[0].body[0]
+	// A struct's byte count is a fact the layout gave the reader, not a
+	// spelling the back end can size.
+	assert object.bytes() == 8
+	assert store.field != none
+	field := store.field or {
+		assert false
+		return
+	}
+	assert field.member == 'a'
+}
+
+fn test_a_compound_assignment_keeps_the_operator_it_was_written_with() {
+	// A compound assignment to an element or through an address is emitted from
+	// the operator and the value, so that the address is computed once; without
+	// the operator the emitter reads the expanded assignment instead and
+	// evaluates the index twice.
+	unit := optimize_source('int main(void) { int a[2]; int i = 0; a[i++] += 5; return i; }', options(['-O2']))
+	stmt := unit.decls[0].body[2]
+	assert stmt.compound == '+'
+}
+
+fn test_a_definition_keeps_its_linkage_and_its_types() {
+	// A static helper is a name two units may each define. Rebuilt without the
+	// flag it became a global symbol and the link refused the second definition,
+	// which is a program that compiles at -O0.
+	// A static definition nothing names is not read at all, so the helper here
+	// is called: what this test is about is a definition that reaches the back
+	// end.
+	unit := optimize_source('static int helper(void) { return 1; }\nint main(void) { return helper(); }',
+		options(['-O2']))
+	decl := unit.decls[0]
+	assert decl.static_
+	assert decl.ret == 'int'
+	assert type_name(decl.ret_type) == 'int'
+	assert decl.resolved.is_function()
+	assert decl.defined
+}
+
+fn test_a_folded_value_carries_the_type_of_the_call_it_replaces() {
+	// A folded literal is the call's value, so it is the call's type as well.
+	// Without one it is a constant the emitter writes as an int, and a value
+	// wider than that has no type to be written at: `x & llabs(-0x100000001)`
+	// was refused at -O1 and up while the call compiled at -O0.
+	expr := first_expression(optimize_source('long long llabs(long long n);\nint main(void) { return llabs(-5); }',
+		options(['-O2'])))
+	assert expr is ast.IntLit
+	literal := expr as ast.IntLit
+	assert literal.value == 5
+	assert type_name(literal.typ) == 'long long'
 }
