@@ -977,3 +977,8 @@ it owns the change, which is the same vocabulary the commits use.
   (3fd9b27)
 * tools: the front door builds libvcc and links a program against it (5b5af49)
 * docs: the runtime archive and the three flags (a028c6f)
+* docs: the changelog names the runtime archive work (a10be52)
+* backend: the 64-bit byte swap (11dbbbb)
+* parser, codegen: the machine builtins at every width their names spell
+  (4b8b84e)
+* regression: the machine builtins answer what gcc answers (eb3c26f)
