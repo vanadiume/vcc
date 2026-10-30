@@ -773,6 +773,11 @@ pub fn (t &Target) byte_swap_32(reg Register) ![]u8 {
 // `__builtin_popcount` and, masked to its low bit, `__builtin_parity` ask for. It
 // takes a second register to sum through because the count is computed a field at
 // a time rather than read off in one instruction.
+// byte_swap_64 is the same reversal at the word width, for `__builtin_bswap64`.
+pub fn (t &Target) byte_swap_64(reg Register) ![]u8 {
+	return t.encoders.byte_swap_64(t.describe(reg))
+}
+
 pub fn (t &Target) bit_count(dst Register, scratch Register) ![]u8 {
 	return t.encoders.bit_count(t.describe(dst), t.describe(scratch))
 }
