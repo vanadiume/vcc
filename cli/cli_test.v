@@ -542,6 +542,55 @@ fn test_the_kind_of_link_is_in_the_help() {
 	assert usage(false).contains('-static')
 }
 
+// -nostdlib is gcc's -nostartfiles and -nodefaultlibs on one command line, and
+// -nodefaultlibs is the second half alone. The two questions a link asks of the
+// flags are what separates them: the start files, and the default libraries. A
+// program the link names no default library for runs against what the command
+// line named and nothing else.
+fn test_the_library_flags_answer_the_two_questions_a_link_asks() {
+	plain := parse(['a.c'])!
+	assert plain.default_libraries()
+	assert plain.start_files()
+	assert !plain.nostdlib
+	assert !plain.nodefaultlibs
+	without_libraries := parse(['-nodefaultlibs', 'a.c'])!
+	assert !without_libraries.default_libraries()
+	assert without_libraries.start_files()
+	without_std := parse(['-nostdlib', 'a.c'])!
+	assert !without_std.default_libraries()
+	assert !without_std.start_files()
+	// Both are read rather than recorded: a build that names one and is told
+	// nothing has been told the flag was passed over.
+	assert !without_libraries.ignored.contains('-nodefaultlibs')
+	assert !without_std.ignored.contains('-nostdlib')
+}
+
+fn test_the_library_flags_are_in_the_help() {
+	assert usage(false).contains('-nostdlib')
+	assert usage(false).contains('-nodefaultlibs')
+	assert usage(false).contains('--link-libgcc')
+}
+
+// --link-libgcc is experimental, and the binary is what decides whether it
+// exists: one compiled with -d experimental_libgcc takes the flag, and every
+// other build refuses it by name rather than recording it and linking the
+// runtime this compiler does not carry.
+fn test_link_libgcc_is_accepted_only_by_the_experimental_binary() {
+	$if experimental_libgcc ? {
+		assert parse(['--link-libgcc', 'a.c'])!.link_libgcc
+		assert parse(['-link-libgcc', 'a.c'])!.link_libgcc
+		assert !parse(['a.c'])!.link_libgcc
+	} $else {
+		if _ := parse(['--link-libgcc', 'a.c']) {
+			assert false, 'a binary built without -d experimental_libgcc accepted --link-libgcc'
+		}
+		if _ := parse(['-link-libgcc', 'a.c']) {
+			assert false, 'a binary built without -d experimental_libgcc accepted -link-libgcc'
+		}
+		assert !parse(['a.c'])!.link_libgcc
+	}
+}
+
 // With no flags at all the command line still has to answer: every list empty,
 // every switch off, and the optimizer at the level it runs when nothing says
 // otherwise. This is the baseline a later flag is a change from.
