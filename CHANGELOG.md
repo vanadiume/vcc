@@ -982,3 +982,7 @@ it owns the change, which is the same vocabulary the commits use.
 * parser, codegen: the machine builtins at every width their names spell
   (4b8b84e)
 * regression: the machine builtins answer what gcc answers (eb3c26f)
+* docs: the changelog names the builtin work (91f74da)
+* parser, codegen: the memory and string builtins are the library function
+  (bc94061)
+* standard, regression: the builtins are in the table and the corpus (5a06dd0)
