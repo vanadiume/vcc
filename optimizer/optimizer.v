@@ -262,18 +262,30 @@ pub fn (o Options) summary() string {
 fn fold_builtin_calls(unit ast.TranslationUnit, opts Options) ast.TranslationUnit {
 	mut decls := []ast.FnDecl{}
 	for decl in unit.decls {
-		// Every part of the declaration is carried over, and the parameters are
-		// the ones that are easy to forget: a declaration rebuilt without them
-		// is a function whose parameters the back end cannot find, which is a
-		// diagnostic at -O1 and up and nothing at all at -O0.
+		// Every part of the declaration is carried over, because the pass
+		// changes the body and nothing else and a field left out of the
+		// rebuild is one nothing reports. A declaration without its parameters
+		// is a function the back end cannot find, one without ret_type or
+		// resolved is a declaration whose types read as unresolved, one
+		// without nested or owner is a nested function separated from the
+		// frame it reaches through the static chain, and one without static_
+		// or weak is a symbol with a binding the source did not ask for, so
+		// two units may no longer each define a static helper of the same
+		// name at -O1 while they link at -O0.
 		decls << ast.FnDecl{
-			name:    decl.name
-			ret:     decl.ret
-			params:  decl.params
-			defined: decl.defined
-			body:    rewrite_body(decl.body, opts)
-			line:    decl.line
-			col:     decl.col
+			name:     decl.name
+			ret:      decl.ret
+			ret_type: decl.ret_type
+			resolved: decl.resolved
+			params:   decl.params
+			defined:  decl.defined
+			weak:     decl.weak
+			static_:  decl.static_
+			body:     rewrite_body(decl.body, opts)
+			nested:   decl.nested
+			owner:    decl.owner
+			line:     decl.line
+			col:      decl.col
 		}
 	}
 	return ast.TranslationUnit{
@@ -287,9 +299,11 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 	mut out := []ast.Stmt{}
 	for stmt in body {
 		// Every expression a statement carries is rewritten, and the
-		// statements it carries are rewritten in turn. A statement is passed on
-		// whole: a field that is not written here is a field that would be lost
-		// on the way to the back end.
+		// statements it carries are rewritten in turn. What the rebuild writes
+		// is those expressions and every other field is the one that arrived,
+		// because the emitter reads them and decides nothing here: the member
+		// an assignment writes through and the operator a compound assignment
+		// was written with are as much a part of the statement as its value is.
 		mut expr := ?ast.Expr(none)
 		if value := stmt.expr {
 			expr = rewrite(value, opts, 0)
@@ -310,43 +324,49 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 		}
 		// The expression an assignment writes through is a place as well as a
 		// value: `*p = v` reads the pointer, so a builtin call inside it is
-		// folded the same way.
-		mut deref := ?ast.Expr(none)
-		if value := stmt.deref() {
-			deref = rewrite(value, opts, 0)
-		}
-		// A computed goto's operand is an expression like any other, so it is
-		// rewritten too; the ordinary `goto name;` carries no expression.
-		mut goto_expr := ?ast.Expr(none)
-		if value := stmt.goto_expr() {
-			goto_expr = rewrite(value, opts, 0)
-		}
-		// The name a goto jumps to and the constant a case label names are not
-		// expressions, so they are carried over as they are: a rewrite that
-		// dropped them would turn a jump into a jump to nothing. An asm
-		// statement's text and lists are not expressions either, and they are
-		// what tells a barrier from an instruction and an asm goto from a
-		// plain asm, so they are carried over whole for the same reason. They
-		// are carried in an extra part built only when there is one to carry,
-		// so that a statement with none of them is a statement of the size it
-		// was.
-		mut extra := ?&ast.StmtExtra(none)
-		if deref != none || stmt.label() != '' || stmt.kind == .case_stmt || goto_expr != none
-			|| stmt.kind == .asm_stmt {
-			extra = &ast.StmtExtra{
-				deref:           deref
-				label:           stmt.label()
-				case_value:      stmt.case_value()
-				case_value_high: stmt.case_value_high()
-				case_is_range:   stmt.case_is_range()
-				goto_expr:       goto_expr
-				asm_text:        stmt.asm_text()
-				asm_spelling:    stmt.asm_spelling()
-				asm_outputs:     stmt.asm_outputs()
-				asm_inputs:      stmt.asm_inputs()
-				asm_clobbers:    stmt.asm_clobbers()
-				asm_is_goto:     stmt.asm_is_goto()
-				asm_goto_labels: stmt.asm_goto_labels()
+		// folded the same way. It lives in the extra part along with what this
+		// pass does not change, and the part is rebuilt only when there is one
+		// of those two to rewrite: the type and byte width a declaration
+		// resolved to, the size and stride of an array, the element an
+		// assignment writes, the cleanup a declaration names and the function
+		// a nested_function statement defines are all read by the emitter, and
+		// a statement rebuilt without them is refused or given the wrong
+		// symbol at -O1 and up while it compiles at -O0.
+		mut extra := stmt.extra
+		if present := stmt.extra {
+			if present.deref != none || present.goto_expr != none {
+				mut deref := present.deref
+				if value := present.deref {
+					deref = rewrite(value, opts, 0)
+				}
+				mut goto_expr := present.goto_expr
+				if value := present.goto_expr {
+					goto_expr = rewrite(value, opts, 0)
+				}
+				extra = &ast.StmtExtra{
+					resolved:            present.resolved
+					bytes:               present.bytes
+					decl_vla_size:       present.decl_vla_size
+					decl_stride:         present.decl_stride
+					deref:               deref
+					subscript:           present.subscript
+					case_value:          present.case_value
+					case_value_high:     present.case_value_high
+					case_is_range:       present.case_is_range
+					label:               present.label
+					goto_expr:           goto_expr
+					asm_text:            present.asm_text
+					asm_spelling:        present.asm_spelling
+					asm_outputs:         present.asm_outputs
+					asm_inputs:          present.asm_inputs
+					asm_output_operands: present.asm_output_operands
+					asm_input_operands:  present.asm_input_operands
+					asm_clobbers:        present.asm_clobbers
+					asm_is_goto:         present.asm_is_goto
+					asm_goto_labels:     present.asm_goto_labels
+					cleanup:             present.cleanup
+					nested_fn:           present.nested_fn
+				}
 			}
 		}
 		out << ast.Stmt{
@@ -358,6 +378,8 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 			decl_count: stmt.decl_count
 			target:     stmt.target
 			index:      index
+			field:      stmt.field
+			compound:   stmt.compound
 			extra:      extra
 			cond:       cond
 			body:       rewrite_body(stmt.body, opts)
@@ -390,10 +412,16 @@ fn rewrite(expr ast.Expr, opts Options, depth int) ast.Expr {
 	mut rebuilt := rewrite_leaf(node, opts, depth + 1)
 	for i := spine.len - 1; i >= 0; i-- {
 		binary := spine[i]
+		// The step's own type travels with it. The emitter sizes an operand by
+		// the type the reader resolved onto the node, so a step rebuilt without
+		// one is an operand of unknown width: `x & (x - 1)` over two
+		// unsigned long longs is then refused as a bitwise operation on a
+		// pointer at -O1 and up while it compiles at -O0.
 		rebuilt = ast.Expr(ast.Binary{
 			op:    binary.op
 			left:  rebuilt
 			right: rewrite_leaf(binary.right, opts, depth + 1)
+			typ:   binary.typ
 			line:  binary.line
 			col:   binary.col
 		})
@@ -432,12 +460,17 @@ fn rewrite_leaf(expr ast.Expr, opts Options, depth int) ast.Expr {
 		ast.Index {
 			// An element is a place a value is read from, and both the base
 			// and the expression that says which element are rewritten like
-			// any other.
+			// any other. The node's own type and its run-time stride are not
+			// decided here and travel with it: the emitter sizes the element
+			// from the one and steps an array whose element size it cannot
+			// fold by the other.
 			return ast.Expr(ast.Index{
-				base:  rewrite(expr.base, opts, depth + 1)
-				index: rewrite(expr.index, opts, depth + 1)
-				line:  expr.line
-				col:   expr.col
+				base:       rewrite(expr.base, opts, depth + 1)
+				index:      rewrite(expr.index, opts, depth + 1)
+				typ:        expr.typ
+				vla_stride: expr.vla_stride
+				line:       expr.line
+				col:        expr.col
 			})
 		}
 		ast.Binary {
@@ -474,6 +507,10 @@ fn rewrite_leaf(expr ast.Expr, opts Options, depth int) ast.Expr {
 				// rewrite changes the arguments, not what the call calls.
 				callee: expr.callee
 				args:   rewrite_arguments(expr.args, opts, depth + 1)
+				// The type the reader resolved onto the call is the width its
+				// value has when the unit declares no return type for the name,
+				// so it travels with the call rather than being looked up again.
+				typ:    expr.typ
 				line:   expr.line
 				col:    expr.col
 			}
@@ -576,9 +613,15 @@ fn fold_call(call ast.Call, opts Options) ?ast.Expr {
 			return none
 		}
 		value := builtin.apply(call.args) or { return none }
+		// The literal is the call's value and carries the call's type. A literal
+		// built without one is a constant the emitter sizes as an int, which
+		// refuses `x & llabs(-0x100000001)` at -O1 and up: a wide value has no
+		// type to be written at, so the program is refused where the call at
+		// -O0 compiles.
 		return ast.Expr(ast.IntLit{
 			value: value
 			text:  '${value}'
+			typ:   call.typ
 			line:  call.line
 			col:   call.col
 		})

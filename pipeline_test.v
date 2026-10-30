@@ -50,6 +50,22 @@ fn compile_and_run(args []string, source string) int {
 	return result.exit_code
 }
 
+// assert_accepted_and_zero holds a program that is correct at every level to
+// being compiled and run, and names the level when one refuses it. The assertion
+// inside compile_and_run would report the file and not the flag, and a level is
+// what a refusal of the same source at another level is about.
+fn assert_accepted_and_zero(args []string, program string, label string) {
+	image := compile(args, program)
+	if image.diagnostics.len > 0 {
+		assert false, '${label} is refused: ${image.diagnostics[0].msg}'
+	}
+	opts := cli.parse(args) or { panic(err) }
+	os.write_file_array(opts.output, image.bytes) or { panic(err) }
+	os.chmod(opts.output, 0o755) or { panic(err) }
+	result := os.execute(os.quoted_path(opts.output))
+	assert result.exit_code == 0, '${label} answers ${result.exit_code}'
+}
+
 fn scratch(name string) string {
 	return os.join_path(os.temp_dir(), 'vcc_pipeline_test_${os.getpid()}_${name}')
 }
@@ -965,6 +981,87 @@ fn test_fno_builtin_takes_the_fold_back_at_the_same_level() {
 	assert exit_status == 1
 	os.rm(source) or {}
 	os.rm(binary) or {}
+}
+
+// The optimizer rebuilds every expression and statement it walks, so a field a
+// rebuild does not write is one the emitter reads as its zero value: the same
+// program compiles at -O0 and is refused at every level above it. These two
+// tests are the shapes that reached that: a step with no type of its own is an
+// operand of unknown width, which the emitter sizes at an address, and a
+// statement whose extra part was rebuilt without what it holds loses the size of
+// its array, the member it writes, or the function it defines.
+//
+// The programs are compiled and run, because a diagnostic count would pass
+// while the answer is wrong: the bitwise steps are checked against the value
+// gcc computes for the same expression, written out in the program.
+fn test_an_arithmetic_operand_of_a_bitwise_step_is_typed_at_every_level() {
+	program := 'typedef unsigned long long u64;\n' +
+		'u64 and_one(u64 x) { return x & (x - 1); }\n' +
+		'u64 or_one(u64 x) { return x | (x - 1); }\n' +
+		'u64 xor_one(u64 x) { return x ^ (x - 1); }\n' +
+		'u64 cleared(u64 x) { return x & ((u64)1 << 63); }\n' +
+		'unsigned int halves(unsigned int hi, unsigned int lo, unsigned int b) { return (hi << b) | (lo >> (32 - b)); }\n' +
+		'int main(void) {\n' +
+		'	if (and_one(5) != 4) return 1;\n' +
+		'	if (or_one(5) != 5) return 2;\n' +
+		'	if (xor_one(5) != 1) return 3;\n' +
+		'	if (cleared(0x8000000000000001ULL) != 0x8000000000000000ULL) return 4;\n' +
+		'	if (halves(0x1234u, 0x5678u, 4) != ((0x1234u << 4) | (0x5678u >> 28))) return 5;\n' +
+		'	return 0;\n' +
+		'}\n'
+	for level in ['-O0', '-O1', '-O2', '-O3', '-Os'] {
+		source := scratch('bitwise_operand_${level}.c')
+		binary := scratch('bitwise_operand_${level}')
+		assert_accepted_and_zero(['-std=gnu89', level, source, '-o', binary], program, level)
+		os.rm(source) or {}
+		os.rm(binary) or {}
+	}
+}
+
+// A folded builtin is the call's value and its type, so the literal carries
+// what the declaration returned. A literal built without one is a constant the
+// emitter writes as an int, and a value too wide for that has no type to be
+// written at: this program was refused at -O1 and up while the call compiled at
+// -O0.
+fn test_a_folded_builtin_keeps_the_type_of_the_call_it_replaces() {
+	program := 'long long llabs(long long n);\n' +
+		'int main(void) {\n' +
+		'	unsigned long long x = 0x300000000ULL;\n' +
+		'	if ((x & llabs(-0x100000001LL)) != 0x100000000ULL) return 1;\n' +
+		'	return 0;\n' +
+		'}\n'
+	for level in ['-O0', '-O1', '-O2'] {
+		source := scratch('folded_type_${level}.c')
+		binary := scratch('folded_type_${level}')
+		assert_accepted_and_zero([level, source, '-o', binary], program, level)
+		os.rm(source) or {}
+		os.rm(binary) or {}
+	}
+}
+
+fn test_a_statement_keeps_what_it_carries_beyond_its_expressions() {
+	programs := [
+		// A variable-length array: how many bytes the declaration claims, as an
+		// expression run where the declaration is.
+		'int main(void) { int n = 4; int a[n]; a[3] = 7; return a[3] - 7; }\n',
+		// A member an assignment writes through.
+		'struct P { int a; int b; };\nint main(void) { struct P p; p.a = 1; p.b = 2; return (p.a == 1 && p.b == 2) ? 0 : 1; }\n',
+		// A compound assignment to an element, whose index is evaluated once
+		// because the operator and the value are what the store is emitted from.
+		'int main(void) { int a[2]; int i = 0; a[0] = 1; a[i++] += 4; return (i == 1 && a[0] == 5) ? 0 : 1; }\n',
+		// A nested function, which reaches the enclosing frame through the
+		// static chain.
+		'int main(void) { int base = 10; int add(int n) { return n + base; } return add(5) - 15; }\n',
+	]
+	for i, program in programs {
+		for level in ['-O0', '-O1', '-O2'] {
+			source := scratch('carried_part_${i}_${level}.c')
+			binary := scratch('carried_part_${i}_${level}')
+			assert_accepted_and_zero(['-std=gnu99', level, source, '-o', binary], program, 'program ${i} at ${level}')
+			os.rm(source) or {}
+			os.rm(binary) or {}
+		}
+	}
 }
 
 fn test_a_call_can_be_the_value_of_an_expression() {
