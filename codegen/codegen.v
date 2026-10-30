@@ -11391,8 +11391,9 @@ fn (mut e Emitter) emit_atomic_thread_fence(call ast.Call) !void {
 // answer; the value the machine then leaves is undefined, as it is for gcc.
 fn (mut e Emitter) emit_count_trailing(call ast.Call, depth int) !void {
 	e.emit_expr_at(call.args[0], depth + 1)!
+	e.extend_operand_to_word(call.args[0], call.line, call.col)!
 	accumulator := e.accumulator(call.line, call.col)!
-	e.append(e.target.bit_scan_forward(accumulator, accumulator, call.name == '__builtin_ctzll')!)
+	e.append(e.target.bit_scan_forward(accumulator, accumulator, builtin_wide(call.name))!)
 }
 
 // emit_count_leading answers `__builtin_clz` and `__builtin_clzll` with the
@@ -11402,8 +11403,40 @@ fn (mut e Emitter) emit_count_trailing(call ast.Call, depth int) !void {
 // is for gcc.
 fn (mut e Emitter) emit_count_leading(call ast.Call, depth int) !void {
 	e.emit_expr_at(call.args[0], depth + 1)!
+	e.extend_operand_to_word(call.args[0], call.line, call.col)!
 	accumulator := e.accumulator(call.line, call.col)!
-	e.append(e.target.count_leading(accumulator, accumulator, call.name == '__builtin_clzll')!)
+	e.append(e.target.count_leading(accumulator, accumulator, builtin_wide(call.name))!)
+}
+
+// builtin_wide says the counting builtin was written with a 64-bit operand: the
+// `l` and `ll` spellings are long and long long, and long is 64 bits on this
+// target, so both ask the machine's 64-bit instruction while the bare spelling
+// asks the 32-bit one. An int argument is widened to a word before the
+// instruction runs, so a value the compiler stored as four bytes is counted over
+// the bits it has and not over whatever sat above them.
+fn builtin_wide(name string) bool {
+	return name.ends_with('l')
+}
+
+// emit_first_set answers `__builtin_ffs`, `__builtin_ffsl` and `__builtin_ffsll`:
+// the position of the lowest set bit counted from one, and zero when the value has
+// no set bit. bsf is undefined for a zero argument, so zero is its own arm: the
+// value is tested, the branch skips the scan, and both paths meet at the end. The
+// widest value a program can ask about is 64 bits, which is the word.
+fn (mut e Emitter) emit_first_set(call ast.Call, depth int) !void {
+	e.emit_expr_at(call.args[0], depth + 1)!
+	e.extend_operand_to_word(call.args[0], call.line, call.col)!
+	register := e.accumulator(call.line, call.col)!
+	zero := e.label()
+	done := e.label()
+	e.append(e.target.test_word(register)!)
+	e.branch(.branch_zero, zero, call.line, call.col)!
+	e.append(e.target.bit_scan_forward(register, register, builtin_wide(call.name))!)
+	e.append(e.target.add_immediate(register, 1))
+	e.jump(done)!
+	e.place(zero)
+	e.append(e.target.xor_word(register, register)!)
+	e.place(done)
 }
 
 // emit_return_address answers `__builtin_return_address(0)` with the address the
@@ -11427,30 +11460,73 @@ fn (mut e Emitter) emit_byte_swap(call ast.Call, depth int) !void {
 	register := e.accumulator(call.line, call.col)!
 	if call.name == '__builtin_bswap16' {
 		e.append(e.target.byte_swap_16(register)!)
+	} else if call.name == '__builtin_bswap64' {
+		e.append(e.target.byte_swap_64(register)!)
 	} else {
 		e.append(e.target.byte_swap_32(register)!)
 	}
 }
 
-// emit_bit_operation answers `__builtin_popcount` with the number of one bits in
-// the argument, and `__builtin_parity` with that number masked to its low bit,
-// which is the parity the standard defines. The argument is evaluated into the
-// accumulator, the count is computed there through a scratch register, and the
-// parity is one more mask: the count's lowest bit is 1 exactly when the number of
+// emit_bit_operation answers the population count and the parity of a value, at
+// the width the spelling names. A 32-bit form is one count over the accumulator
+// with the scratch register the sequence needs, and the parity is that count
+// masked to its low bit: the count's lowest bit is 1 exactly when the number of
 // one bits is odd.
+//
+// A 64-bit form has two halves to count and only those two registers to count them
+// in, so the value waits in a slot of the frame and each half is counted from it.
+// Parity is cheaper than the count: the halves are xored first, because a one bit
+// in either half is one bit of the parity and xor is what counts it once.
 fn (mut e Emitter) emit_bit_operation(call ast.Call, depth int) !void {
+	parity := call.name.starts_with('__builtin_parity')
 	e.emit_expr_at(call.args[0], depth + 1)!
 	register := e.accumulator(call.line, call.col)!
 	scratch := e.scratch(call.line, call.col)!
-	e.append(e.target.bit_count(register, scratch)!)
-	if call.name == '__builtin_parity' {
-		e.append(e.target.and_immediate(register, 1)!)
+	if !builtin_wide(call.name) {
+		e.append(e.target.bit_count(register, scratch)!)
+		if parity {
+			e.append(e.target.and_immediate(register, 1)!)
+		}
+		return
 	}
+	e.extend_operand_to_word(call.args[0], call.line, call.col)!
+	value := e.reserve(e.target.word_size)
+	e.store_accumulator(value, call.line, call.col)!
+	if parity {
+		e.append(e.target.move_register64(scratch, register)!)
+		e.append(e.target.shift_right_word(scratch, 32)!)
+		e.append(e.target.xor_word(register, scratch)!)
+		e.append(e.target.bit_count(register, scratch)!)
+		e.append(e.target.and_immediate(register, 1)!)
+		return
+	}
+	// The low half is counted first and parked, so the high half can be counted in
+	// the same two registers afterwards without losing it.
+	low := e.reserve(e.target.word_size)
+	e.append(e.target.bit_count(register, scratch)!)
+	e.store_accumulator(low, call.line, call.col)!
+	e.load_accumulator(value, call.line, call.col)!
+	e.append(e.target.shift_right_word(register, 32)!)
+	e.append(e.target.bit_count(register, scratch)!)
+	base := e.frame_pointer(call.line, call.col)!
+	e.append(e.target.load_slot(base, i32(low.offset), scratch, e.target.word_size)!)
+	e.append(e.target.add_reg64(register, scratch))
 }
 
-// emit_overflow answers `__builtin_add_overflow` and `__builtin_mul_overflow`: the
-// two operands are added or multiplied and the result the operation wraps to is
-// stored through the third argument, while the answer is whether it overflowed.
+// emit_assume_aligned answers `__builtin_assume_aligned`: the pointer the first
+// argument is. The alignment and the offset beside it are a promise about that
+// pointer rather than values the program computes, so nothing is emitted for them
+// and nothing is checked here; gcc returns the argument unchanged as well, and a
+// compiler that verified the promise would be spending the program's time on a
+// fact the program already stated.
+fn (mut e Emitter) emit_assume_aligned(call ast.Call, depth int) !void {
+	e.emit_expr_at(call.args[0], depth + 1)!
+}
+
+// emit_overflow answers `__builtin_add_overflow`, `__builtin_sub_overflow` and
+// `__builtin_mul_overflow`: the two operands are added, subtracted or multiplied
+// and the result the operation wraps to is stored through the third argument,
+// while the answer is whether it overflowed.
 // The operands are evaluated into slots first, because an operand can be an
 // expression that calls a function and the registers have to be free for it, and
 // each is widened to a word as it is stored, so the operation reads the values
@@ -11470,6 +11546,7 @@ fn (mut e Emitter) emit_bit_operation(call ast.Call, depth int) !void {
 // it.
 fn (mut e Emitter) emit_overflow(call ast.Call, depth int) !void {
 	multiply := call.name == '__builtin_mul_overflow'
+	subtract := call.name == '__builtin_sub_overflow'
 	result := call.args[2].typ.pointee() or {
 		e.diagnostics << problem(call.line, call.col, '${e.target.name}: ${call.name} stores its result through a pointer, and this one names no object')
 		return error('no result type')
@@ -11520,13 +11597,22 @@ fn (mut e Emitter) emit_overflow(call ast.Call, depth int) !void {
 			e.append(e.target.set_condition(backend.Condition.overflow, scratch)!)
 		}
 	} else {
-		if wide {
+		if subtract {
+			if wide {
+				e.append(e.target.subtract_word(accumulator, scratch)!)
+			} else {
+				e.append(e.target.subtract(accumulator, scratch)!)
+			}
+		} else if wide {
 			e.append(e.target.add_reg64(accumulator, scratch))
 		} else {
 			e.append(e.target.add(accumulator, scratch)!)
 		}
 		// The carry is the unsigned sum leaving the result, and it is the flag the
-		// signed add leaves as its unsigned half.
+		// signed add leaves as its unsigned half. A difference borrows instead: the
+		// flag an unsigned subtraction leaves is below, which is the borrow, and a
+		// signed one leaves its overflow flag, so the same pair of conditions names
+		// the answer for addition and subtraction alike.
 		condition := if unsigned { backend.Condition.below } else { backend.Condition.overflow }
 		e.append(e.target.set_condition(condition, scratch)!)
 	}
@@ -11627,11 +11713,14 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 		'__atomic_thread_fence' {
 			return e.emit_atomic_thread_fence(call)
 		}
-		'__builtin_ctz', '__builtin_ctzll' {
+		'__builtin_ctz', '__builtin_ctzl', '__builtin_ctzll' {
 			return e.emit_count_trailing(call, depth)
 		}
-		'__builtin_clz', '__builtin_clzll' {
+		'__builtin_clz', '__builtin_clzl', '__builtin_clzll' {
 			return e.emit_count_leading(call, depth)
+		}
+		'__builtin_ffs', '__builtin_ffsl', '__builtin_ffsll' {
+			return e.emit_first_set(call, depth)
 		}
 		'__builtin_return_address' {
 			return e.emit_return_address(call)
@@ -11640,14 +11729,20 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 			e.append(e.target.unreachable())
 			return
 		}
-		'__builtin_bswap16', '__builtin_bswap32' {
+		'__builtin_bswap16', '__builtin_bswap32', '__builtin_bswap64' {
 			return e.emit_byte_swap(call, depth)
 		}
-		'__builtin_popcount', '__builtin_parity' {
+		'__builtin_popcount', '__builtin_popcountl', '__builtin_popcountll' {
 			return e.emit_bit_operation(call, depth)
 		}
-		'__builtin_add_overflow', '__builtin_mul_overflow' {
+		'__builtin_parity', '__builtin_parityl', '__builtin_parityll' {
+			return e.emit_bit_operation(call, depth)
+		}
+		'__builtin_add_overflow', '__builtin_sub_overflow', '__builtin_mul_overflow' {
 			return e.emit_overflow(call, depth)
+		}
+		'__builtin_assume_aligned' {
+			return e.emit_assume_aligned(call, depth)
 		}
 		'__builtin_alloca' {
 			return e.emit_alloc(call, depth)

@@ -34,10 +34,13 @@ const builtin_expression_names = ['__builtin_types_compatible_p', '__builtin_cho
 	// declaration for a spelling in the compiler's own namespace.
 	'__atomic_load_n', '__atomic_store_n', '__atomic_exchange_n', '__atomic_compare_exchange_n',
 	'__atomic_fetch_add', '__atomic_fetch_sub', '__atomic_thread_fence', '__builtin_ctz',
-	'__builtin_ctzll', '__builtin_clz', '__builtin_clzll', '__builtin_constant_p',
-	'__builtin_object_size', '__builtin_return_address', '__builtin_unreachable', '__builtin_trap',
-	'__builtin_bswap16', '__builtin_bswap32', '__builtin_popcount', '__builtin_parity',
-	'__builtin_add_overflow', '__builtin_mul_overflow', '__builtin_alloca']
+	'__builtin_ctzll', '__builtin_clz', '__builtin_clzll', '__builtin_constant_p', '__builtin_ctzl',
+	'__builtin_clzl', '__builtin_ffs', '__builtin_ffsl', '__builtin_ffsll', '__builtin_object_size',
+	'__builtin_return_address', '__builtin_unreachable', '__builtin_trap', '__builtin_bswap16',
+	'__builtin_bswap32', '__builtin_bswap64', '__builtin_popcount', '__builtin_popcountl',
+	'__builtin_popcountll', '__builtin_parity', '__builtin_parityl', '__builtin_parityll',
+	'__builtin_add_overflow', '__builtin_sub_overflow', '__builtin_mul_overflow',
+	'__builtin_assume_aligned', '__builtin_alloca']
 
 // parse_builtin_expression reads one of them. The name has been read and the
 // cursor is at its opening parenthesis.
@@ -102,8 +105,15 @@ fn (mut p Parser) read_builtin_expression(at tokenize.Token) !ast.Expr {
 		'__atomic_fetch_add', '__atomic_fetch_sub', '__atomic_thread_fence' {
 			return p.parse_atomic_builtin(at)
 		}
-		'__builtin_ctz', '__builtin_ctzll', '__builtin_clz', '__builtin_clzll' {
+		'__builtin_ctz', '__builtin_ctzll', '__builtin_ctzl', '__builtin_clz', '__builtin_clzll',
+		'__builtin_clzl' {
 			return p.parse_bit_count(at)
+		}
+		'__builtin_ffs', '__builtin_ffsl', '__builtin_ffsll' {
+			return p.parse_first_set(at)
+		}
+		'__builtin_assume_aligned' {
+			return p.parse_assume_aligned(at)
 		}
 		'__builtin_constant_p' {
 			return p.parse_constant_p(at)
@@ -117,13 +127,14 @@ fn (mut p Parser) read_builtin_expression(at tokenize.Token) !ast.Expr {
 		'__builtin_unreachable', '__builtin_trap' {
 			return p.parse_no_argument_builtin(at)
 		}
-		'__builtin_bswap16', '__builtin_bswap32' {
+		'__builtin_bswap16', '__builtin_bswap32', '__builtin_bswap64' {
 			return p.parse_byte_swap(at)
 		}
-		'__builtin_popcount', '__builtin_parity' {
+		'__builtin_popcount', '__builtin_popcountl', '__builtin_popcountll', '__builtin_parity',
+		'__builtin_parityl', '__builtin_parityll' {
 			return p.parse_bit_operation(at)
 		}
-		'__builtin_add_overflow', '__builtin_mul_overflow' {
+		'__builtin_add_overflow', '__builtin_sub_overflow', '__builtin_mul_overflow' {
 			return p.parse_overflow(at)
 		}
 		'__builtin_alloca' {
@@ -610,7 +621,7 @@ fn (mut p Parser) parse_bit_count(at tokenize.Token) !ast.Expr {
 	if !p.is_unresolved(args[0]) {
 		operand := p.value_type(args[0])
 		if operand.kind != .unknown && !operand.kind.is_integer() {
-			zeros := if at.text in ['__builtin_clz', '__builtin_clzll'] {
+			zeros := if at.text in ['__builtin_clz', '__builtin_clzl', '__builtin_clzll'] {
 				'leading'
 			} else {
 				'trailing'
@@ -623,6 +634,64 @@ fn (mut p Parser) parse_bit_count(at tokenize.Token) !ast.Expr {
 		name: at.text
 		args: args
 		typ:  types.int_type()
+		line: at.line
+		col:  at.col
+	})
+}
+
+// parse_first_set reads `__builtin_ffs`, `__builtin_ffsl` and `__builtin_ffsll`:
+// the position of the lowest set bit of an integer, counted from one, and zero
+// when the integer has no set bit. The answer is an int for all three, which is
+// what gcc gives them, and an operand that is not an integer is refused by name.
+fn (mut p Parser) parse_first_set(at tokenize.Token) !ast.Expr {
+	args := p.parse_arguments()!
+	if args.len != 1 {
+		p.error_at(at, 'unsupported: ${at.text} takes one value')
+		return error('the argument of ${at.text}')
+	}
+	if !p.is_unresolved(args[0]) {
+		operand := p.value_type(args[0])
+		if operand.kind != .unknown && !operand.kind.is_integer() {
+			p.error_at(at, 'unsupported: ${at.text} finds the lowest set bit of an integer, and ${describe_operand(args[0])} is ${operand.describe()}')
+			return error('the operand of ${at.text}')
+		}
+	}
+	return ast.Expr(ast.Call{
+		name: at.text
+		args: args
+		typ:  types.int_type()
+		line: at.line
+		col:  at.col
+	})
+}
+
+// parse_assume_aligned reads `__builtin_assume_aligned(pointer, alignment)` and
+// the three-argument form that names an offset as well. The value is the pointer
+// itself: gcc's builtin states a promise about the alignment and answers the
+// pointer unchanged, so the call takes the first argument's type. The two
+// arguments beside it are integers, and a call that names fewer than two or more
+// than three is refused by name rather than read as some other builtin.
+fn (mut p Parser) parse_assume_aligned(at tokenize.Token) !ast.Expr {
+	args := p.parse_arguments()!
+	if args.len < 2 || args.len > 3 {
+		p.error_at(at, 'unsupported: ${at.text} takes a pointer, an alignment and an optional offset')
+		return error('the arguments of ${at.text}')
+	}
+	typ := if p.is_unresolved(args[0]) { types.Type{} } else { p.value_type(args[0]) }
+	for i in 1 .. args.len {
+		if p.is_unresolved(args[i]) {
+			continue
+		}
+		operand := p.value_type(args[i])
+		if operand.kind != .unknown && !operand.kind.is_integer() {
+			p.error_at(at, 'unsupported: ${at.text} takes an integer alignment, and its argument ${i} is ${operand.describe()}')
+			return error('the arguments of ${at.text}')
+		}
+	}
+	return ast.Expr(ast.Call{
+		name: at.text
+		args: args
+		typ:  typ
 		line: at.line
 		col:  at.col
 	})
@@ -773,10 +842,10 @@ fn (mut p Parser) parse_no_argument_builtin(at tokenize.Token) !ast.Expr {
 	})
 }
 
-// parse_byte_swap reads `__builtin_bswap16` and `__builtin_bswap32`, which answer
-// the argument with the order of its bytes reversed. The answer's type is the
-// width the name asks for: uint16_t for the first and uint32_t for the second,
-// which is what gcc gives each. An operand that is not an integer is refused by
+// parse_byte_swap reads `__builtin_bswap16`, `__builtin_bswap32` and
+// `__builtin_bswap64`, which answer the argument with the order of its bytes
+// reversed. The answer's type is the width the name asks for: uint16_t, uint32_t
+// and uint64_t in order, which is what gcc gives each. An operand that is not an integer is refused by
 // name: these reverse the bytes of an integer, and gcc does not convert a float
 // or a pointer into one here.
 fn (mut p Parser) parse_byte_swap(at tokenize.Token) !ast.Expr {
@@ -792,10 +861,12 @@ fn (mut p Parser) parse_byte_swap(at tokenize.Token) !ast.Expr {
 			return error('the operand of ${at.text}')
 		}
 	}
-	typ := if at.text == '__builtin_bswap16' {
-		types.unsigned_short_type()
-	} else {
-		types.unsigned_int_type()
+	typ := match at.text {
+		'__builtin_bswap16' { types.unsigned_short_type() }
+		// long long is 64 bits and unsigned long long is the type gcc gives the
+		// 64-bit swap.
+		'__builtin_bswap64' { types.unsigned_long_long_type() }
+		else { types.unsigned_int_type() }
 	}
 	return ast.Expr(ast.Call{
 		name: at.text
@@ -806,8 +877,9 @@ fn (mut p Parser) parse_byte_swap(at tokenize.Token) !ast.Expr {
 	})
 }
 
-// parse_bit_operation reads `__builtin_popcount` and `__builtin_parity`, which
-// answer the number of one bits in the argument and that number modulo two. gcc
+// parse_bit_operation reads `__builtin_popcount` and `__builtin_parity` at each
+// of the three widths, which answer the number of one bits in the argument and
+// that number modulo two. gcc
 // gives both the type int, and both are emitted as the machine's bit count with
 // the second masked to its low bit. An operand that is not an integer is refused
 // by name, for the same reason the counts of zero bits refuse one.
@@ -833,8 +905,9 @@ fn (mut p Parser) parse_bit_operation(at tokenize.Token) !ast.Expr {
 	})
 }
 
-// parse_overflow reads `__builtin_add_overflow` and `__builtin_mul_overflow`, which
-// add or multiply two values, store the result the operation wraps to through the
+// parse_overflow reads `__builtin_add_overflow`, `__builtin_sub_overflow` and
+// `__builtin_mul_overflow`, which add, subtract or multiply two values, store the
+// result the operation wraps to through the
 // third argument, and answer nonzero when it overflowed. The answer is an int, and
 // the operands and the object the third argument points at are integers.
 //
