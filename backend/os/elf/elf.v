@@ -249,7 +249,9 @@ pub fn write(program image.Program, target backend.Target, kind linux.LinkKind) 
 	// what it runs against is what the command line named.
 	mut libraries := []string{cap: program.libraries.len + 1}
 	if kind != .static_program {
-		if !program.no_default_libraries {
+		// A target with no C library names none, which is the freestanding
+		// composition's answer and not a flag's.
+		if !program.no_default_libraries && target.base_library() != '' {
 			libraries << linux.base_library
 		}
 		for name in program.libraries {

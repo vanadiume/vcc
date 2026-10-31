@@ -33,7 +33,15 @@ fn test_the_machine_and_the_system_name_the_same_registers() {
 fn test_every_target_is_a_machine_composed_with_a_system() {
 	assert targets().len > 0
 	for target in targets() {
-		assert target.name == '${target.arch}-${target.os}'
+		// The name is the machine and the system, and the one composition that
+		// takes the C library away says which it is in the name: two targets that
+		// spelled themselves the same would be one name resolving to two answers.
+		expected := if target.hosted {
+			'${target.arch}-${target.os}'
+		} else {
+			'${target.arch}-${target.os}-freestanding'
+		}
+		assert target.name == expected
 		assert target.word_size > 0
 		assert target.elf_machine > 0
 		assert target.registers.len > 0

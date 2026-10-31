@@ -79,8 +79,16 @@ pub:
 	page_size    u64
 	load_base    u64
 	// base_library_name is the C library every image this system writes runs
-	// against, named whether or not a -l asked for it.
+	// against, named whether or not a -l asked for it. An empty name is the
+	// system's own answer that there is none: a program built for it carries
+	// nothing of the C library, and the container names no library for it.
 	base_library_name string
+	// hosted says a program built for this system runs against a C library. It is
+	// what the front end reads to decide whether the standard header directories
+	// are searched and what `__STDC_HOSTED__` answers, and the link reads it for
+	// the same reason: a freestanding target takes neither the library nor its
+	// start files, because there is no library for either of them to belong to.
+	hosted bool
 }
 
 // A target is two descriptions composed: a machine from `backend/arch` and a
@@ -107,15 +115,28 @@ pub:
 
 // targets lists the descriptions the compiler can emit for. A new target is a
 // composition of a machine and a system, not a new branch in the emitter.
+//
+// There are two of them here and the second is the first with the C library taken
+// away: the same machine, the same system calls, the same container, and no
+// library to link against. `x86_64-linux-freestanding` is what a program that
+// calls nothing builds for, and it is what a runtime library like libvcc is
+// compiled with, because a library that must call nothing should not be built
+// against a compiler that would happily link it to something.
 pub fn targets() []Target {
-	return [x86_64_linux()]
+	return [x86_64_linux(true), x86_64_linux(false)]
 }
 
 // x86_64_linux is the machine `backend/arch/x86_64/arch.v` running the system
 // `backend/os/linux/linux.v`. It builds the machine value and the system value
 // once, and a Target holds those two values; every field read in this module
 // goes through them rather than through the machine's or the system's module.
-fn x86_64_linux() Target {
+//
+// `hosted` is the one thing the two compositions of this machine and this system
+// differ in. A freestanding target keeps every machine fact and every system call
+// and drops the C library: no base library for the container to name, no start
+// files for the link, no standard headers for the front end, and
+// `__STDC_HOSTED__` is 0.
+fn x86_64_linux(hosted bool) Target {
 	machine := Machine{
 		registers:                  x86_64.registers()
 		float_registers:            x86_64.float_registers()
@@ -144,10 +165,15 @@ fn x86_64_linux() Target {
 		library_dirs:      linux.library_dirs(x86_64.name, linux.name)
 		page_size:         linux.page_size
 		load_base:         linux.load_base
-		base_library_name: linux.base_library
+		base_library_name: if hosted { linux.base_library } else { '' }
+		hosted:            hosted
 	}
 	return Target{
-		name:    '${x86_64.name}-${linux.name}'
+		name:    if hosted {
+			'${x86_64.name}-${linux.name}'
+		} else {
+			'${x86_64.name}-${linux.name}-freestanding'
+		}
 		arch:    x86_64.name
 		os:      linux.name
 		Machine: machine

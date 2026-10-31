@@ -305,6 +305,11 @@ library's exit to call. `--link-libgcc` puts the toolchain's `libgcc.a` in
 libvcc's place, and only a compiler built with `-d experimental_libgcc` accepts
 the flag.
 
+`-target x86_64-linux-freestanding` is the same machine and the same system calls
+with no C library at all: no standard header directories, no start files, no
+library named in the image, and `__STDC_HOSTED__` is 0. It is what a runtime
+library that must call nothing is built for, which is what libvcc is.
+
 `-O` today turns on one optimizer pass: a call whose value the compiler knows
 (`abs`, `labs`, `llabs`) with a literal argument folds to that value, `-O0` makes
 the call and `-O2` folds it. `-fno-builtin` takes the fold back.

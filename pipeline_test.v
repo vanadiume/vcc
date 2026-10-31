@@ -3881,6 +3881,51 @@ fn test_a_library_name_that_resolves_to_an_archive_is_pulled() {
 	assert result.exit_code == 9
 }
 
+// A target with no C library: the same machine and the same system calls, with
+// nothing for the container to name and no start files for the link. The program
+// that comes out runs and carries no library, and the standard header search is
+// empty, which is what makes a translation unit built for it unable to include
+// the host's headers by accident.
+fn test_a_freestanding_target_links_no_c_library() {
+	freestanding := backend.lookup('x86_64-linux-freestanding') or {
+		assert false, 'the freestanding target is not in the list'
+		return
+	}
+	assert !freestanding.hosted
+	assert freestanding.base_library() == ''
+	hosted := backend.lookup('x86_64-linux') or { panic('the hosted target is gone') }
+	assert hosted.hosted
+	assert hosted.base_library() != ''
+	source := scratch('freestanding.c')
+	binary := scratch('freestanding')
+	body := 'int main(void) { return 7; }\n'
+	os.write_file(source, body) or { panic(err) }
+	opts := cli.parse(['-target', 'x86_64-linux-freestanding', source, '-o', binary]) or {
+		panic(err)
+	}
+	assert default_libraries(opts, freestanding) == false
+	assert start_files(opts, freestanding) == false
+	assert standard_include_dirs_for(opts).len == 0
+	hosted_opts := cli.parse([source, '-o', binary]) or { panic(err) }
+	assert default_libraries(hosted_opts, hosted)
+	assert start_files(hosted_opts, hosted)
+	assert standard_include_dirs_for(hosted_opts).len > 0
+	lexed := tokenize.lex(body)
+	parsed := parser.parse(lexed.tokens)
+	emitted := codegen.emit(parsed.unit, codegen.Options{
+		target:               opts.target
+		entry:                'main'
+		link_kind:            link_kind(opts)
+		no_default_libraries: !default_libraries(opts, freestanding)
+	})
+	assert emitted.diagnostics.len == 0
+	os.write_file_array(binary, emitted.bytes) or { panic(err) }
+	os.chmod(binary, 0o755) or { panic(err) }
+	assert os.execute(os.quoted_path(binary)).exit_code == 7
+	content := os.read_file(binary) or { panic(err) }
+	assert !content.contains('libc.so.6')
+}
+
 // The runtime archive is implicit. A program whose unit reaches a helper the
 // archive defines is a link: the link pulls the member that answers the name and
 // the program runs with that code in it. The archive is named by its file, so a

@@ -31,7 +31,7 @@ struct Definition {
 }
 
 // builtins are the macros that describe the target.
-fn builtins(target backend.Target) []Definition {
+fn builtins(target backend.Target, hosted bool) []Definition {
 	mut definitions := []Definition{}
 	if target.arch == 'x86_64' {
 		definitions << Definition{'__x86_64__', [], '1'}
@@ -117,7 +117,10 @@ fn builtins(target backend.Target) []Definition {
 	definitions << Definition{'__ORDER_BIG_ENDIAN__', [], '4321'}
 	definitions << Definition{'__BYTE_ORDER__', [], '__ORDER_LITTLE_ENDIAN__'}
 	definitions << Definition{'__STDC__', [], '1'}
-	definitions << Definition{'__STDC_HOSTED__', [], '1'}
+	// A freestanding target has no C library, and this macro is how a header asks
+	// whether the program may assume one: 0 is what keeps a freestanding
+	// translation unit on the paths that do not include anything.
+	definitions << Definition{'__STDC_HOSTED__', [], if hosted { '1' } else { '0' }}
 	definitions << Definition{'__STDC_VERSION__', [], '199901L'}
 	// The __has_ macros are how a header asks whether a construct exists.
 	// Answering 0 is a compiler saying it knows none of the things they ask
@@ -349,7 +352,10 @@ fn gnu_claim() []string {
 // define_builtins puts them in the macro table, before anything else is read.
 fn (mut p Processor) define_builtins() {
 	target := backend.host() or { return }
-	for definition in builtins(target) {
+	// `__STDC_HOSTED__` is the one macro here that is not the host's own fact: a
+	// program built for a target with no C library is freestanding whatever the
+	// machine reading it is hosted, so the flag travels in the read's options.
+	for definition in builtins(target, p.opts.hosted) {
 		p.macros[definition.name] = Macro{
 			name:          definition.name
 			function_like: definition.params.len > 0

@@ -20,7 +20,7 @@ import backend
 // predefine finds one predefined macro by name, and answers nothing when the
 // compiler does not predefine it at all.
 fn predefine(name string) ?string {
-	for definition in builtins(backend.Target{ arch: 'x86_64' }) {
+	for definition in builtins(backend.Target{ arch: 'x86_64' }, true) {
 		if definition.name == name {
 			return definition.body
 		}
