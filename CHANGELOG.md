@@ -986,3 +986,7 @@ it owns the change, which is the same vocabulary the commits use.
 * parser, codegen: the memory and string builtins are the library function
   (bc94061)
 * standard, regression: the builtins are in the table and the corpus (5a06dd0)
+
+## 2026-10-31
+
+* backend, main, preprocess: a target with no C library (2bc69a1)
