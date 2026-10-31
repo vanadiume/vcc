@@ -990,3 +990,5 @@ it owns the change, which is the same vocabulary the commits use.
 ## 2026-10-31
 
 * backend, main, preprocess: a target with no C library (2bc69a1)
+* codegen: the memory and string builtins are emitted, not called (101f149)
+* regression: the memory builtins at their edges (3735a92)
