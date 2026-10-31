@@ -28,6 +28,19 @@ pub const base_library = 'libc.so.6'
 // libc_nonshared.a, would drop the extra file the script brings in.
 pub const base_library_flag = 'c'
 
+// runtime_library is the archive a program links for the helpers the machine has
+// no instruction for: this compiler's own libvcc. Its symbol names are libgcc's
+// on purpose, so it answers the calls a compiler taught to emit libgcc produces,
+// and a link takes this archive or libgcc and never both.
+pub const runtime_library = 'libvcc.a'
+
+// libgcc_library is the toolchain's own runtime archive, which --link-libgcc
+// puts in place of libvcc. It is named as a file rather than as a -l name
+// because the link takes the archive itself: a -l name is resolved to whatever
+// the search finds under it, and what this flag asks for is the static archive
+// the toolchain's own helpers live in.
+pub const libgcc_library = 'libgcc.a'
+
 // LinkKind is which link a command line asked for. The three differ in the
 // arguments a linker is given and in nothing else, so they are one value with
 // three cases rather than three ways to build a command line.

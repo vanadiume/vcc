@@ -19,6 +19,11 @@ pub struct Options {
 pub mut:
 	// include_dirs are the -I directories, in the order they were given.
 	include_dirs []string
+	// hosted says the translation unit runs against a C library, which is what
+	// `__STDC_HOSTED__` answers and what a header branches on. A freestanding
+	// target is the one reader of it that says otherwise, and the zero value is
+	// the hosted answer because that is what a run with nothing said builds for.
+	hosted bool = true
 	// defines and undefines are the -D and -U arguments, applied to the macro
 	// table before the first file is read.
 	defines   []string

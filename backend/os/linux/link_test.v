@@ -39,7 +39,7 @@ fn test_the_stub_start_files_leave_out_the_entry_point_and_keep_the_rest() {
 fn test_the_link_arguments_name_the_loader_the_start_files_and_the_directories() {
 	host := backend.host() or { panic('this test needs the host target') }
 	dirs := host.link_dirs([]string{})
-	args := link_arguments(.program, host.interpreter, dirs, ['x.o'], ['m'], 'out') or {
+	args := link_arguments(.program, host.interpreter, dirs, ['x.o'], ['m'], 'out', LinkOptions{}) or {
 		panic(err)
 	}
 	// The loader is the system's own, and it is written as the linker's flag.
@@ -89,7 +89,7 @@ fn test_the_link_arguments_name_the_loader_the_start_files_and_the_directories()
 fn test_a_shared_object_is_loaded_rather_than_started() {
 	host := backend.host() or { panic('this test needs the host target') }
 	dirs := host.link_dirs([]string{})
-	args := link_arguments(.shared, host.interpreter, dirs, ['x.o'], []string{}, 'libx.so') or {
+	args := link_arguments(.shared, host.interpreter, dirs, ['x.o'], []string{}, 'libx.so', LinkOptions{}) or {
 		panic(err)
 	}
 	assert '-shared' in args
@@ -112,7 +112,7 @@ fn test_a_shared_object_is_loaded_rather_than_started() {
 fn test_a_static_program_resolves_its_libraries_into_itself() {
 	host := backend.host() or { panic('this test needs the host target') }
 	dirs := host.link_dirs([]string{})
-	args := link_arguments(.static_program, host.interpreter, dirs, ['x.o'], ['m'], 'out') or {
+	args := link_arguments(.static_program, host.interpreter, dirs, ['x.o'], ['m'], 'out', LinkOptions{}) or {
 		panic(err)
 	}
 	assert '-static' in args
@@ -135,6 +135,72 @@ fn test_a_static_program_resolves_its_libraries_into_itself() {
 	assert args.index('-lm') < open
 }
 
+// -nodefaultlibs keeps the start files and takes the C library away, and
+// -nostdlib takes both. The argument list is where the two differ, and it is the
+// list a linker is handed rather than something a reader has to infer: a link
+// that dropped the start files by accident, or kept -lc, is one whose program
+// starts somewhere else or names a library nobody asked for.
+fn test_the_library_flags_shape_the_argument_list() {
+	host := backend.host() or { panic('this test needs the host target') }
+	dirs := host.link_dirs([]string{})
+	crt1 := start_file_in(dirs, 'crt1.o')
+	crtn := start_file_in(dirs, 'crtn.o')
+	plain := link_arguments(.program, host.interpreter, dirs, ['x.o'], []string{}, 'out',
+		LinkOptions{}) or { panic(err) }
+	assert crt1 in plain
+	assert '-lc' in plain
+	// The C library and the runtime archive are gone, the start files are not.
+	without_libraries := link_arguments(.program, host.interpreter, dirs, ['x.o'], []string{}, 'out',
+		LinkOptions{
+			default_libraries: false
+		}) or { panic(err) }
+	assert crt1 in without_libraries
+	assert crtn in without_libraries
+	assert '-lc' !in without_libraries
+	// Both are gone. The loader stays: -nostdlib takes libraries away, it does
+	// not change the kind of file the command line asked for.
+	without_std := link_arguments(.program, host.interpreter, dirs, ['x.o'], []string{}, 'out',
+		LinkOptions{
+			start_files:       false
+			default_libraries: false
+		}) or { panic(err) }
+	assert crt1 !in without_std
+	assert crtn !in without_std
+	assert '-lc' !in without_std
+	assert '-dynamic-linker' in without_std
+}
+
+// The runtime archive the caller resolved is in the group before the toolchain's
+// own, so a name both archives define is answered by the one the command line
+// asked for. A static link keeps -lgcc and -lgcc_eh either way: the C library's
+// static objects call helpers no runtime archive of this compiler has, and the
+// group is what lets a linker come back for them.
+fn test_a_resolved_runtime_archive_comes_before_the_toolchain_group() {
+	host := backend.host() or { panic('this test needs the host target') }
+	dirs := host.link_dirs([]string{})
+	args := link_arguments(.static_program, host.interpreter, dirs, ['x.o'], []string{}, 'out',
+		LinkOptions{
+			runtime: '/opt/lib/libvcc.a'
+		}) or { panic(err) }
+	open := args.index('--start-group')
+	close := args.index('--end-group')
+	assert args.index('/opt/lib/libvcc.a') > open
+	assert args.index('/opt/lib/libvcc.a') < args.index('-lgcc')
+	for library in link_group {
+		assert args.index('-l${library}') > args.index('/opt/lib/libvcc.a')
+		assert args.index('-l${library}') < close
+	}
+	// A dynamic program places the runtime archive after the libraries the
+	// command line named and before the C library, and it takes no group.
+	dynamic := link_arguments(.program, host.interpreter, dirs, ['x.o'], ['m'], 'out',
+		LinkOptions{
+			runtime: '/opt/lib/libvcc.a'
+		}) or { panic(err) }
+	assert '--start-group' !in dynamic
+	assert dynamic.index('/opt/lib/libvcc.a') > dynamic.index('-lm')
+	assert dynamic.index('/opt/lib/libvcc.a') < dynamic.index('-lc')
+}
+
 // A directory of its own, because the test file is compiled on its own and the
 // helper in the library test's file is not in scope here.
 fn link_scratch_dir(name string) string {
@@ -151,7 +217,8 @@ fn test_a_start_file_that_is_missing_is_reported_by_name() {
 	defer {
 		os.rmdir_all(dir) or {}
 	}
-	if _ := link_arguments(.program, '/lib64/ld-linux-x86-64.so.2', [dir], ['x.o'], []string{}, 'out') {
+	if _ := link_arguments(.program, '/lib64/ld-linux-x86-64.so.2', [dir], ['x.o'], []string{}, 'out',
+		LinkOptions{}) {
 		assert false, 'a directory with no start files cannot be linked against'
 	} else {
 		assert err.msg().contains('crt1.o')

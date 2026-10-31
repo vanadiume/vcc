@@ -260,15 +260,29 @@ fn main() {
 		println(printer.render(optimized))
 		return
 	}
+	// The target this run builds for, resolved here as well as in the emitter
+	// because the include search and the link flags both read it: a freestanding
+	// target has no standard headers and no C library.
+	run_target := target_of_run(opts)
+	// The runtime archive's names, read before the unit is emitted: the import
+	// check has to know which of the unit's names the link will answer from an
+	// archive rather than from a library, and a program that reaches one of them
+	// is handed to the link path below, which is the path that reads archives.
+	mut archive_names := map[string]bool{}
+	if !opts.compile_only && link_kind(opts) == .program && opts.default_libraries() {
+		archive_names = runtime_archive_names(opts, run_target)
+	}
 	started = time.now()
 	image := codegen.emit(optimized, codegen.Options{
-		target:       opts.target
-		entry:        'main'
-		compile_only: opts.compile_only
-		pic:          opts.pic
-		link_kind:    link_kind(opts)
-		libraries:    opts.libraries
-		library_dirs: opts.library_dirs
+		target:               opts.target
+		entry:                'main'
+		compile_only:         opts.compile_only
+		pic:                  opts.pic
+		link_kind:            link_kind(opts)
+		libraries:            opts.libraries
+		library_dirs:         opts.library_dirs
+		no_default_libraries: !default_libraries(opts, run_target)
+		archive_names:        archive_names.keys()
 	})
 	phases << cli.Phase{
 		name:   'emit'
@@ -276,6 +290,21 @@ fn main() {
 	}
 	if report(path, image.diagnostics, opts.warnings) > 0 {
 		exit(1)
+	}
+	// A program that reaches a name the runtime archive answers is a link and not
+	// a wrapping: the archive is an input, and the path that reads archives is the
+	// linker's. The unit is compiled a second time there, and that is the price of
+	// the ordinary path staying one pass over one file, which is the path almost
+	// every program takes. The names come from the same read of the archive the
+	// import check was given, so the two cannot disagree about what the link will
+	// answer.
+	//
+	// A shared object is left out because its helper references are the loader's
+	// to resolve, and a static program never arrives here: it takes the link path
+	// above, where its archives are read.
+	if archive_names.len > 0 && program_reaches_archive(image.program, archive_names) {
+		link_inputs(opts)
+		return
 	}
 	out_path := if opts.output != '' {
 		opts.output
@@ -323,9 +352,10 @@ fn read_options(opts cli.Options) preprocess.Options {
 		include_dirs:   opts.include_dirs
 		defines:        language_defines(opts)
 		undefines:      opts.undefines
-		standard_dirs:  if opts.nostdinc { []string{} } else { standard_include_dirs() }
+		standard_dirs:  standard_include_dirs_for(opts)
 		preludes:       opts.preludes
 		undef_builtins: opts.undef_builtins
+		hosted:         target_of_run(opts).hosted
 		// The mode goes to the read as well as to the dialect check, because
 		// phase 1 asks it a question before a token exists: whether a trigraph
 		// is replaced.
@@ -621,8 +651,24 @@ fn link_inputs(opts cli.Options) {
 			return
 		}
 	}
-	if output_kind != .static_program && output_kind != .shared {
-		support << target.base_library_archives(opts.library_dirs)
+	// -nostdlib and -nodefaultlibs are read here and not at the archive pull: a
+	// link with no default libraries is one whose every library the command line
+	// named, so the C library's archives and the runtime archive are not inputs
+	// at all, and nothing is left for the pull to keep out.
+	if default_libraries(opts, target) {
+		if output_kind != .static_program && output_kind != .shared {
+			support << target.base_library_archives(opts.library_dirs)
+		}
+		// The runtime archive is a program's. A shared object does not take it:
+		// its helper references are what the loader resolves from whatever maps
+		// it, and this compiler writes the archive for a program. A static link
+		// takes it through static_support_libraries, which is where the list of
+		// archives it resolves against is written down.
+		if output_kind == .program {
+			if runtime := runtime_archive(opts, target) {
+				support << runtime
+			}
+		}
 	}
 	for file in support {
 		source := read_source(file.path) or {
@@ -652,8 +698,13 @@ fn link_inputs(opts cli.Options) {
 	// directories a link searches, and they go around the units in the order a
 	// link puts them: crt1.o holds the entry point, so it is what the merged
 	// text begins with and what the image's entry point is.
-	reach := has_constructors(units) || (output_kind == .static_program
-		&& (needs_a_library(units) || has_tls(units)))
+	//
+	// -nostdlib is the one flag that takes them away, and the test is at the
+	// front because both halves of `reach` are reasons to put start files
+	// around a link: a constructor table wants the C library's startup to walk
+	// it, and a static link that reaches a library wants crt1.o to name it.
+	reach := start_files(opts, target) && (has_constructors(units) || (output_kind == .static_program
+		&& (needs_a_library(units) || has_tls(units))))
 	mut entry := if output_kind == .shared { '' } else { 'main' }
 	if reach {
 		before, after := target.start_file_paths(output_kind, opts.library_dirs) or {
@@ -678,9 +729,11 @@ fn link_inputs(opts cli.Options) {
 			}
 		}
 		// A static link resolves the library's own objects out of its archives, and
-		// static_support_libraries is where its list is written down.
-		if output_kind == .static_program {
-			for path in target.static_support_libraries(opts.library_dirs) {
+		// static_support_libraries is where its list is written down. A link with
+		// no default libraries has no such list: the C library is not one of its
+		// inputs, and neither is a runtime archive.
+		if output_kind == .static_program && default_libraries(opts, target) {
+			for path in target.static_support_libraries(opts.library_dirs, runtime_library_name(opts)) {
 				source := read_source(path) or {
 					abort('cannot read ${path}: ${err.msg()}')
 					return
@@ -694,8 +747,9 @@ fn link_inputs(opts cli.Options) {
 		entry = '_start'
 	} else if output_kind != .shared {
 		stub := codegen.start_stub(entry, codegen.Options{
-			target:    opts.target
-			link_kind: output_kind
+			target:               opts.target
+			link_kind:            output_kind
+			no_default_libraries: !default_libraries(opts, target)
 		})
 		// The stub is emitted from a constant entry name and the exit
 		// sequence, so it has nothing to report; a diagnostic here is this
@@ -710,22 +764,28 @@ fn link_inputs(opts cli.Options) {
 		// the C library's entry, and crtbegin.o is where __dso_handle is defined. A
 		// program built without them links with an undefined __dso_handle the moment
 		// the C library's non-shared archive is read, which is where atexit lives.
-		before, after := target.stub_start_file_paths(opts.library_dirs) or {
-			abort(err.msg())
-			return
-		}
-		mut i := before.len
-		for i > 0 {
-			i--
-			units.prepend(read_unit(before[i], target) or {
-				abort('${before[i]}: ${err.msg()}')
+		//
+		// There are none of them under -nostdlib: the flag takes the start files
+		// away from every link, including the one whose entry point is this
+		// compiler's own stub.
+		if start_files(opts, target) {
+			before, after := target.stub_start_file_paths(opts.library_dirs) or {
+				abort(err.msg())
 				return
-			})
-		}
-		for path in after {
-			units << read_unit(path, target) or {
-				abort('${path}: ${err.msg()}')
-				return
+			}
+			mut i := before.len
+			for i > 0 {
+				i--
+				units.prepend(read_unit(before[i], target) or {
+					abort('${before[i]}: ${err.msg()}')
+					return
+				})
+			}
+			for path in after {
+				units << read_unit(path, target) or {
+					abort('${path}: ${err.msg()}')
+					return
+				}
 			}
 		}
 	}
@@ -756,10 +816,11 @@ fn link_inputs(opts cli.Options) {
 	}
 	mut started := time.now()
 	merged := linking.link(units, linking.Options{
-		entry:        entry
-		target:       target
-		libraries:    opts.libraries
-		library_dirs: opts.library_dirs
+		entry:                entry
+		target:               target
+		libraries:            opts.libraries
+		library_dirs:         opts.library_dirs
+		no_default_libraries: !default_libraries(opts, target)
 	}) or {
 		abort(err.msg())
 		return
@@ -1114,6 +1175,102 @@ fn abort(message string) {
 	exit(1)
 }
 
+// runtime_library_name is the archive a link takes for the helpers the machine
+// has no instruction for: this compiler's own libvcc, or the toolchain's libgcc
+// when --link-libgcc asked for it. The two define the same helper names, so a
+// link takes one of them and never both.
+fn runtime_library_name(opts cli.Options) string {
+	if opts.link_libgcc {
+		return linux.libgcc_library
+	}
+	return linux.runtime_library
+}
+
+// runtime_archive is the runtime archive a link takes, or none when it has none
+// to take. --link-libgcc is a request and libgcc.a is not implicit in anything,
+// so a search that answers nothing is the flag failing rather than a link made
+// without the library it named. libvcc is implicit, so a tree that has none is a
+// link that takes one archive less, and a program that needed a helper is
+// refused by the name of the helper it called.
+fn runtime_archive(opts cli.Options, target backend.Target) ?backend.Library {
+	name := runtime_library_name(opts)
+	if archive := target.runtime_archive(name, opts.library_dirs, install_dir()) {
+		return archive
+	}
+	if opts.link_libgcc {
+		abort('--link-libgcc needs ${name}, and no directory this system searches has it: name the directory that holds it with -L')
+	}
+	return none
+}
+
+// runtime_archive_names are the names the runtime archive answers, which is the
+// set the single-input path hands its import check and the set it asks the
+// emitted unit against. The archive is read rather than guessed at, and a run
+// with no archive answers nothing: a link with no libvcc is a program refused by
+// the name of the helper it called.
+fn runtime_archive_names(opts cli.Options, target backend.Target) map[string]bool {
+	mut out := map[string]bool{}
+	runtime := runtime_archive(opts, target) or { return out }
+	bytes := read_source(runtime.path) or { return out }
+	parts := archive.read(bytes.bytes()) or { return out }
+	for name, _ in parts.index {
+		out[name] = true
+	}
+	return out
+}
+
+// program_reaches_archive says whether a program the single-input path emitted
+// reaches a name the runtime archive answers. The single-input path wraps its
+// image in the emitter and never reads an archive, so a program that calls a
+// helper cannot be finished there: this is the question whose answer hands the
+// run to the link, and the link pulls the member the name lives in.
+fn program_reaches_archive(program unit.Program, names map[string]bool) bool {
+	for name in program.imports {
+		if name in names {
+			return true
+		}
+	}
+	return false
+}
+
+// target_of_run is the target the run was asked for, or the host when the name is
+// one this compiler does not describe. The refusal for that name belongs to the
+// emitter, which is where a target description is read, and a caller that needed
+// the answer earlier than that asks this.
+fn target_of_run(opts cli.Options) backend.Target {
+	return backend.resolve(opts.target) or { backend.host() or { backend.Target{} } }
+}
+
+// default_libraries is whether a link takes the system's default libraries: the
+// command line's two flags and the target's own answer. A freestanding target has
+// no C library, so the flags have nothing to take away and the runtime archive is
+// not offered either.
+fn default_libraries(opts cli.Options, target backend.Target) bool {
+	return opts.default_libraries() && target.hosted
+}
+
+// start_files is whether a link takes the system's start files, for the same
+// reason: they are the C library's startup, and a target with no C library has
+// none of it to run.
+fn start_files(opts cli.Options, target backend.Target) bool {
+	return opts.start_files() && target.hosted
+}
+
+// standard_include_dirs_for is the standard header search for this run: the
+// system's directories, or none when -nostdinc said so or the target has no C
+// library. A freestanding translation unit may not include the host's headers,
+// which is what makes `__STDC_HOSTED__` 0 mean something to a header that asks.
+fn standard_include_dirs_for(opts cli.Options) []string {
+	if opts.nostdinc {
+		return []string{}
+	}
+	target := backend.resolve(opts.target) or { return standard_include_dirs() }
+	if !target.hosted {
+		return []string{}
+	}
+	return standard_include_dirs()
+}
+
 // link_kind is which link the command line asked for, read off the two flags
 // that name one. Whether the two may both be given is decided where the run is
 // refused and not here, so this answers and does not judge.
@@ -1195,7 +1352,24 @@ fn external_link(opts cli.Options) {
 	} else {
 		'a.out'
 	}
-	args := target.external_link_arguments(link_kind(opts), objects, opts.library_dirs, opts.libraries, out_path) or {
+	// The three library flags reach the external link as the same facts the
+	// in-house link reads: whether the start files go around the objects, whether
+	// the C library is named, and which runtime archive is in the group. The
+	// archive is resolved here because a linker given the name `vcc` would not
+	// find a file this compiler keeps beside itself.
+	mut runtime_path := ''
+	if default_libraries(opts, target) && link_kind(opts) != .shared {
+		if runtime := runtime_archive(opts, target) {
+			runtime_path = runtime.path
+		}
+	}
+	link_options := linux.LinkOptions{
+		start_files:       start_files(opts, target)
+		default_libraries: default_libraries(opts, target)
+		runtime:           runtime_path
+	}
+	args := target.external_link_arguments(link_kind(opts), objects, opts.library_dirs, opts.libraries, out_path,
+		link_options) or {
 		abort(err.msg())
 		return
 	}
@@ -1250,9 +1424,10 @@ fn compile_source_object(path string, source string, opts cli.Options) ![]u8 {
 		include_dirs:   opts.include_dirs
 		defines:        language_defines(opts)
 		undefines:      opts.undefines
-		standard_dirs:  if opts.nostdinc { []string{} } else { standard_include_dirs() }
+		standard_dirs:  standard_include_dirs_for(opts)
 		preludes:       opts.preludes
 		undef_builtins: opts.undef_builtins
+		hosted:         target_of_run(opts).hosted
 		dialect:        opts.dialect
 	})
 	if report(path, processed.diagnostics, opts.warnings) > 0 {

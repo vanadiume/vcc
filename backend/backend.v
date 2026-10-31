@@ -2,6 +2,7 @@ module backend
 
 import backend.arch.x86_64
 import backend.os.linux
+import os
 
 // MachineRegister is a register in the machine's own terms, the form the
 // machine's encodings take. It is the machine's Register under the name this
@@ -78,8 +79,16 @@ pub:
 	page_size    u64
 	load_base    u64
 	// base_library_name is the C library every image this system writes runs
-	// against, named whether or not a -l asked for it.
+	// against, named whether or not a -l asked for it. An empty name is the
+	// system's own answer that there is none: a program built for it carries
+	// nothing of the C library, and the container names no library for it.
 	base_library_name string
+	// hosted says a program built for this system runs against a C library. It is
+	// what the front end reads to decide whether the standard header directories
+	// are searched and what `__STDC_HOSTED__` answers, and the link reads it for
+	// the same reason: a freestanding target takes neither the library nor its
+	// start files, because there is no library for either of them to belong to.
+	hosted bool
 }
 
 // A target is two descriptions composed: a machine from `backend/arch` and a
@@ -106,15 +115,28 @@ pub:
 
 // targets lists the descriptions the compiler can emit for. A new target is a
 // composition of a machine and a system, not a new branch in the emitter.
+//
+// There are two of them here and the second is the first with the C library taken
+// away: the same machine, the same system calls, the same container, and no
+// library to link against. `x86_64-linux-freestanding` is what a program that
+// calls nothing builds for, and it is what a runtime library like libvcc is
+// compiled with, because a library that must call nothing should not be built
+// against a compiler that would happily link it to something.
 pub fn targets() []Target {
-	return [x86_64_linux()]
+	return [x86_64_linux(true), x86_64_linux(false)]
 }
 
 // x86_64_linux is the machine `backend/arch/x86_64/arch.v` running the system
 // `backend/os/linux/linux.v`. It builds the machine value and the system value
 // once, and a Target holds those two values; every field read in this module
 // goes through them rather than through the machine's or the system's module.
-fn x86_64_linux() Target {
+//
+// `hosted` is the one thing the two compositions of this machine and this system
+// differ in. A freestanding target keeps every machine fact and every system call
+// and drops the C library: no base library for the container to name, no start
+// files for the link, no standard headers for the front end, and
+// `__STDC_HOSTED__` is 0.
+fn x86_64_linux(hosted bool) Target {
 	machine := Machine{
 		registers:                  x86_64.registers()
 		float_registers:            x86_64.float_registers()
@@ -143,10 +165,15 @@ fn x86_64_linux() Target {
 		library_dirs:      linux.library_dirs(x86_64.name, linux.name)
 		page_size:         linux.page_size
 		load_base:         linux.load_base
-		base_library_name: linux.base_library
+		base_library_name: if hosted { linux.base_library } else { '' }
+		hosted:            hosted
 	}
 	return Target{
-		name:    '${x86_64.name}-${linux.name}'
+		name:    if hosted {
+			'${x86_64.name}-${linux.name}'
+		} else {
+			'${x86_64.name}-${linux.name}-freestanding'
+		}
 		arch:    x86_64.name
 		os:      linux.name
 		Machine: machine
@@ -772,6 +799,11 @@ pub fn (t &Target) byte_swap_32(reg Register) ![]u8 {
 // `__builtin_popcount` and, masked to its low bit, `__builtin_parity` ask for. It
 // takes a second register to sum through because the count is computed a field at
 // a time rather than read off in one instruction.
+// byte_swap_64 is the same reversal at the word width, for `__builtin_bswap64`.
+pub fn (t &Target) byte_swap_64(reg Register) ![]u8 {
+	return t.encoders.byte_swap_64(t.describe(reg))
+}
+
 pub fn (t &Target) bit_count(dst Register, scratch Register) ![]u8 {
 	return t.encoders.bit_count(t.describe(dst), t.describe(scratch))
 }
@@ -1617,19 +1649,49 @@ fn (t &Target) resolve_start_files(files linux.StartFiles, given []string) !([]s
 	return before, after
 }
 
+// runtime_archive is the archive a link takes as its runtime, named by file: this
+// compiler's own libvcc unless the command line asked for libgcc. The name is a
+// parameter because which of the two a link takes is the command line's decision
+// and not a fact about the target.
+//
+// The file is resolved where a -l name is resolved and then beside the compiler,
+// so a checkout can point at the archive its sibling tree built with -L and an
+// installed compiler finds the file it carries. An archive nothing answers is
+// none: the runtime library is implicit, and a program that reached into it for
+// a helper is refused by the name of that helper.
+pub fn (t &Target) runtime_archive(name string, given []string, install string) ?Library {
+	path := linux.find_runtime_library(name, t.link_dirs(given), install) or { return none }
+	return Library{
+		path:    path
+		soname:  os.base(path)
+		archive: true
+	}
+}
+
 // static_support_libraries are the archives a static link resolves against: the
-// C library, the part of it that lives in an archive of its own, and the
-// toolchain's two unwinding archives. They are files rather than -l names
-// because libc_nonshared.a is a file no -l name reaches, and because a static
-// link wants the archive even where a shared library of the same name is
-// installed beside it. A name this system does not have is left out; the link
-// reports the symbol that needed it.
-pub fn (t &Target) static_support_libraries(given []string) []string {
+// C library, the part of it that lives in an archive of its own, the runtime
+// archive the link was asked for, the toolchain's own archive, and its unwinding
+// archive. They are files rather than -l names because libc_nonshared.a is a
+// file no -l name reaches, and because a static link wants the archive even
+// where a shared library of the same name is installed beside it. A name this
+// system does not have is left out; the link reports the symbol that needed it.
+//
+// `runtime` is libvcc.a or libgcc.a, and it comes before libgcc.a because a name
+// both archives define is answered by the first one pulled, which is what makes
+// the flag decide which runtime answers a helper. libgcc.a is in the list either
+// way: a static link reads members of the C library's own archive that call
+// helpers libvcc has no code for - the soft-float and vector routines glibc's
+// static objects are built with - and dropping it makes a static program that
+// pushes a string onto stdout fail to link. It is the same file twice when the
+// runtime is libgcc.a, and it is listed once.
+pub fn (t &Target) static_support_libraries(given []string, runtime string) []string {
 	mut out := []string{}
-	for name in ['libc.a', 'libc_nonshared.a', 'libgcc.a', 'libgcc_eh.a'] {
-		if path := linux.find_file(name, t.link_dirs(given)) {
-			out << path
+	for name in ['libc.a', 'libc_nonshared.a', runtime, 'libgcc.a', 'libgcc_eh.a'] {
+		path := linux.find_file(name, t.link_dirs(given)) or { continue }
+		if path in out {
+			continue
 		}
+		out << path
 	}
 	return out
 }
@@ -1642,7 +1704,9 @@ pub fn (t &Target) static_support_libraries(given []string) []string {
 //
 // `kind` is which link was asked for, `objects` are the inputs in command-line
 // order, `given_dirs` are the -L directories the command line added,
-// `libraries` are its -l names, and `output` is where the file is written.
-pub fn (t &Target) external_link_arguments(kind linux.LinkKind, objects []string, given_dirs []string, libraries []string, output string) ![]string {
-	return linux.link_arguments(kind, t.interpreter, t.link_dirs(given_dirs), objects, libraries, output)
+// `libraries` are its -l names, `output` is where the file is written, and
+// `options` is what the library flags decided: the start files, the default
+// libraries, and the runtime archive the driver resolved.
+pub fn (t &Target) external_link_arguments(kind linux.LinkKind, objects []string, given_dirs []string, libraries []string, output string, options linux.LinkOptions) ![]string {
+	return linux.link_arguments(kind, t.interpreter, t.link_dirs(given_dirs), objects, libraries, output, options)
 }

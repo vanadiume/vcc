@@ -969,3 +969,26 @@ it owns the change, which is the same vocabulary the commits use.
 * parser, codegen: read a long double imaginary constant (af4d6a3)
 * parser, diagnostics: refuse _Imaginary by name with a note (d7c3277)
 * standard: the _Complex row is implemented (98d7126)
+
+## 2026-10-30
+
+* cli: -nostdlib, -nodefaultlibs and --link-libgcc are read (ed029d8)
+* codegen, image, linking, backend, main: a program links the runtime archive
+  (3fd9b27)
+* tools: the front door builds libvcc and links a program against it (5b5af49)
+* docs: the runtime archive and the three flags (a028c6f)
+* docs: the changelog names the runtime archive work (a10be52)
+* backend: the 64-bit byte swap (11dbbbb)
+* parser, codegen: the machine builtins at every width their names spell
+  (4b8b84e)
+* regression: the machine builtins answer what gcc answers (eb3c26f)
+* docs: the changelog names the builtin work (91f74da)
+* parser, codegen: the memory and string builtins are the library function
+  (bc94061)
+* standard, regression: the builtins are in the table and the corpus (5a06dd0)
+
+## 2026-10-31
+
+* backend, main, preprocess: a target with no C library (2bc69a1)
+* codegen: the memory and string builtins are emitted, not called (101f149)
+* regression: the memory builtins at their edges (3735a92)

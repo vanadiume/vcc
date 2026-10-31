@@ -291,7 +291,24 @@ and `-fno-builtin-NAME`, `-fPIC`/`-fpic`, `-nostdinc`, `-undef`, `-include`,
 `-imacros`, the dependency flags `-M`/`-MM`/`-MD`/`-MMD`/`-MF`/`-MT`/`-MQ`,
 `-dM`, `-Wclass`/`-Wno-class`, `-femulation=NAME` (define the identity macros of
 gcc, clang or tcc instead of vcc's own), `-external-linker=NAME`, `-shared`,
-`-static`, and the gcc `-print-` family. See `./vcc -hh` for the annotated list.
+`-static`, `-nostdlib`, `-nodefaultlibs`, `--link-libgcc`, and the gcc `-print-`
+family. See `./vcc -hh` for the annotated list.
+
+The runtime archive a program links is `libvcc.a`, the helpers the machine has
+no instruction for under libgcc's symbol names. It is looked for where a `-l`
+name is looked for and then beside the compiler, and only the members a program
+reaches are pulled into it, so a program that calls no helper carries none of
+the archive. `-nodefaultlibs` leaves the start files in place and takes the C
+library and libvcc away; `-nostdlib` takes the start files as well, and the
+program that comes out leaves through the kernel's exit because there is no
+library's exit to call. `--link-libgcc` puts the toolchain's `libgcc.a` in
+libvcc's place, and only a compiler built with `-d experimental_libgcc` accepts
+the flag.
+
+`-target x86_64-linux-freestanding` is the same machine and the same system calls
+with no C library at all: no standard header directories, no start files, no
+library named in the image, and `__STDC_HOSTED__` is 0. It is what a runtime
+library that must call nothing is built for, which is what libvcc is.
 
 `-O` today turns on one optimizer pass: a call whose value the compiler knows
 (`abs`, `labs`, `llabs`) with a literal argument folds to that value, `-O0` makes

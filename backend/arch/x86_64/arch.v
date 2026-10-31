@@ -1686,6 +1686,19 @@ pub fn byte_swap_32(reg Register) ![]u8 {
 	return out
 }
 
+// byte_swap_64 encodes `bswap r64`, the same opcode as the 32-bit swap with the
+// prefix that makes the operand a word: measured on gcc 16.2.1, `unsigned long
+// long q(unsigned long long x) { return __builtin_bswap64(x); }` is `bswap %rdi`.
+// The register is named by the low three bits of the opcode and the prefix byte is
+// REX.W, or REX.WB when the register is one of the eight the low bits cannot name.
+pub fn byte_swap_64(reg Register) ![]u8 {
+	mut out := []u8{cap: 3}
+	out << if reg.code >= 8 { u8(0x49) } else { u8(0x48) } // REX.W, and REX.B above
+	out << u8(0x0f)
+	out << u8(0xc8 | (reg.code & 0x07))
+	return out
+}
+
 // byte_swap_16 encodes `rol ax, 8` and the widening that follows it. There is no
 // 16-bit bswap, so the two bytes of the low word are exchanged by rotating that
 // word eight bits, which is what gcc writes at -O0 without movbe: measured on
@@ -2866,6 +2879,7 @@ pub:
 	bit_scan_forward                fn (Register, Register, bool) ![]u8 = unsafe { nil }
 	byte_swap_16                    fn (Register) ![]u8                 = unsafe { nil }
 	byte_swap_32                    fn (Register) ![]u8                 = unsafe { nil }
+	byte_swap_64                    fn (Register) ![]u8                 = unsafe { nil }
 	call_register                   fn (Register) ![]u8                 = unsafe { nil }
 	call_rel32                      fn (i32) []u8                       = unsafe { nil }
 	call_rip_slot                   fn (i32) []u8                       = unsafe { nil }
@@ -3021,6 +3035,7 @@ pub fn encoders() Encoders {
 		bit_count:                       &bit_count
 		bit_scan_forward:                &bit_scan_forward
 		byte_swap_16:                    &byte_swap_16
+		byte_swap_64:                    &byte_swap_64
 		byte_swap_32:                    &byte_swap_32
 		call_register:                   &call_register
 		call_rel32:                      &call_rel32

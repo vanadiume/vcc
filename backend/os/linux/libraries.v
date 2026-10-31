@@ -226,6 +226,39 @@ pub fn search_dirs(given []string, system []string) []string {
 	return out
 }
 
+// find_runtime_library answers the archive a link takes as its runtime, named by
+// file: `libvcc.a` unless --link-libgcc asked for `libgcc.a`.
+//
+// The search is the one a -l name goes through, with the compiler's own
+// directory after it, because a compiler that carries its own runtime keeps it
+// with itself rather than in the system's library directories. That second half
+// is why the file name is separate from the search: a checkout passes -L to
+// point at the archive its sibling tree built, and an installed compiler has no
+// -L to pass and finds the file beside itself.
+//
+// A name nothing answers is none rather than an error. The runtime archive is
+// implicit, so a tree that has none is a link that takes one library less; the
+// refusal for a program that needed one is the undefined reference to the helper
+// it called, which names the function rather than a file the user never asked
+// for.
+pub fn find_runtime_library(given string, dirs []string, install string) ?string {
+	if path := find_file(given, dirs) {
+		return path
+	}
+	mut places := []string{}
+	if install != '' {
+		places << install
+		places << os.join_path(install, 'lib')
+	}
+	for place in places {
+		path := os.join_path(place, given)
+		if os.exists(path) {
+			return path
+		}
+	}
+	return none
+}
+
 // resolve_library finds the file one `-l` name stands for and the name it should
 // be recorded under.
 //

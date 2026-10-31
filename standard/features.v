@@ -152,12 +152,13 @@ pub const features = [
 	Feature{
 		spellings: ['__atomic_load_n', '__atomic_store_n', '__atomic_exchange_n',
 			'__atomic_compare_exchange_n', '__atomic_fetch_add', '__atomic_fetch_sub',
-			'__atomic_thread_fence', '__builtin_ctz', '__builtin_ctzll', '__builtin_clz',
-			'__builtin_clzll']
+			'__atomic_thread_fence', '__builtin_ctz', '__builtin_ctzll', '__builtin_ctzl',
+			'__builtin_clz', '__builtin_clzll', '__builtin_clzl', '__builtin_ffs', '__builtin_ffsl',
+			'__builtin_ffsll']
 		since:     .none
 		gnu:       true
 		extension: ''
-		pedantic:  'the atomic builtins and the count-trailing and count-leading builtins'
+		pedantic:  'the atomic builtins, the count-trailing and count-leading builtins and the first-set-bit builtins'
 		status:    .implemented
 	},
 	// The rest of the GNU compiler's own builtins this tree reads, the same kind
@@ -168,19 +169,38 @@ pub const features = [
 	// made to refuse them, and a strict mode reports a construct from this row
 	// only when asked, under -Wpedantic or -pedantic-errors. `__builtin_constant_p`
 	// and `__builtin_object_size` are folded where they are written,
-	// `__builtin_return_address`, `__builtin_bswap16/32`, `__builtin_popcount`,
-	// `__builtin_parity`, the two overflow-checking builtins, `__builtin_alloca`
-	// and the two no-return builtins are emitted as instructions, and every one of
-	// them is read in `parser/builtins.v`.
+	// `__builtin_return_address`, the three byte swaps, the six count and parity
+	// builtins, the three overflow-checking builtins, `__builtin_assume_aligned`,
+	// `__builtin_alloca` and the two no-return builtins are emitted as instructions
+	// or as nothing, and every one of them is read in `parser/builtins.v`.
 	Feature{
 		spellings: ['__builtin_constant_p', '__builtin_object_size', '__builtin_return_address',
 			'__builtin_unreachable', '__builtin_trap', '__builtin_bswap16', '__builtin_bswap32',
-			'__builtin_popcount', '__builtin_parity', '__builtin_add_overflow', '__builtin_mul_overflow',
+			'__builtin_bswap64', '__builtin_popcount', '__builtin_popcountl', '__builtin_popcountll',
+			'__builtin_parity', '__builtin_parityl', '__builtin_parityll', '__builtin_add_overflow',
+			'__builtin_sub_overflow', '__builtin_mul_overflow', '__builtin_assume_aligned',
 			'__builtin_alloca']
 		since:     .none
 		gnu:       true
 		extension: ''
-		pedantic:  'the constant-fold, object-size, return-address, unreachable, trap, byte-swap, bit-count, overflow-check and stack-allocation builtins'
+		pedantic:  'the constant-fold, object-size, return-address, unreachable, trap, byte-swap, bit-count, overflow-check, alignment and stack-allocation builtins'
+		status:    .implemented
+	},
+	// The memory and string builtins are the library functions under the
+	// compiler's own name: `__builtin_memcpy` is a `memcpy` the compiler is told
+	// about. They are in the reserved namespace like the rows above, so no ISO mode
+	// is made to refuse them and a strict mode reports one only when asked. The
+	// reader gives each the type the function has and the back end emits the work
+	// the function does, a byte at a time, so what a strict mode reports is the
+	// spelling and not a construct this compiler invented.
+	Feature{
+		spellings: ['__builtin_memcpy', '__builtin_memmove', '__builtin_memset', '__builtin_memcmp',
+			'__builtin_memchr', '__builtin_strlen', '__builtin_strnlen', '__builtin_strcmp',
+			'__builtin_strncmp', '__builtin_strcpy', '__builtin_strncpy']
+		since:     .none
+		gnu:       true
+		extension: ''
+		pedantic:  'the memory and string builtins'
 		status:    .implemented
 	},
 	// A GNU statement expression, `({ ... })`, is marked by two tokens with nothing

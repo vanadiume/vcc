@@ -49,12 +49,23 @@ pub mut:
 	// nostdinc is -nostdinc: do not look in the standard directories at all,
 	// which is what a build says when it is compiling against a C library that
 	// is not the one the machine's headers describe.
-	nostdinc     bool
-	library_dirs []string
-	libraries    []string
-	defines      []string
-	undefines    []string
-	target       string
+	nostdinc bool
+	// nostdlib is -nostdlib: the link takes neither the system's start files nor
+	// its default libraries, which is gcc's -nostartfiles and -nodefaultlibs on
+	// one command line. A program this builds has to bring its own entry point
+	// or accept the stub this compiler writes, and every library it uses is one
+	// the command line named.
+	nostdlib bool
+	// nodefaultlibs is -nodefaultlibs: the start files stay, and the C library
+	// and the runtime archive do not, which is what gcc's flag of the same name
+	// does. The two flags differ in exactly that, and -nostdlib is the one that
+	// also drops the start files.
+	nodefaultlibs bool
+	library_dirs  []string
+	libraries     []string
+	defines       []string
+	undefines     []string
+	target        string
 	// standard is the -std= spelling as it was written, and dialect is the mode
 	// that spelling names. Both are kept because both are asked for: the
 	// spelling is what the command line, a verbose mode and a build compare
@@ -98,6 +109,14 @@ pub mut:
 	// rather than leaving the loader to map it, and the program that comes out
 	// names no loader and no library.
 	static_link bool
+	// link_libgcc is --link-libgcc: the runtime archive a program links is the
+	// toolchain's libgcc rather than this compiler's own libvcc. The two define
+	// the same helper names, so a link takes one of them and never both, and the
+	// flag is how a program built by another compiler's runtime is measured
+	// against one built by this one. It is experimental: only a binary compiled
+	// with -d experimental_libgcc accepts the flag, and every other binary
+	// refuses it by name rather than recording it.
+	link_libgcc bool
 	preprocess  bool
 	// print_ast stops after the tree is built: nothing is emitted and nothing is
 	// written, which is what `-print-ast` is for.
@@ -328,6 +347,21 @@ pub fn parse(args []string) !Options {
 			opts.include_dirs << arg[2..]
 		} else if arg == '-nostdinc' {
 			opts.nostdinc = true
+		} else if arg == '-nostdlib' {
+			opts.nostdlib = true
+		} else if arg == '-nodefaultlibs' {
+			opts.nodefaultlibs = true
+		} else if arg == '-link-libgcc' || arg == '--link-libgcc' {
+			// The flag is experimental and the binary is what decides whether it
+			// exists, so the refusal is here rather than in the link: a run that
+			// records a flag it cannot honor would report a successful link that
+			// linked the wrong runtime. V's -d names a comptime identifier, so
+			// the define is spelled experimental_libgcc.
+			$if experimental_libgcc ? {
+				opts.link_libgcc = true
+			} $else {
+				return error('--link-libgcc needs a compiler built with -d experimental_libgcc: this binary links its own libvcc')
+			}
 		} else if arg == '-undef' {
 			opts.undef_builtins = true
 		} else if arg == '-dM' {
@@ -475,6 +509,22 @@ pub fn (opts Options) links() bool {
 		&& !opts.deps && !opts.asks_query()
 }
 
+// default_libraries says whether a link takes the system's default libraries:
+// the C library and the runtime archive. -nostdlib and -nodefaultlibs are the
+// two flags that say it takes neither, and what separates them is the start
+// files rather than this.
+pub fn (opts Options) default_libraries() bool {
+	return !opts.nostdlib && !opts.nodefaultlibs
+}
+
+// start_files says whether a link puts the system's start files around its
+// units. -nostdlib is the flag that says it does not; -nodefaultlibs leaves
+// them where they are, which is the difference between the two flags and the
+// difference gcc draws between them as well.
+pub fn (opts Options) start_files() bool {
+	return !opts.nostdlib
+}
+
 // link_kind_conflict_refusal is the message for a command line that gives both
 // of the flags naming a kind of link, and none when it gives at most one. The
 // two ask for different files: a shared object is loaded by a program that names
@@ -541,6 +591,10 @@ pub fn usage(all bool) string {
 	out << '                a shared object; -fno-pic turns it back off'
 	out << '  -Idir -Dname -Uname -Ldir -llib -x type -o outfile'
 	out << '  -nostdinc     do not search the standard directories for headers'
+	out << '  -nostdlib     the link takes neither the system start files nor the'
+	out << '                default libraries: no crt1.o, no C library, no libvcc'
+	out << '  -nodefaultlibs  the link keeps the start files and takes neither the C'
+	out << '                library nor libvcc, which is gcc behavior for the flag'
 	out << '  -M -MM        print a make rule for what the file needs instead of'
 	out << '                compiling; -MM leaves the system headers out'
 	out << '  -MD -MMD      write that rule and compile as well'
@@ -583,6 +637,12 @@ pub fn usage(all bool) string {
 	out << '                        both are work a linker does here: without'
 	out << '                        -external-linker=NAME each is refused by name'
 	out << '                        rather than written as a program'
+	out << '  --link-libgcc         the runtime archive a program links is the'
+	out << "                        toolchain's libgcc rather than this compiler's"
+	out << '                        libvcc. The two define the same helpers, so a'
+	out << '                        link takes one of them. Experimental: only a'
+	out << '                        compiler built with -d experimental_libgcc'
+	out << '                        accepts the flag, and another binary refuses it'
 	out << ''
 	out << 'Query options, which answer a question and stop without compiling (gcc'
 	out << 'spells these the same way; each needs no input file and exits 0):'
@@ -590,7 +650,8 @@ pub fn usage(all bool) string {
 	out << '  -print-file-name=NAME     the file NAME resolves to, or NAME unchanged when'
 	out << '                            the search does not have it'
 	out << '  -print-libgcc-file-name   the libgcc.a the search has, or the name when it has'
-	out << '                            none: this compiler links no libgcc'
+	out << '                            none: a link takes libvcc unless --link-libgcc'
+	out << '                            asked for libgcc'
 	out << '  -print-prog-name=NAME     the program NAME; this compiler runs no external'
 	out << '                            program, so the name comes back unchanged'
 	out << '  -print-multiarch          the target multiarch tuple'

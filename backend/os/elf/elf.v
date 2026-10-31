@@ -244,10 +244,16 @@ pub fn write(program image.Program, target backend.Target, kind linux.LinkKind) 
 	// was asked for or not, then the ones the -l flags named, each once. A
 	// library that is not named here is a library the loader does not map,
 	// which is what an undefined symbol at load comes from. A static program
-	// names none: every library it uses is resolved into the file.
+	// names none: every library it uses is resolved into the file. A program
+	// asked for with -nostdlib or -nodefaultlibs names no C library either:
+	// what it runs against is what the command line named.
 	mut libraries := []string{cap: program.libraries.len + 1}
 	if kind != .static_program {
-		libraries << linux.base_library
+		// A target with no C library names none, which is the freestanding
+		// composition's answer and not a flag's.
+		if !program.no_default_libraries && target.base_library() != '' {
+			libraries << linux.base_library
+		}
 		for name in program.libraries {
 			if name !in libraries {
 				libraries << name

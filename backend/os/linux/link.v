@@ -13,6 +13,27 @@ module linux
 // (its -L directories) and this file puts the system's own beside them, so a
 // linker asked by this compiler searches exactly what the in-house path would.
 
+// LinkOptions is what the command line's library flags decide about a link, kept
+// apart from the material the link is made of: whether the system's start files go
+// around the objects, whether the C library and the toolchain's runtime are named
+// at all, and which runtime archive the caller resolved. The zero value is a link
+// with all of it, which is what a link nobody asked a flag about is.
+pub struct LinkOptions {
+pub:
+	// start_files is whether the system's start files are inputs. -nostdlib is
+	// the flag that turns them off; -nodefaultlibs leaves them in place.
+	start_files bool = true
+	// default_libraries is whether the C library is named after the libraries
+	// the command line gave and the toolchain's runtime is in the group.
+	// -nostdlib and -nodefaultlibs both turn it off.
+	default_libraries bool = true
+	// runtime is the runtime archive the caller resolved, as a path: libvcc.a,
+	// or libgcc.a when --link-libgcc asked for it. Empty means the caller
+	// resolved none, and a link that wants one falls back to the toolchain's own
+	// -lgcc name.
+	runtime string
+}
+
 // link_arguments is the ordered argument list for the linker.
 //
 // `kind` is which link was asked for: a program the loader starts, a static
@@ -32,7 +53,12 @@ module linux
 // that order: its libraries go in a group, because libgcc and the C library
 // reach for each other and the only way to ask a linker to come back to a
 // library it has passed is to name the set it may come back to.
-pub fn link_arguments(kind LinkKind, interpreter string, dirs []string, objects []string, libraries []string, output string) ![]string {
+//
+// `options` is what -nostdlib, -nodefaultlibs and --link-libgcc decide: a link
+// with no start files begins at whatever the objects define, a link with no
+// default libraries names no C library and no runtime archive, and the runtime
+// that is named is the one the caller resolved rather than always libgcc.
+pub fn link_arguments(kind LinkKind, interpreter string, dirs []string, objects []string, libraries []string, output string, options LinkOptions) ![]string {
 	mut args := []string{}
 	match kind {
 		.program {
@@ -50,9 +76,11 @@ pub fn link_arguments(kind LinkKind, interpreter string, dirs []string, objects 
 		}
 	}
 	files := start_files(kind)
-	for stem in files.before {
-		args << find_file(stem, dirs) or {
-			return error('cannot find ${stem}: searched ${describe_dirs(dirs)}')
+	if options.start_files {
+		for stem in files.before {
+			args << find_file(stem, dirs) or {
+				return error('cannot find ${stem}: searched ${describe_dirs(dirs)}')
+			}
 		}
 	}
 	for dir in dirs {
@@ -64,17 +92,31 @@ pub fn link_arguments(kind LinkKind, interpreter string, dirs []string, objects 
 	}
 	if kind == .static_program {
 		args << '--start-group'
-		for library in link_group {
-			args << '-l${library}'
-		}
 	}
-	args << '-l${base_library_flag}'
+	// The runtime archive is a file the caller resolved when it resolved one,
+	// because libvcc.a is not in a directory a -l name searches. A static link
+	// names the toolchain's own archives after it whether or not it resolved one:
+	// the C library's static objects call helpers the runtime archive may not
+	// have, and the group is where a linker is told to come back for them.
+	if options.default_libraries {
+		if options.runtime != '' {
+			args << options.runtime
+		}
+		if kind == .static_program {
+			for library in link_group {
+				args << '-l${library}'
+			}
+		}
+		args << '-l${base_library_flag}'
+	}
 	if kind == .static_program {
 		args << '--end-group'
 	}
-	for stem in files.after {
-		args << find_file(stem, dirs) or {
-			return error('cannot find ${stem}: searched ${describe_dirs(dirs)}')
+	if options.start_files {
+		for stem in files.after {
+			args << find_file(stem, dirs) or {
+				return error('cannot find ${stem}: searched ${describe_dirs(dirs)}')
+			}
 		}
 	}
 	args << '-o'

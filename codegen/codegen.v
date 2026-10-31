@@ -63,6 +63,17 @@ pub:
 	// library_dirs are the -L directories, which are searched for a -l name
 	// before the directories the system keeps its libraries in.
 	library_dirs []string
+	// no_default_libraries says the run names no default libraries: -nostdlib
+	// and -nodefaultlibs. The container names no C library, the unit's imports
+	// are not checked against the C library, and the process stub leaves
+	// through the kernel's exit rather than through the library's.
+	no_default_libraries bool
+	// archive_names are the names the link will answer from an archive it merges
+	// rather than from a library the image names: the runtime archive, which the
+	// link path reads and the single-input path cannot. The import check counts
+	// them as answered, and the driver keeps that true by handing a program that
+	// reaches one of them to the link, which is the path that reads archives.
+	archive_names []string
 }
 
 // Result carries the image to write, or the reasons it could not be produced.
@@ -334,6 +345,16 @@ struct Emitter {
 	// the image carries before anything is emitted.
 	libraries    []string
 	library_dirs []string
+	// no_default_libraries says the image runs against no default libraries:
+	// the container names no C library for it, the import check does not ask
+	// the C library for the names the unit reaches, and the process stub
+	// leaves through the kernel's exit rather than through a library's. It is
+	// the command line's -nostdlib and -nodefaultlibs, and it is one flag here
+	// because all three follow from the same fact: there is no library.
+	no_default_libraries bool
+	// archive_names is the set of names in the option above, for the check that
+	// asks it once per import.
+	archive_names map[string]bool
 mut:
 	program     image.Program
 	diagnostics []tokenize.Diagnostic
@@ -627,6 +648,17 @@ const max_emit_chain = 4096
 // the emitter asks this name for it.
 const wide_bytes = 16
 
+// archive_name_set is the option list as the set the import check asks. A list
+// is what the caller has, because it comes from an archive's index, and a set is
+// what the check wants, because it asks once per import.
+fn archive_name_set(names []string) map[string]bool {
+	mut out := map[string]bool{}
+	for name in names {
+		out[name] = true
+	}
+	return out
+}
+
 // emit turns a parsed translation unit into an executable image. Every function
 // with a body is emitted and the entry function is the one the image starts in.
 //
@@ -679,18 +711,20 @@ pub fn emit(unit ast.TranslationUnit, opts Options) Result {
 		}
 	}
 	mut emitter := Emitter{
-		target:         target
-		representation: types.from_target(target).representation
-		entry:          entry
-		compile_only:   opts.compile_only
-		link:           opts.link
-		start_only:     opts.start_only
-		pic:            opts.pic
-		link_kind:      opts.link_kind
-		internal:       internal
-		unit:           unit
-		libraries:      opts.libraries
-		library_dirs:   opts.library_dirs
+		target:               target
+		representation:       types.from_target(target).representation
+		entry:                entry
+		compile_only:         opts.compile_only
+		link:                 opts.link
+		start_only:           opts.start_only
+		pic:                  opts.pic
+		link_kind:            opts.link_kind
+		internal:             internal
+		unit:                 unit
+		libraries:            opts.libraries
+		library_dirs:         opts.library_dirs
+		no_default_libraries: opts.no_default_libraries
+		archive_names:        archive_name_set(opts.archive_names)
 	}
 	// Nothing is written from a tree the model did not type. The check runs
 	// before the layout, so a tree it refuses produces no image at all. A
@@ -771,11 +805,12 @@ pub fn start_stub(entry string, opts Options) Result {
 		}
 	}
 	mut emitter := Emitter{
-		target:         target
-		representation: types.from_target(target).representation
-		entry:          if entry == '' { 'main' } else { entry }
-		start_only:     true
-		link_kind:      opts.link_kind
+		target:               target
+		representation:       types.from_target(target).representation
+		entry:                if entry == '' { 'main' } else { entry }
+		start_only:           true
+		link_kind:            opts.link_kind
+		no_default_libraries: opts.no_default_libraries
 	}
 	emitter.emit_start() or {
 		if emitter.diagnostics.len == 0 {
@@ -1113,7 +1148,13 @@ fn (mut e Emitter) build() ![]u8 {
 	// library on this machine defines is still a name the object can be loaded
 	// with. The container refuses a name the file itself cannot leave
 	// unresolved when the kind is a static program, which is where that belongs.
-	if !e.compile_only && !e.link && e.link_kind != .shared {
+	//
+	// A run with no default libraries is left out for a plainer reason: there is
+	// no C library to ask, and the command line named every library the image
+	// runs against. A name left unresolved is then what -nostdlib and
+	// -nodefaultlibs mean the command line to answer, and refusing it here would
+	// make the flags useless for the one thing they are for.
+	if !e.compile_only && !e.link && e.link_kind != .shared && !e.no_default_libraries {
 		dirs := linux.search_dirs(e.library_dirs, e.target.library_dirs)
 		// The names a program reaches out of a library are the functions it
 		// calls and the objects it copies, and both have to bind: a copy is not
@@ -1129,8 +1170,18 @@ fn (mut e Emitter) build() ![]u8 {
 		// the runtime's own startup files reach their optional hooks with.
 		requested = requested.filter(it !in e.program.weak_imports)
 		unresolved := linux.unresolved_imports(requested, e.libraries, dirs)
-		if unresolved.len > 0 {
-			for name in unresolved {
+		// A name the runtime archive answers is not one a library owes an
+		// answer for: the link merges the archive's member, and the driver
+		// hands a program that reaches one of these names to the link rather
+		// than writing it here. The two answers come from the same set.
+		mut missing := []string{cap: unresolved.len}
+		for name in unresolved {
+			if name !in e.archive_names {
+				missing << name
+			}
+		}
+		if missing.len > 0 {
+			for name in missing {
 				e.diagnostics << problem(1, 1, 'undefined reference to `${name}`: no library the image names defines it')
 			}
 			return error('unresolved imports')
@@ -1143,6 +1194,10 @@ fn (mut e Emitter) build() ![]u8 {
 	if e.link {
 		return []u8{}
 	}
+	// The container reads from the program whether to name the C library, so
+	// the answer travels with the image rather than beside it: a merged
+	// program's answer is the link's, and this one's is the command line's.
+	e.program.no_default_libraries = e.no_default_libraries
 	// The same program, wrapped as one of two things: an object a linker takes as
 	// input, or a program a kernel starts. This is the last decision the emitter
 	// makes and the only one that depends on the mode.
@@ -1270,13 +1325,14 @@ fn (mut e Emitter) emit_start() !void {
 		return error('no result register')
 	}
 	e.reference(e.target.call_near(0), .call_local, e.entry, '')
-	if e.link_kind == .static_program {
-		// A static program leaves through the exit syscall. The library's exit
-		// is what flushes a buffered stream, and a program with no library has
-		// nothing to flush through it: the call would be the one import a
-		// static link cannot resolve, so the kernel's own exit takes its place.
-		// The status is already in the register the call to the entry function
-		// left it in, and the sequence moves it where the kernel reads it.
+	if e.link_kind == .static_program || e.no_default_libraries {
+		// A static program leaves through the exit syscall, and so does one the
+		// command line asked to build with no default libraries: the library's
+		// exit is what flushes a buffered stream, and a program with no library
+		// has nothing to flush through it. The call would be the one import such
+		// a link cannot resolve, so the kernel's own exit takes its place. The
+		// status is already in the register the call to the entry function left
+		// it in, and the sequence moves it where the kernel reads it.
 		e.append(e.target.exit_sequence_from(result)!)
 		e.append(e.target.halt())
 		return
@@ -11335,8 +11391,9 @@ fn (mut e Emitter) emit_atomic_thread_fence(call ast.Call) !void {
 // answer; the value the machine then leaves is undefined, as it is for gcc.
 fn (mut e Emitter) emit_count_trailing(call ast.Call, depth int) !void {
 	e.emit_expr_at(call.args[0], depth + 1)!
+	e.extend_operand_to_word(call.args[0], call.line, call.col)!
 	accumulator := e.accumulator(call.line, call.col)!
-	e.append(e.target.bit_scan_forward(accumulator, accumulator, call.name == '__builtin_ctzll')!)
+	e.append(e.target.bit_scan_forward(accumulator, accumulator, builtin_wide(call.name))!)
 }
 
 // emit_count_leading answers `__builtin_clz` and `__builtin_clzll` with the
@@ -11346,8 +11403,40 @@ fn (mut e Emitter) emit_count_trailing(call ast.Call, depth int) !void {
 // is for gcc.
 fn (mut e Emitter) emit_count_leading(call ast.Call, depth int) !void {
 	e.emit_expr_at(call.args[0], depth + 1)!
+	e.extend_operand_to_word(call.args[0], call.line, call.col)!
 	accumulator := e.accumulator(call.line, call.col)!
-	e.append(e.target.count_leading(accumulator, accumulator, call.name == '__builtin_clzll')!)
+	e.append(e.target.count_leading(accumulator, accumulator, builtin_wide(call.name))!)
+}
+
+// builtin_wide says the counting builtin was written with a 64-bit operand: the
+// `l` and `ll` spellings are long and long long, and long is 64 bits on this
+// target, so both ask the machine's 64-bit instruction while the bare spelling
+// asks the 32-bit one. An int argument is widened to a word before the
+// instruction runs, so a value the compiler stored as four bytes is counted over
+// the bits it has and not over whatever sat above them.
+fn builtin_wide(name string) bool {
+	return name.ends_with('l')
+}
+
+// emit_first_set answers `__builtin_ffs`, `__builtin_ffsl` and `__builtin_ffsll`:
+// the position of the lowest set bit counted from one, and zero when the value has
+// no set bit. bsf is undefined for a zero argument, so zero is its own arm: the
+// value is tested, the branch skips the scan, and both paths meet at the end. The
+// widest value a program can ask about is 64 bits, which is the word.
+fn (mut e Emitter) emit_first_set(call ast.Call, depth int) !void {
+	e.emit_expr_at(call.args[0], depth + 1)!
+	e.extend_operand_to_word(call.args[0], call.line, call.col)!
+	register := e.accumulator(call.line, call.col)!
+	zero := e.label()
+	done := e.label()
+	e.append(e.target.test_word(register)!)
+	e.branch(.branch_zero, zero, call.line, call.col)!
+	e.append(e.target.bit_scan_forward(register, register, builtin_wide(call.name))!)
+	e.append(e.target.add_immediate(register, 1))
+	e.jump(done)!
+	e.place(zero)
+	e.append(e.target.xor_word(register, register)!)
+	e.place(done)
 }
 
 // emit_return_address answers `__builtin_return_address(0)` with the address the
@@ -11371,30 +11460,73 @@ fn (mut e Emitter) emit_byte_swap(call ast.Call, depth int) !void {
 	register := e.accumulator(call.line, call.col)!
 	if call.name == '__builtin_bswap16' {
 		e.append(e.target.byte_swap_16(register)!)
+	} else if call.name == '__builtin_bswap64' {
+		e.append(e.target.byte_swap_64(register)!)
 	} else {
 		e.append(e.target.byte_swap_32(register)!)
 	}
 }
 
-// emit_bit_operation answers `__builtin_popcount` with the number of one bits in
-// the argument, and `__builtin_parity` with that number masked to its low bit,
-// which is the parity the standard defines. The argument is evaluated into the
-// accumulator, the count is computed there through a scratch register, and the
-// parity is one more mask: the count's lowest bit is 1 exactly when the number of
+// emit_bit_operation answers the population count and the parity of a value, at
+// the width the spelling names. A 32-bit form is one count over the accumulator
+// with the scratch register the sequence needs, and the parity is that count
+// masked to its low bit: the count's lowest bit is 1 exactly when the number of
 // one bits is odd.
+//
+// A 64-bit form has two halves to count and only those two registers to count them
+// in, so the value waits in a slot of the frame and each half is counted from it.
+// Parity is cheaper than the count: the halves are xored first, because a one bit
+// in either half is one bit of the parity and xor is what counts it once.
 fn (mut e Emitter) emit_bit_operation(call ast.Call, depth int) !void {
+	parity := call.name.starts_with('__builtin_parity')
 	e.emit_expr_at(call.args[0], depth + 1)!
 	register := e.accumulator(call.line, call.col)!
 	scratch := e.scratch(call.line, call.col)!
-	e.append(e.target.bit_count(register, scratch)!)
-	if call.name == '__builtin_parity' {
-		e.append(e.target.and_immediate(register, 1)!)
+	if !builtin_wide(call.name) {
+		e.append(e.target.bit_count(register, scratch)!)
+		if parity {
+			e.append(e.target.and_immediate(register, 1)!)
+		}
+		return
 	}
+	e.extend_operand_to_word(call.args[0], call.line, call.col)!
+	value := e.reserve(e.target.word_size)
+	e.store_accumulator(value, call.line, call.col)!
+	if parity {
+		e.append(e.target.move_register64(scratch, register)!)
+		e.append(e.target.shift_right_word(scratch, 32)!)
+		e.append(e.target.xor_word(register, scratch)!)
+		e.append(e.target.bit_count(register, scratch)!)
+		e.append(e.target.and_immediate(register, 1)!)
+		return
+	}
+	// The low half is counted first and parked, so the high half can be counted in
+	// the same two registers afterwards without losing it.
+	low := e.reserve(e.target.word_size)
+	e.append(e.target.bit_count(register, scratch)!)
+	e.store_accumulator(low, call.line, call.col)!
+	e.load_accumulator(value, call.line, call.col)!
+	e.append(e.target.shift_right_word(register, 32)!)
+	e.append(e.target.bit_count(register, scratch)!)
+	base := e.frame_pointer(call.line, call.col)!
+	e.append(e.target.load_slot(base, i32(low.offset), scratch, e.target.word_size)!)
+	e.append(e.target.add_reg64(register, scratch))
 }
 
-// emit_overflow answers `__builtin_add_overflow` and `__builtin_mul_overflow`: the
-// two operands are added or multiplied and the result the operation wraps to is
-// stored through the third argument, while the answer is whether it overflowed.
+// emit_assume_aligned answers `__builtin_assume_aligned`: the pointer the first
+// argument is. The alignment and the offset beside it are a promise about that
+// pointer rather than values the program computes, so nothing is emitted for them
+// and nothing is checked here; gcc returns the argument unchanged as well, and a
+// compiler that verified the promise would be spending the program's time on a
+// fact the program already stated.
+fn (mut e Emitter) emit_assume_aligned(call ast.Call, depth int) !void {
+	e.emit_expr_at(call.args[0], depth + 1)!
+}
+
+// emit_overflow answers `__builtin_add_overflow`, `__builtin_sub_overflow` and
+// `__builtin_mul_overflow`: the two operands are added, subtracted or multiplied
+// and the result the operation wraps to is stored through the third argument,
+// while the answer is whether it overflowed.
 // The operands are evaluated into slots first, because an operand can be an
 // expression that calls a function and the registers have to be free for it, and
 // each is widened to a word as it is stored, so the operation reads the values
@@ -11414,6 +11546,7 @@ fn (mut e Emitter) emit_bit_operation(call ast.Call, depth int) !void {
 // it.
 fn (mut e Emitter) emit_overflow(call ast.Call, depth int) !void {
 	multiply := call.name == '__builtin_mul_overflow'
+	subtract := call.name == '__builtin_sub_overflow'
 	result := call.args[2].typ.pointee() or {
 		e.diagnostics << problem(call.line, call.col, '${e.target.name}: ${call.name} stores its result through a pointer, and this one names no object')
 		return error('no result type')
@@ -11464,13 +11597,22 @@ fn (mut e Emitter) emit_overflow(call ast.Call, depth int) !void {
 			e.append(e.target.set_condition(backend.Condition.overflow, scratch)!)
 		}
 	} else {
-		if wide {
+		if subtract {
+			if wide {
+				e.append(e.target.subtract_word(accumulator, scratch)!)
+			} else {
+				e.append(e.target.subtract(accumulator, scratch)!)
+			}
+		} else if wide {
 			e.append(e.target.add_reg64(accumulator, scratch))
 		} else {
 			e.append(e.target.add(accumulator, scratch)!)
 		}
 		// The carry is the unsigned sum leaving the result, and it is the flag the
-		// signed add leaves as its unsigned half.
+		// signed add leaves as its unsigned half. A difference borrows instead: the
+		// flag an unsigned subtraction leaves is below, which is the borrow, and a
+		// signed one leaves its overflow flag, so the same pair of conditions names
+		// the answer for addition and subtraction alike.
 		condition := if unsigned { backend.Condition.below } else { backend.Condition.overflow }
 		e.append(e.target.set_condition(condition, scratch)!)
 	}
@@ -11571,11 +11713,14 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 		'__atomic_thread_fence' {
 			return e.emit_atomic_thread_fence(call)
 		}
-		'__builtin_ctz', '__builtin_ctzll' {
+		'__builtin_ctz', '__builtin_ctzl', '__builtin_ctzll' {
 			return e.emit_count_trailing(call, depth)
 		}
-		'__builtin_clz', '__builtin_clzll' {
+		'__builtin_clz', '__builtin_clzl', '__builtin_clzll' {
 			return e.emit_count_leading(call, depth)
+		}
+		'__builtin_ffs', '__builtin_ffsl', '__builtin_ffsll' {
+			return e.emit_first_set(call, depth)
 		}
 		'__builtin_return_address' {
 			return e.emit_return_address(call)
@@ -11584,14 +11729,25 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 			e.append(e.target.unreachable())
 			return
 		}
-		'__builtin_bswap16', '__builtin_bswap32' {
+		'__builtin_bswap16', '__builtin_bswap32', '__builtin_bswap64' {
 			return e.emit_byte_swap(call, depth)
 		}
-		'__builtin_popcount', '__builtin_parity' {
+		'__builtin_popcount', '__builtin_popcountl', '__builtin_popcountll' {
 			return e.emit_bit_operation(call, depth)
 		}
-		'__builtin_add_overflow', '__builtin_mul_overflow' {
+		'__builtin_parity', '__builtin_parityl', '__builtin_parityll' {
+			return e.emit_bit_operation(call, depth)
+		}
+		'__builtin_add_overflow', '__builtin_sub_overflow', '__builtin_mul_overflow' {
 			return e.emit_overflow(call, depth)
+		}
+		'__builtin_assume_aligned' {
+			return e.emit_assume_aligned(call, depth)
+		}
+		'__builtin_memcpy', '__builtin_memmove', '__builtin_memset', '__builtin_memcmp',
+		'__builtin_memchr', '__builtin_strlen', '__builtin_strnlen', '__builtin_strcmp',
+		'__builtin_strncmp', '__builtin_strcpy', '__builtin_strncpy' {
+			return e.emit_memory_builtin(call, depth)
 		}
 		'__builtin_alloca' {
 			return e.emit_alloc(call, depth)
