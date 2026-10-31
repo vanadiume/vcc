@@ -190,9 +190,9 @@ pub const features = [
 	// compiler's own name: `__builtin_memcpy` is a `memcpy` the compiler is told
 	// about. They are in the reserved namespace like the rows above, so no ISO mode
 	// is made to refuse them and a strict mode reports one only when asked. The
-	// reader gives each the type the function has and the back end emits the call,
-	// so what a strict mode reports is the spelling and not a construct this
-	// compiler invented.
+	// reader gives each the type the function has and the back end emits the work
+	// the function does, a byte at a time, so what a strict mode reports is the
+	// spelling and not a construct this compiler invented.
 	Feature{
 		spellings: ['__builtin_memcpy', '__builtin_memmove', '__builtin_memset', '__builtin_memcmp',
 			'__builtin_memchr', '__builtin_strlen', '__builtin_strnlen', '__builtin_strcmp',

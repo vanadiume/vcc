@@ -3881,6 +3881,35 @@ fn test_a_library_name_that_resolves_to_an_archive_is_pulled() {
 	assert result.exit_code == 9
 }
 
+// The memory and string builtins are emitted where they are written, so a program
+// built with -nostdlib has no library symbol left to resolve: the image carries
+// the bytes and names no library at all, and it runs.
+fn test_a_nostdlib_program_that_uses_the_memory_builtins_runs() {
+	source := scratch('nostdlib_memory.c')
+	binary := scratch('nostdlib_memory')
+	body := 'int main(void) {\n    char buffer[8];\n    __builtin_memset(buffer, 0x41, 4);\n    __builtin_memcpy(buffer + 2, "xy", 2);\n    if (buffer[0] != 0x41 || buffer[2] != \'x\' || buffer[3] != \'y\') { return 1; }\n    if (__builtin_strlen("abcd") != 4) { return 2; }\n    if (__builtin_strcmp("abc", "abc") != 0) { return 3; }\n    if ((char *)__builtin_memchr("abc", \'b\', 3) == (void *)0) { return 4; }\n    return 0;\n}\n'
+	os.write_file(source, body) or { panic(err) }
+	opts := cli.parse(['-nostdlib', source, '-o', binary]) or { panic(err) }
+	assert !opts.default_libraries()
+	target := backend.resolve(opts.target) or { panic(err.msg()) }
+	lexed := tokenize.lex(body)
+	parsed := parser.parse(lexed.tokens)
+	emitted := codegen.emit(parsed.unit, codegen.Options{
+		target:               opts.target
+		entry:                'main'
+		link_kind:            link_kind(opts)
+		no_default_libraries: !default_libraries(opts, target)
+	})
+	assert emitted.diagnostics.len == 0
+	os.write_file_array(binary, emitted.bytes) or { panic(err) }
+	os.chmod(binary, 0o755) or { panic(err) }
+	assert os.execute(os.quoted_path(binary)).exit_code == 0
+	content := os.read_file(binary) or { panic(err) }
+	assert !content.contains('libc.so.6')
+	assert !content.contains('memcpy')
+	assert !content.contains('strlen')
+}
+
 // A target with no C library: the same machine and the same system calls, with
 // nothing for the container to name and no start files for the link. The program
 // that comes out runs and carries no library, and the standard header search is

@@ -653,9 +653,10 @@ fn (mut p Parser) parse_bit_count(at tokenize.Token) !ast.Expr {
 // parse_library_builtin reads the builtins that are a library function under the
 // compiler's own name: the memory and string set. gcc treats each of them as the
 // function of the same name in the reserved namespace, so the value the
-// expression is worth is the function's value and the back end emits the call.
-// Nothing is folded here: a length is rarely a constant and the bytes belong to
-// the program, so the call stays a call.
+// expression is worth is the function's value. Nothing is folded here: a length is
+// rarely a constant and the bytes belong to the program. What the back end emits
+// is the function's own work rather than a call to it, because a program built
+// with -nostdlib has no library to call and the caller asked for the bytes.
 //
 // The answer's type is the one the library function has, which is why each name
 // carries its own: memcpy, memmove, memset and memchr answer a void pointer,

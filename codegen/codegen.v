@@ -11624,33 +11624,6 @@ fn (mut e Emitter) emit_overflow(call ast.Call, depth int) !void {
 	e.append(e.target.move_register32(accumulator, scratch)!)
 }
 
-// emit_library_builtin answers the builtins that are a library function under the
-// compiler's own name: the memory and string set. The call is the same call to the
-// same function with the same arguments, so the name is the whole of what changes,
-// and the image resolves the function's name the way it resolves any other. A file
-// that defines `memcpy` for itself gets its own definition called, which is what
-// gcc does with a call it does not expand inline.
-fn (mut e Emitter) emit_library_builtin(call ast.Call, depth int) !void {
-	// The node is frozen, so the forwarded call is written out rather than the
-	// name field being replaced on a copy.
-	forwarded := ast.Call{
-		name:   library_builtin_name(call.name)
-		callee: call.callee
-		args:   call.args
-		typ:    call.typ
-		line:   call.line
-		col:    call.col
-	}
-	return e.emit_call(forwarded, depth)
-}
-
-// library_builtin_name is the function a builtin of that set stands for: the name
-// the program would have written without the prefix, which is what every spelling
-// in the set is built from. `__builtin_memcpy` is `memcpy`.
-fn library_builtin_name(name string) string {
-	return name.trim_string_left('__builtin_')
-}
-
 // emit_alloc answers `__builtin_alloca(size)`: it claims `size` bytes on the
 // calling function's stack and leaves their address in the accumulator. The size is
 // rounded up to the boundary a call needs and subtracted from the stack pointer, the
@@ -11774,7 +11747,7 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 		'__builtin_memcpy', '__builtin_memmove', '__builtin_memset', '__builtin_memcmp',
 		'__builtin_memchr', '__builtin_strlen', '__builtin_strnlen', '__builtin_strcmp',
 		'__builtin_strncmp', '__builtin_strcpy', '__builtin_strncpy' {
-			return e.emit_library_builtin(call, depth)
+			return e.emit_memory_builtin(call, depth)
 		}
 		'__builtin_alloca' {
 			return e.emit_alloc(call, depth)
