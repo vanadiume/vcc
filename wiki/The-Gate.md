@@ -209,13 +209,16 @@ now. [[Roadmap]] M3 says what the chain needs next.
 ## tools/build.vsh, the front door
 
 `v run tools/build.vsh` is the front door over the same commands: build the
-compiler, run the gate, run both corpora, benchmark, build the image, and
-report the version. Every step calls the runner that already owns the check,
-so no count or floor is kept twice.
+compiler and its runtime archive, run the gate, run both corpora, benchmark,
+build the image, and report the version. Every step calls the runner that
+already owns the check, so no count or floor is kept twice.
 
 ```sh
-v run tools/build.vsh                 # build the compiler, then the gate, then both corpora
+v run tools/build.vsh                 # the compiler, libvcc, the gate, then both corpora
 v run tools/build.vsh build [-o PATH] # the compiler only; -o is where it lands
+v run tools/build.vsh libvcc          # ../libvcc with this compiler, then a program against it
+v run tools/build.vsh install [--prefix DIR] [--libvcc DIR]
+                                      # both into DIR/bin and DIR/lib, then a program with them
 v run tools/build.vsh test            # `v test .`
 v run tools/build.vsh gate            # gate.vsh
 v run tools/build.vsh compliance      # compliance.vsh
@@ -224,14 +227,15 @@ v run tools/build.vsh corpora         # compliance and regress together
 v run tools/build.vsh bench [args]    # bench.vsh, args passed through
 v run tools/build.vsh docker          # build the image, then run the binary in it
 v run tools/build.vsh version         # the binary, v.mod, and the pinned V commit
-v run tools/build.vsh all             # every step, then a summary
+v run tools/build.vsh all             # every step but install, then a summary
 v run tools/build.vsh --list          # the steps, one line each
 ```
 
 The compiler is built under the temp directory for the steps that only need
 one to run cases, and no step leaves a `vcc` in the tree unless it was asked
-for by name (`build -o PATH`). `all` runs every step even when one fails and
-exits non-zero if any failed, so one run reports every failure. A step whose
+for by name (`build -o PATH`). `install` writes outside the tree, so it is not
+in the default run and not in `all`. `all` runs every step even when one fails
+and exits non-zero if any failed, so one run reports every failure. A step whose
 tool is missing is skipped and named in the summary; that fails the run only
 when the step was asked for by name. `version` prints what the binary reports,
 what `v.mod` names, and the V commit `ci.yml` pins, because those three drift.

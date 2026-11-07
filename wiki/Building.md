@@ -39,6 +39,14 @@ v run tools/bench.vsh      # wall time and peak memory, tcc alongside
 `v run tools/build.vsh` is the front door over the same commands when one run
 is wanted.
 
+An installed compiler is a pair: `/usr/local/bin/vcc` and
+`/usr/local/lib/libvcc.a` by default, or the same two files under `--prefix`.
+`v run tools/build.vsh install` builds the compiler and libvcc with it, copies
+both, and then compiles and runs a program that calls a helper from the archive,
+so the install is proved where it lands. A release ships the pair as
+`vcc-<version>-x86_64-linux.tar.gz`, laid out as `usr/bin/vcc` and
+`usr/lib/libvcc.a`.
+
 ## A first program
 
 ```sh
@@ -80,7 +88,8 @@ program reaches are pulled, so an ordinary program carries none of it.
 `-d experimental_libgcc`, which `v run tools/build.vsh build` takes as
 `--experimental-libgcc`; every other build refuses the flag by name.
 `v run tools/build.vsh libvcc` builds the archive from its sibling tree with
-this compiler and links a program against it.
+this compiler and links a program against it. `v run tools/build.vsh install`
+puts that archive and the compiler under a prefix.
 
 `-O` today turns on one optimizer pass: a call whose value the compiler knows
 (`abs`, `labs`, `llabs`) with a literal argument folds to that value. `-O0`

@@ -256,6 +256,37 @@ percent.
 
 ## Extras
 
+### Install it
+
+A release carries one tarball, `vcc-<version>-x86_64-linux.tar.gz`, holding an
+install tree:
+
+```
+usr/bin/vcc
+usr/lib/libvcc.a
+```
+
+Untar it at the root, or build both files from this tree and let the build
+script place them:
+
+```sh
+sudo tar --extract --gzip --file vcc-<version>-x86_64-linux.tar.gz --directory /
+v run tools/build.vsh install                 # /usr/local/bin/vcc, /usr/local/lib/libvcc.a
+v run tools/build.vsh install --prefix /usr   # /usr/bin/vcc, /usr/lib/libvcc.a
+```
+
+The install is both files. vcc writes the machine code itself but links a program
+against `libvcc.a` for the helpers the machine has no instruction for, and it
+looks for the archive in the system library directories and then beside itself.
+A compiler installed without the archive still builds programs that call no
+helper, and refuses one that calls a helper by the name of the helper.
+
+`v run tools/build.vsh install` builds libvcc with the compiler it just built,
+copies the two files into the prefix (through sudo when the prefix is not
+writable), and then compiles and runs a program that calls a helper from the
+archive, so an install that cannot find its own runtime archive fails there. It
+takes `--libvcc DIR` when the tree is not the `libvcc` sibling.
+
 ### Build and run it
 
 Needs V built from source on Linux x86-64, at a commit that accepts this tree.
@@ -298,7 +329,9 @@ The runtime archive a program links is `libvcc.a`, the helpers the machine has
 no instruction for under libgcc's symbol names. It is looked for where a `-l`
 name is looked for and then beside the compiler, and only the members a program
 reaches are pulled into it, so a program that calls no helper carries none of
-the archive. `-nodefaultlibs` leaves the start files in place and takes the C
+the archive. A release ships the archive beside the compiler, and
+`v run tools/build.vsh install` puts both under a prefix; "Install it" above has
+the layout. `-nodefaultlibs` leaves the start files in place and takes the C
 library and libvcc away; `-nostdlib` takes the start files as well, and the
 program that comes out leaves through the kernel's exit because there is no
 library's exit to call. `--link-libgcc` puts the toolchain's `libgcc.a` in

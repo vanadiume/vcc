@@ -66,9 +66,13 @@ COPY . /src
 RUN v -prod -o /vcc . \
  && objcopy --remove-section=.stab --remove-section=.stabstr /vcc
 
-# The artifact is the compiler and nothing else: one file in the image, with no
-# build tooling beside it. Copy it out with
+# The artifact is the compiler: one file in the image, with no build tooling
+# beside it. Copy it out with
 #   id=$(docker create IMAGE) && docker cp "$id:/vcc" ./vcc && docker rm "$id"
+# A compiler on its own is half an install. A program whose link reaches a
+# helper in the runtime archive needs usr/lib/libvcc.a beside usr/bin/vcc, which
+# is the pair the release tarball carries; this image exists to show that the
+# compiler builds to the same bytes twice, not to be installed from.
 # The CMD exists so `docker create` accepts the image; a scratch image has no
 # libc, so the file is meant to be copied out rather than run in place.
 FROM scratch AS artifact

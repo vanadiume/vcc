@@ -157,15 +157,19 @@ open the pull request, so the review goes where the risk is.
 
 ## Releasing
 
-A release is a tag. `vX.Y.Z` runs `.github/workflows/release.yml`, which builds V
-at the pinned commit, puts the tree through the same gate a pull request goes
-through, checks that the version inside the compiler matches the tag, compiles a
-program and runs it, and only then attaches `vcc` and its checksum to a GitHub
-release.
+A release happens on a push to `main`, and `v.mod` decides when. Every push runs
+`.github/workflows/release.yml`, which reads the version in `v.mod`; if no
+release carries that version yet, it builds V at the pinned commit, puts the tree
+through the same gate a pull request goes through, checks that the binary reports
+the version `v.mod` names, compiles a program and runs it, builds libvcc with
+that compiler, and attaches `vcc-<version>-x86_64-linux.tar.gz` and its checksum
+to a GitHub release. The tarball is the install tree, `usr/bin/vcc` and
+`usr/lib/libvcc.a`, and a program that reaches a runtime helper needs both.
 
-So two things before tagging: bump `version` in `cli/cli.v` to match the tag, and
-make sure the gate passes on the commit you are tagging. The workflow stops on
-either one, which is the intent: a compiler that reports a version it is not is
+So the way to cut a release is to bump `version` in `v.mod` and merge. The tag,
+the release title and the binary's `--version` all come from that one line, and
+a push whose version already has a release does nothing. The workflow stops on a
+failed gate, which is the intent: a compiler that reports a version it is not is
 a compiler V will key its cached build artifacts against incorrectly.
 
 ## The wiki

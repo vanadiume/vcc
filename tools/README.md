@@ -6,15 +6,18 @@ a C compiler, no dependency on anything but V and the system's `time`.
 
 ## build.vsh
 
-The front door over the scripts below: build the compiler, run the gate, run
-both corpora, benchmark, build the image, and report the version. Reach for it
-when you want the checks in one command, or when you do not remember which
-runner owns a check. The individual runners are still the way to pass a flag
-they alone take.
+The front door over the scripts below: build the compiler and its runtime
+archive, run the gate, run both corpora, benchmark, build the image, report the
+version, and install the pair. Reach for it when you want the checks in one
+command, or when you do not remember which runner owns a check. The individual
+runners are still the way to pass a flag they alone take.
 
 ```sh
-v run tools/build.vsh                 # build the compiler, then the gate, then both corpora
+v run tools/build.vsh                 # the compiler, libvcc, the gate, then both corpora
 v run tools/build.vsh build [-o PATH] # the compiler only; -o is where it lands
+v run tools/build.vsh libvcc          # ../libvcc with this compiler, then a program against it
+v run tools/build.vsh install [--prefix DIR] [--libvcc DIR]
+                                      # both into DIR/bin and DIR/lib, then a program with them
 v run tools/build.vsh test            # `v -nocache test .`
 v run tools/build.vsh gate            # gate.vsh
 v run tools/build.vsh compliance      # compliance.vsh
@@ -23,18 +26,22 @@ v run tools/build.vsh corpora         # compliance and regress together
 v run tools/build.vsh bench [args]    # bench.vsh, args passed through
 v run tools/build.vsh docker          # build the image, then run the binary in it
 v run tools/build.vsh version         # the binary, v.mod, and the pinned V commit
-v run tools/build.vsh all             # every step, then a summary
+v run tools/build.vsh all             # every step but install, then a summary
 v run tools/build.vsh --list          # the steps, one line each
 ```
 
 Every step calls the runner that owns the check, so no count or floor is kept
 twice. The compiler is built under the temp directory for the steps that only
 need one to run cases, and no step leaves a `vcc` in the tree unless it was
-asked for by name (`build -o PATH`). `all` runs every step even when one fails
-and exits non-zero if any failed, so one run reports every failure. A step whose
-tool is missing is skipped and named in the summary; that fails the run only
-when the step was asked for by name. `version` prints what the binary reports,
-what `v.mod` names, and the V commit `ci.yml` pins, because those three drift.
+asked for by name (`build -o PATH`). `install` is the one step that writes
+outside the tree, so it is not in the default run and not in `all`: it copies
+the compiler and the archive into `/usr/local` by default, or under `--prefix`,
+and proves the pair by linking a program against a helper only the archive
+defines. `all` runs every step even when one fails and exits non-zero if any
+failed, so one run reports every failure. A step whose tool is missing is
+skipped and named in the summary; that fails the run only when the step was
+asked for by name. `version` prints what the binary reports, what `v.mod` names,
+and the V commit `ci.yml` pins, because those three drift.
 
 ## gate.vsh
 
@@ -55,7 +62,7 @@ Seven steps, each reporting on its own line, exit status zero only when all pass
   (`compliance/`, `regression/`, `goldens/`), and no `#include`, `#flag`, or `C.`
   interop in the compiler's own sources, including inside a test directory
 - **build**: `v -o <temp> .`
-- **prod build**: `v -prod -o <temp> .`, the build a release makes, where V's
+- **prod build**: `v -prod -o <temp> .`, the build the image makes, where V's
   warnings are errors
 - **tests**: `v -nocache test .`
 - **documents**: every relative link between the markdown files resolves
@@ -256,11 +263,12 @@ runs the benchmark, which writes its numbers into the run summary. On a push to
 compiler's lines with `lines.vsh`, writing `.github/badges/tests.json` and
 `.github/badges/lines.json` for the badges in `README.md`; the
 compliance job and the regression job do the same for the compliance and
-regressions badges, each counting with its own runner. A second job builds V
-master and runs the build and the tests without calling it a failure: master is
-not the version this tree promises to build with, and finding out early is
-cheaper than finding out from a bump.
+regressions badges, each counting with its own runner. Nothing runs against V
+master: master refuses this tree, which is why the pin is a commit and not a
+branch.
 
-`.github/workflows/release.yml` runs on a `v*` tag: the gate, a check that the
-version inside the compiler matches the tag, a compiled program that is run, and
-only then the release with the binary and its checksum attached.
+`.github/workflows/release.yml` runs on a push to `main` and reads the version
+`v.mod` names. When no release carries that version, it runs the gate, checks
+the binary against `v.mod`, builds libvcc with that compiler, and attaches
+`vcc-<version>-x86_64-linux.tar.gz` with its checksum. The tarball holds the
+install tree, `usr/bin/vcc` and `usr/lib/libvcc.a`.
