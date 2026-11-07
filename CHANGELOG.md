@@ -992,3 +992,9 @@ it owns the change, which is the same vocabulary the commits use.
 * backend, main, preprocess: a target with no C library (2bc69a1)
 * codegen: the memory and string builtins are emitted, not called (101f149)
 * regression: the memory builtins at their edges (3735a92)
+* docs: the changelog names the emitted memory builtins (fa71c1a)
+
+## 2026-11-07
+
+* codegen: an unsigned word widens with zero above it (69f0189)
+* regression: an unsigned word above a 128-bit value (5ef3bb7)
