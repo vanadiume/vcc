@@ -1,25 +1,34 @@
 #!/usr/bin/env -S v run
 
 // The front door over the work this tree asks a person to run: build the
-// compiler, the gate, the two C corpora, the benchmark, the image, and the
-// version report. Every step calls the runner that already owns it, so no count
-// or floor lives here to drift; --list names the steps.
+// compiler and its runtime archive, the gate, the two C corpora, the benchmark,
+// the image, and the version report. Every step calls the runner that already
+// owns it, so no count or floor lives here to drift; --list names the steps.
 //
 // The compiler is built under the temp directory for the steps that only need
 // one to run cases, and `build -o PATH` puts it where a person wants it. `all`
 // runs every step even when one fails, and exits non-zero if any failed. A step
 // whose tool is missing is skipped, and fails only when asked for by name.
+//
+// `install` is the one step that writes outside the tree, so it is not part of
+// the default run or of `all`: it copies the compiler and the runtime archive
+// into a prefix and proves they work as a pair.
 
 import os
 import time
 
-// The default run: the compiler, then the gate, then both corpora. The gate
-// runs `v -nocache test .` itself, so the suite is not a step of its own here.
-const default_steps = ['build', 'gate', 'compliance', 'regress']
+// The default run: the compiler, then its runtime archive, then the gate, then
+// both corpora. The gate runs `v -nocache test .` itself, so the suite is not a
+// step of its own here.
+const default_steps = ['build', 'libvcc', 'gate', 'compliance', 'regress']
 
 // What `all` runs, each step once; `corpora` is those two runners together.
 const every_step = ['build', 'gate', 'test', 'compliance', 'regress', 'bench', 'libvcc', 'docker',
 	'version']
+
+// A step that is named and never run by default, because it writes outside the
+// tree or because its whole point is to be asked for.
+const named_steps = ['install']
 
 struct Context {
 mut:
@@ -61,7 +70,7 @@ fn main() {
 		finish(mut ctx, run_all(mut ctx, every_step, []), false)
 		return
 	}
-	if step != 'corpora' && step !in every_step {
+	if step != 'corpora' && step !in every_step && step !in named_steps {
 		eprintln('build: unknown step ${step}')
 		usage()
 		exit(1)
@@ -89,6 +98,7 @@ fn run_step(mut ctx Context, name string, args []string) Outcome {
 		'gate' { outcome = step_runner(mut ctx, 'gate', 'v run tools/gate.vsh', args) }
 		'bench' { outcome = step_runner(mut ctx, 'bench', 'v run tools/bench.vsh', args) }
 		'libvcc' { outcome = step_libvcc(mut ctx) }
+		'install' { outcome = step_install(mut ctx, args) }
 		'compliance' { outcome = step_corpus(mut ctx, 'compliance', 'v run tools/compliance.vsh') }
 		'regress' { outcome = step_corpus(mut ctx, 'regress', 'v run tools/regress.vsh') }
 		'corpora' { outcome = step_corpora(mut ctx) }
@@ -187,7 +197,125 @@ fn step_libvcc(mut ctx Context) Outcome {
 	return Outcome{ verdict: .passed, name: 'libvcc', detail: archive }
 }
 
-// step_runner passes arguments through, so bench keeps its flags.
+// step_install puts the compiler and the runtime archive where a user's link
+// finds them: PREFIX/bin/vcc and PREFIX/lib/libvcc.a, /usr/local by default. The
+// archive is not optional, because a program that reaches one of its helpers is
+// refused by that helper's name when the archive is missing, so a tree with no
+// libvcc beside it fails here rather than installing half a compiler.
+//
+// Both files come from this run: the compiler is built from this tree, and
+// libvcc is built with that compiler, which is the pair the install is for.
+// What is left behind is then proved as a pair: a program that calls a helper
+// only the archive defines is compiled by the installed binary and run.
+fn step_install(mut ctx Context, args []string) Outcome {
+	mut prefix := '/usr/local'
+	mut tree := os.join_path(os.dir(ctx.root), 'libvcc')
+	mut i := 0
+	for i < args.len {
+		arg := args[i]
+		if arg == '--prefix' || arg == '--libvcc' {
+			if i + 1 >= args.len {
+				return failed('install', '${arg} needs a directory')
+			}
+			if arg == '--prefix' {
+				prefix = args[i + 1]
+			} else {
+				tree = args[i + 1]
+			}
+			i += 2
+			continue
+		}
+		if arg.starts_with('--prefix=') {
+			prefix = arg.all_after('--prefix=')
+		} else if arg.starts_with('--libvcc=') {
+			tree = arg.all_after('--libvcc=')
+		} else {
+			return failed('install', 'install takes --prefix DIR and --libvcc DIR, and not ${arg}')
+		}
+		i++
+	}
+	runner := os.join_path(tree, 'build.vsh')
+	if !os.exists(runner) {
+		return failed('install', 'no ${runner}: a program this compiler writes reaches libvcc.a for the helpers the machine has no instruction for, so the install needs the tree that builds it; name it with --libvcc DIR')
+	}
+	compiler := ensure_compiler(mut ctx)
+	if compiler == '' {
+		return failed('install', 'the compiler did not build')
+	}
+	os.setenv('VCC', compiler, true)
+	if run_in(tree, 'v run build.vsh build --cc vcc') != 0 {
+		return failed('install', 'libvcc did not build with the compiler')
+	}
+	archive := os.join_path(tree, 'target', 'vcc', 'libvcc.a')
+	if !os.exists(archive) {
+		return failed('install', 'the build wrote no ${archive}')
+	}
+	binary := os.join_path(prefix, 'bin', 'vcc')
+	library := os.join_path(prefix, 'lib', 'libvcc.a')
+	// A prefix the user cannot write is the normal case for /usr/local, and a
+	// build script that stops there sends a person to retype the run under sudo.
+	// The copies go through it instead, and the line says which they were.
+	escalate := !writable(prefix)
+	if escalate {
+		println('install: ${prefix} is not writable, so the copies run under sudo')
+	}
+	if !place(compiler, binary, '755', escalate) {
+		return failed('install', 'could not write ${binary}')
+	}
+	if !place(archive, library, '644', escalate) {
+		return failed('install', 'could not write ${library}')
+	}
+	os.mkdir_all(ctx.scratch) or {}
+	program := os.join_path(ctx.scratch, 'runtime_helper.c')
+	exe := os.join_path(ctx.scratch, 'runtime_helper')
+	body := 'long long __divdi3(long long a, long long b);\nint main(void) { return (int)__divdi3(84, 2); }\n'
+	os.write_file(program, body) or { return failed('install', 'could not write a program: ${err}') }
+	// The compiler searches the system's library directories and then its own,
+	// so a prefix that is one of those needs no flag; a staging prefix (the
+	// release tarball's tree) is in no search list and is given one. Either way
+	// the archive the run reads is the one just installed.
+	search := if prefix == '/usr' || prefix == '/usr/local' {
+		''
+	} else {
+		'-L ${os.quoted_path(os.join_path(prefix, 'lib'))}'
+	}
+	if run_in('', '${os.quoted_path(binary)} ${os.quoted_path(program)} ${search} -o ${os.quoted_path(exe)}') != 0 {
+		return failed('install', 'the installed compiler could not link a program against ${library}')
+	}
+	status := run_in('', os.quoted_path(exe))
+	if status != 42 {
+		return failed('install', 'the program answered ${status}, and the helper it called divides 84 by 2')
+	}
+	return Outcome{ verdict: .passed, name: 'install', detail: '${binary}, ${library}' }
+}
+
+// writable says whether a run by this user can create a file under a directory
+// that may not exist yet. The walk stops at the nearest directory that is there,
+// because that is the one a file would be created in.
+fn writable(dir string) bool {
+	mut existing := dir
+	for !os.exists(existing) {
+		parent := os.dir(existing)
+		if parent == existing {
+			return false
+		}
+		existing = parent
+	}
+	probe := os.join_path(existing, '.vcc-install-${os.getpid()}')
+	os.write_file(probe, '') or { return false }
+	os.rm(probe) or {}
+	return true
+}
+
+// place copies one file into a prefix with the mode it needs, through sudo when
+// the prefix is not the user's to write.
+fn place(source string, target string, mode string, escalate bool) bool {
+	if escalate {
+		return os.system_args(['sudo', 'install', '-D', '-m', mode, source, target]) == 0
+	}
+	return os.system_args(['install', '-D', '-m', mode, source, target]) == 0
+}
+
 fn step_runner(mut ctx Context, name string, command string, args []string) Outcome {
 	mut full := command
 	for arg in args {
@@ -388,8 +516,11 @@ fn usage() {
 	println('  bench [args]      tools/bench.vsh, args passed through')
 	println('  libvcc            build ../libvcc with this compiler, then link and run a')
 	println('                    program against the archive it writes')
+	println('  install [--prefix DIR] [--libvcc DIR]')
+	println('                    build both, copy them to DIR/bin/vcc and DIR/lib/libvcc.a')
+	println('                    (/usr/local), then link and run a program with them')
 	println('  docker            build the image, then run the binary in it')
 	println('  version           the binary, v.mod, and the pinned V commit')
-	println('  all               every step, then a summary')
-	println('with no step: build the compiler, then the gate, then both corpora')
+	println('  all               every step but install, then a summary')
+	println('with no step: the compiler, libvcc, the gate, then both corpora')
 }
