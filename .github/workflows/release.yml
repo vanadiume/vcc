@@ -1,14 +1,15 @@
 name: release
 
 # A release is automatic, and v.mod decides when. Every push to main reads the
-# version v.mod names; if no release carries that version yet, the binary is
-# built, put through the same gate a pull request goes through, run once, and
-# attached to a release tagged with the version. A push whose v.mod version
-# already has a release does nothing, so the way to cut a release is to bump the
-# version in v.mod and merge. v.mod is the single source: the tag, the release
-# title and the binary's `--version` all come from it, and a compiler that
-# reports the wrong version is one V will key its cached builds against
-# incorrectly (see "What a drop-in has to satisfy" in README.md).
+# version v.mod names; if no release carries that version yet, the compiler and
+# its runtime archive are built, put through the same gate a pull request goes
+# through, run once, staged as /usr/bin/vcc and /usr/lib/libvcc.a, and attached
+# as one tarball. A push whose v.mod version already has a release does nothing,
+# so the way to cut a release is to bump the version in v.mod and merge. v.mod is
+# the single source: the tag, the release title and the binary's `--version` all
+# come from it, and a compiler that reports the wrong version is one V will key
+# its cached builds against incorrectly (see "What a drop-in has to satisfy" in
+# README.md).
 
 on:
   push:
@@ -30,6 +31,12 @@ env:
   # `.github/workflows/ci.yml` says why the snapshot is pinned.
   VC_COMMIT: bcfdc7f33e7b7908ee40f76d059c0e2894fb4a3b
   V_DIR: /opt/v
+  # libvcc is the runtime archive every program that reaches a helper links
+  # against, and the release carries it beside the compiler. It is pinned for the
+  # same reason V is: a release is built from commits, not from whatever the two
+  # repositories held that morning.
+  LIBVCC_REPO: https://github.com/vanadiume/libvcc
+  LIBVCC_COMMIT: cf3f6624e7a7dfe895a88c262df82014c2b25de5
 
 jobs:
   version:
@@ -117,12 +124,61 @@ jobs:
             exit 1
           fi
 
+      - name: package the compiler and its runtime archive
+        run: |
+          # Both files come out of this run: the compiler from this tree, the
+          # archive from libvcc built by that compiler. The install step proves
+          # the pair by linking a program against a helper only the archive
+          # defines before the tarball is written.
+          git clone --quiet "$LIBVCC_REPO" "$RUNNER_TEMP/libvcc"
+          git -C "$RUNNER_TEMP/libvcc" checkout --quiet "$LIBVCC_COMMIT"
+          v run tools/build.vsh install \
+            --prefix "$RUNNER_TEMP/stage/usr" \
+            --libvcc "$RUNNER_TEMP/libvcc"
+          stem="vcc-${{ needs.version.outputs.version }}-x86_64-linux"
+          # Sorted, owned by root and stamped at the epoch, so the same tree
+          # packs to the same bytes.
+          tar --create --gzip --file "$RUNNER_TEMP/${stem}.tar.gz" \
+            --directory "$RUNNER_TEMP/stage" \
+            --owner=0 --group=0 --numeric-owner --mtime=@0 --sort=name \
+            usr
+          (cd "$RUNNER_TEMP" && sha256sum "${stem}.tar.gz" > "${stem}.tar.gz.sha256")
+
+      - name: the tarball holds a compiler that links against the archive beside it
+        run: |
+          stem="vcc-${{ needs.version.outputs.version }}-x86_64-linux"
+          root="$RUNNER_TEMP/extract"
+          mkdir -p "$root"
+          tar --extract --gzip --file "$RUNNER_TEMP/${stem}.tar.gz" --directory "$root"
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          printf 'long long __divdi3(long long, long long);\nint main(void) { return (int)__divdi3(84, 2); }\n' > "$work/helper.c"
+          # Untarred under a temporary root, the archive is not in a directory
+          # this run searches, so -L stands in for the /usr/lib the tarball
+          # installs to. The program exits with the quotient, 84 / 2.
+          "$root/usr/bin/vcc" "$work/helper.c" -L "$root/usr/lib" -o "$work/helper"
+          if "$work/helper"; then
+            status=0
+          else
+            status=$?
+          fi
+          if [ "$status" -ne 42 ]; then
+            echo "the packaged compiler linked a program that exited ${status}, and its helper divides 84 by 2" >&2
+            exit 1
+          fi
+          answer="$("$root/usr/bin/vcc" --version | awk '{print $2}')"
+          if [ "$answer" != "${{ needs.version.outputs.version }}" ]; then
+            echo "v.mod names ${{ needs.version.outputs.version }} and the packaged binary answered ${answer}" >&2
+            exit 1
+          fi
+
       - name: publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          sha256sum vcc > vcc.sha256
-          gh release create "${{ needs.version.outputs.tag }}" vcc vcc.sha256 \
+          stem="vcc-${{ needs.version.outputs.version }}-x86_64-linux"
+          gh release create "${{ needs.version.outputs.tag }}" \
+            "$RUNNER_TEMP/${stem}.tar.gz" "$RUNNER_TEMP/${stem}.tar.gz.sha256" \
             --title "${{ needs.version.outputs.tag }}" \
             --target "${GITHUB_SHA}" \
             --generate-notes
