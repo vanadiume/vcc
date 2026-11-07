@@ -3460,10 +3460,10 @@ fn test_two_128_bit_values_are_ordered() {
 }
 
 // A conversion to a 128-bit type widens the value it converts, and what the word
-// above holds is what that value's own width asks for: the sign of a signed value,
-// zero for an unsigned one, and for a value as wide as a word the sign of the whole
-// value whichever type it is converted to. Every program here is one gcc 16.2.1
-// answers with the status this compiler answers with.
+// above holds is what that value's own type asks for: the sign of a signed value,
+// zero for an unsigned one, and for a signed value as wide as a word, or a pointer,
+// the sign of the whole value. Every program here is one gcc 16.2.1 answers with the
+// status this compiler answers with.
 fn test_a_narrow_value_converts_to_a_128_bit_type() {
 	doubled := doubling('t64', 64)
 	cases := [
@@ -3488,6 +3488,33 @@ fn test_a_narrow_value_converts_to_a_128_bit_type() {
 		emitted := emit(translation_unit('int main() {\n${source}\n}'), Options{})
 		assert emitted.diagnostics.len == 0
 		assert run_image(emitted.bytes) == 1
+	}
+}
+
+// An unsigned value as wide as a word is a value below 2^64, so the word above it in
+// a 128-bit object is zero rather than the sign of its top bit. Sign-extending one
+// read a value whose top bit is set as negative: the word above came out as all
+// ones, and every shift and division of a 128-bit value built that way answered with
+// the wrong high word while its low word was right, which is why the defect looked
+// like a shift rather than a conversion. A signed word and a pointer are still
+// extended from their own top bit, which is what gcc 16.2.1 answers for both, and
+// every status below is one that compiler gives the same program.
+fn test_an_unsigned_word_widens_into_a_128_bit_value_with_zero_above_it() {
+	cases := [
+		WideValueCase{'int main() { unsigned long u = 0xfedcba9876543210UL; unsigned __int128 v = (unsigned __int128)u; return (int)(v >> 64); }', 0},
+		WideValueCase{'int main() { unsigned long u = 0xfedcba9876543210UL; unsigned __int128 v = (unsigned __int128)u; return (int)((v >> 60) & 0xff); }', 15},
+		WideValueCase{'int main() { unsigned long u = 0xfedcba9876543210UL; __int128 v = (__int128)u; return (int)(v >> 64); }', 0},
+		WideValueCase{'int main() { long s = -1; __int128 v = (__int128)s; return (int)(v >> 64); }', 255},
+		WideValueCase{'int main() { char *p = (char *)-1; unsigned __int128 v = (unsigned __int128)p; return (int)(v >> 64); }', 255},
+		WideValueCase{'int main() { unsigned int u = 0xffffffffu; unsigned __int128 v = u; return (int)(v >> 64); }', 0},
+		WideValueCase{'int main() { unsigned long lo = 0xfedcba9876543210UL; unsigned __int128 a = ((unsigned __int128)0x0123456789abcdefULL << 64) | lo; return (int)((a >> 64) & 0xff); }', 239},
+		WideValueCase{'int main() { unsigned long lo = 0xfedcba9876543210UL; unsigned __int128 a = ((unsigned __int128)0x0123456789abcdefULL << 64) | lo; return (int)(((a >> 1) >> 64) & 0xff); }', 247},
+		WideValueCase{'int main() { unsigned long lo = 0xfedcba9876543210UL; unsigned __int128 a = ((unsigned __int128)0x0123456789abcdefULL << 64) | lo; return (int)((a / 3 >> 64) & 0xff); }', 165},
+	]
+	for case in cases {
+		emitted := emit(translation_unit(case.source), Options{})
+		assert emitted.diagnostics.len == 0
+		assert run_image(emitted.bytes) == case.status
 	}
 }
 
