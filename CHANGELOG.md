@@ -1001,3 +1001,4 @@ it owns the change, which is the same vocabulary the commits use.
 * tools: the front door installs the compiler with its runtime archive (b3856ad)
 * github: a release is a tarball of vcc and libvcc (f86e4bb)
 * docs: the build and release text carries libvcc (7e3686b)
+* docs: the changelog names the install and the tarball (19e289f)
