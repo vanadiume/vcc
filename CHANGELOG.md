@@ -998,3 +998,6 @@ it owns the change, which is the same vocabulary the commits use.
 
 * codegen: an unsigned word widens with zero above it (69f0189)
 * regression: an unsigned word above a 128-bit value (5ef3bb7)
+* tools: the front door installs the compiler with its runtime archive (b3856ad)
+* github: a release is a tarball of vcc and libvcc (f86e4bb)
+* docs: the build and release text carries libvcc (7e3686b)
