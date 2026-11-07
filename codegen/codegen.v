@@ -6777,7 +6777,15 @@ fn (mut e Emitter) store_wide_at(address Slot, expr ast.Expr, line int, col int,
 	waiting := e.remainder(line, col)!
 	pointer := e.scratch(line, col)!
 	e.emit_expr_at(expr, depth + 1)!
-	e.append(e.target.sign_extend_word(accumulator, accumulator)!)
+	if expr.typ.is_unsigned_type() {
+		// An unsigned value of four bytes keeps its bits with zero above them, so
+		// the word above it is zero: `(unsigned __int128)0xffffffffu` is 4294967295
+		// and not -1. Measured on gcc 16.2.1. The choice is the one
+		// extend_operand_to_word makes for the same value.
+		e.append(e.target.move_register32(accumulator, accumulator)!)
+	} else {
+		e.append(e.target.sign_extend_word(accumulator, accumulator)!)
+	}
 	e.append(e.target.move_register64(waiting, accumulator)!)
 	e.append(e.target.shift_right_arithmetic(accumulator, 63)!)
 	e.load_argument(address, pointer, e.target.word_size, line, col)!
@@ -8910,14 +8918,21 @@ fn (mut e Emitter) widen_word_pair(unsigned bool, width int, line int, col int) 
 	low := e.accumulator(line, col)!
 	high := e.remainder(line, col)!
 	word := e.target.word_size
-	if width >= word {
-		// A value as wide as a word is extended from its own top bit whichever type
-		// it is converted to, because a value that wide is already a word and the
-		// conversion of a pointer or a long to a 128-bit type is the value rather
-		// than its unsigned reading. Measured on gcc 16.2.1, which answers
-		// `(unsigned __int128)(long)-1` with 2^128 - 1 and not with 2^64 - 1.
+	if width >= word && !unsigned {
+		// A signed value as wide as a word is extended from its own top bit: what
+		// is converted is the value, so `(unsigned __int128)(long)-1` is 2^128 - 1
+		// and not 2^64 - 1. Measured on gcc 16.2.1. A pointer is this case too on
+		// that compiler, which answers `(unsigned __int128)(void *)0xfedcba9876543210`
+		// with that value sign-extended over both words.
 		e.append(e.target.move_register64(high, low)!)
 		e.append(e.target.shift_right_arithmetic(high, 63)!)
+	} else if width >= word {
+		// An unsigned word is a value below 2^64, so the word above it is zero.
+		// Sign-extending it read a value whose top bit was set as negative:
+		// `(unsigned __int128)0xfedcba9876543210UL` came out as
+		// 0xffffffffffffffff_fedcba9876543210, and every 128-bit shift or division
+		// of a value built that way answered with the wrong high word.
+		e.append(e.target.xor_word(high, high)!)
 	} else if unsigned {
 		e.append(e.target.move_register32(low, low)!)
 		e.append(e.target.xor_word(high, high)!)
