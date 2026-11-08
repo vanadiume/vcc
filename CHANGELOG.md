@@ -1007,3 +1007,4 @@ it owns the change, which is the same vocabulary the commits use.
 * docs: the changelog names the runtime helper work (7bc49b3)
 * codegen: the _BitInt program reads its value without dividing (ecc9fe8)
 * docs: the changelog names the _BitInt test (239d20c)
+* backend, codegen, linking: an import check asks only the image's libraries (c17754e)

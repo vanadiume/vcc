@@ -335,9 +335,11 @@ the archive. A release ships the archive beside the compiler, and
 the layout. `-nodefaultlibs` leaves the start files in place and takes the C
 library and libvcc away; `-nostdlib` takes the start files as well, and the
 program that comes out leaves through the kernel's exit because there is no
-library's exit to call. `--link-libgcc` puts the toolchain's `libgcc.a` in
-libvcc's place, and only a compiler built with `-d experimental_libgcc` accepts
-the flag.
+library's exit to call. With either flag the image names only the libraries the
+command line names, and an import none of them defines is refused at compile
+time rather than left for the loader to report at start. `--link-libgcc` puts
+the toolchain's `libgcc.a` in libvcc's place, and only a compiler built with
+`-d experimental_libgcc` accepts the flag.
 
 A division or a remainder of two `__int128` values is a call to the archive,
 because the machine has no instruction that divides a pair: the compiler emits
