@@ -1004,3 +1004,4 @@ it owns the change, which is the same vocabulary the commits use.
 * docs: the changelog names the install and the tarball (19e289f)
 * cli: the -fignore-natives flag is read (100fdd1)
 * codegen: a 128-bit operation calls the runtime archive (8f2a6cd)
+* docs: the changelog names the runtime helper work (7bc49b3)
