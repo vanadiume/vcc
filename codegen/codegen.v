@@ -48,6 +48,12 @@ pub:
 	// every address settled here, so its addressing is unchanged whether the
 	// flag is given or not.
 	pic bool
+	// ignore_natives is -fignore-natives: a 128-bit operation this machine has
+	// instructions for is written as a call to the runtime's helper anyway, so
+	// that the runtime's own copy of the operation is what runs. It changes a
+	// multiply and a shift; a division has no machine instruction and is a call
+	// either way.
+	ignore_natives bool
 	// link_kind is which kind of file the wrapper writes for this unit: a
 	// program, a static program, or a shared object. It is the command line's
 	// -shared and -static decision, and it is an option here because a single
@@ -295,17 +301,6 @@ struct ChainLink {
 // Emitter writes one translation unit into a Program. It owns statement and
 // expression emission and the constant walk, and it records what it cannot know:
 // where the text will land, and what the loader will do once the program starts.
-// WideWorking is the scratch a division of two pairs needs, taken from one
-// reservation so the four things it holds sit together: the quotient, which starts
-// as the dividend and is shifted a bit at a time, the remainder, the count of bits
-// still to shift, and a word per operand saying whether that operand was negative.
-struct WideWorking {
-	quotient  Slot
-	remainder Slot
-	counter   Slot
-	flags     Slot
-}
-
 struct Emitter {
 	target backend.Target
 	// representation is what the target says about the C types: the width of a
@@ -331,6 +326,10 @@ struct Emitter {
 	// pic says a relocatable object reaches a non-static top-level object
 	// through the global offset table rather than through a direct reference.
 	pic bool
+	// ignore_natives says a 128-bit operation the machine has instructions for
+	// is a call to the runtime's helper rather than an inline sequence, which is
+	// what the runtime's own copy of the operation is tested through.
+	ignore_natives bool
 	// link_kind is which kind of file the wrapper writes, and nothing before
 	// the wrapper reads it.
 	link_kind linux.LinkKind
@@ -578,7 +577,6 @@ mut:
 	// the argument of another call has to land somewhere the outer call is not
 	// using.
 	wide_arguments []Slot
-	wide_working   []WideWorking
 	// loops is the loops being emitted, innermost last, for break and continue.
 	// A switch is on this stack too, because a break inside one leaves it: the
 	// entry says which it is.
@@ -718,6 +716,7 @@ pub fn emit(unit ast.TranslationUnit, opts Options) Result {
 		link:                 opts.link
 		start_only:           opts.start_only
 		pic:                  opts.pic
+		ignore_natives:       opts.ignore_natives
 		link_kind:            opts.link_kind
 		internal:             internal
 		unit:                 unit
@@ -2054,7 +2053,6 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 	e.wide_right = []Slot{}
 	e.wide_scratch = []Slot{}
 	e.wide_arguments = []Slot{}
-	e.wide_working = []WideWorking{}
 	// The named labels of a function are that function's, and the maps that
 	// hold them start empty for each one: a label is a name for a place inside
 	// one function, and a goto cannot reach out of the function it is written
@@ -8798,9 +8796,10 @@ fn (mut e Emitter) emit_deref(unary ast.Unary, depth int) !void {
 // under it rather than an int.
 // The 128-bit value model. A value of the type lives in the pair the result
 // register and the one above it form, the low word low: that is the pair a
-// multiplication and a division already leave their two-word answer in, and the
-// pair a call hands one back in, so a value and a machine result are one shape.
-// Nothing here decides which word an instruction works on; that is the backend's.
+// multiplication leaves its answer in, the pair a runtime helper hands one back
+// in, and the pair a call hands one back in, so a value and a machine result are
+// one shape. Nothing here decides which word an instruction works on; that is
+// the backend's.
 //
 // Two pairs do not fit in the registers a step has while the right side is still
 // allowed to call a function, so a step keeps both of its operands in the frame:
@@ -8812,60 +8811,6 @@ fn (mut e Emitter) emit_deref(unary ast.Unary, depth int) !void {
 // 128-bit step in: sixteen bytes, because the value is two words, one level per
 // nesting so an outer step's operand survives the step inside it, and one slot
 // per side so the two operands do not overwrite each other.
-// wide_working_slot is the block a division of two pairs works in, one block per
-// level of nesting so a division inside a division still has its own.
-fn (mut e Emitter) wide_working_slot(depth int) WideWorking {
-	for e.wide_working.len <= depth {
-		block := e.reserve(wide_bytes * 4)
-		e.wide_working << WideWorking{
-			quotient:  Slot{ offset: block.offset, width: block.width }
-			remainder: Slot{ offset: block.offset + wide_bytes, width: block.width }
-			counter:   Slot{ offset: block.offset + wide_bytes * 2, width: 8 }
-			flags:     Slot{ offset: block.offset + wide_bytes * 3, width: 8 }
-		}
-	}
-	return e.wide_working[depth]
-}
-
-// wide_load_word and wide_store_word move one word of a pair between a slot and a
-// register, which is what a routine that shifts a pair a bit at a time is made of.
-fn (mut e Emitter) wide_load_word(slot Slot, at int, reg backend.Register, line int, col int) !void {
-	frame := e.slot_base_register(slot, line, col)!
-	word := e.target.word_size
-	e.append(e.target.load_slot(frame, slot.offset + at * word, reg, word)!)
-}
-
-fn (mut e Emitter) wide_store_word(slot Slot, at int, reg backend.Register, line int, col int) !void {
-	frame := e.slot_base_register(slot, line, col)!
-	word := e.target.word_size
-	e.append(e.target.store_slot(frame, slot.offset + at * word, reg, word)!)
-}
-
-// wide_negate_slot negates a pair where it sits, which is the sign change the
-// division needs on an operand and on an answer: the low word is negated, the
-// borrow it leaves is added to the high word, and the high word is negated. It is
-// the sequence emit_wide_unary writes for a sign change in the registers.
-fn (mut e Emitter) wide_negate_slot(slot Slot, line int, col int) !void {
-	low := e.accumulator(line, col)!
-	high := e.remainder(line, col)!
-	e.wide_load_word(slot, 0, low, line, col)!
-	e.wide_load_word(slot, 1, high, line, col)!
-	e.append(e.target.negate_word(low)!)
-	e.append(e.target.add_with_carry_immediate(high, 0)!)
-	e.append(e.target.negate_word(high)!)
-	e.wide_store_word(slot, 0, low, line, col)!
-	e.wide_store_word(slot, 1, high, line, col)!
-}
-
-// wide_copy_slot copies a pair from one slot to another.
-fn (mut e Emitter) wide_copy_slot(from Slot, to Slot, line int, col int) !void {
-	low := e.accumulator(line, col)!
-	e.wide_load_word(from, 0, low, line, col)!
-	e.wide_store_word(to, 0, low, line, col)!
-	e.wide_load_word(from, 1, low, line, col)!
-	e.wide_store_word(to, 1, low, line, col)!
-}
-
 fn (mut e Emitter) wide_pair_slot(mut pairs []Slot, depth int) Slot {
 	for pairs.len <= depth {
 		pairs << e.reserve(wide_bytes)
@@ -9056,10 +9001,19 @@ fn (mut e Emitter) emit_wide_step(step ast.Binary, depth int) !void {
 		// The right operand of a shift is a count rather than a value of the pair's
 		// type: it is read as a count and never widened into a pair. The type the
 		// answer has is the left operand's, which is therefore the only signedness
-		// a shift asks about.
+		// a shift asks about. A shift the machine has an instruction for is
+		// written inline, and -fignore-natives turns it into the runtime's call.
 		if value := e.constant(step.right) {
+			bits := e.shift_bits(step, value, 128)!
+			if e.emits_wide_helper(step.op) {
+				name := wide_helper_name(step.op, e.wide_unsigned(step.left)) or {
+					e.diagnostics << problem(step.line, step.col, 'internal: a shift of a 128-bit value has no runtime helper')
+					return error('no helper for a shift')
+				}
+				return e.emit_wide_shift_helper_constant(step, left, bits, name)
+			}
 			e.load_pair(left, step.line, step.col)!
-			return e.apply_wide_shift(step, e.shift_bits(step, value, 128)!, step.line, step.col)
+			return e.apply_wide_shift(step, bits, step.line, step.col)
 		}
 		// A count the program works out is one the emitter does not know, so the
 		// pair stays in its slot while the count is worked out into the register the
@@ -9068,6 +9022,13 @@ fn (mut e Emitter) emit_wide_step(step ast.Binary, depth int) !void {
 		count := e.scratch(step.line, step.col)!
 		e.check_count_register(step, count)!
 		e.append(e.target.move_register64(count, e.accumulator(step.line, step.col)!)!)
+		if e.emits_wide_helper(step.op) {
+			name := wide_helper_name(step.op, e.wide_unsigned(step.left)) or {
+				e.diagnostics << problem(step.line, step.col, 'internal: a shift of a 128-bit value has no runtime helper')
+				return error('no helper for a shift')
+			}
+			return e.emit_wide_shift_helper_register(step, left, count, name)
+		}
 		e.load_pair(left, step.line, step.col)!
 		return e.apply_wide_shift_register(step, count, step.line, step.col)
 	}
@@ -9080,154 +9041,6 @@ fn (mut e Emitter) emit_wide_step(step ast.Binary, depth int) !void {
 	}
 	e.load_pair(left, step.line, step.col)!
 	return e.apply_wide_binary(step, left, right, depth)
-}
-
-// emit_wide_division divides one pair by another by shifting and subtracting, which
-// is how a division is done when there is nothing to call. gcc hands this operation
-// to libgcc at every optimization level, and this back end links no library and has
-// no runtime of its own, so the routine is emitted instead of named.
-//
-// The dividend is copied into the quotient, which is shifted left one bit at a time;
-// the remainder is shifted left with the top bit of the quotient coming in at its
-// bottom, and the divisor is subtracted from the remainder whenever it fits, which
-// sets the quotient's lowest bit. After one pass per bit of the value the quotient
-// holds the answer and the remainder holds the remainder.
-//
-// The signed form is the unsigned one on absolute values, with the signs put back at
-// the end: the remainder takes the dividend's sign and the quotient the two signs
-// together, which is what C asks for. INT128_MIN divided by -1 is the case that
-// would overflow if the signs were put back by negating the dividend, and it does
-// not: the absolute value is divided, the quotient comes out as 2^127, and the signs
-// cancel, which is the answer gcc 16.2.1 gives rather than a trap.
-//
-// A divisor of zero is a trap, in gcc and in the C standard both, and it is the
-// machine's own trap here: the routine reaches an actual division by the zero
-// divisor, so the fault a program sees is the same one gcc's program sees.
-fn (mut e Emitter) emit_wide_division(step ast.Binary, left Slot, right Slot, depth int) !void {
-	frame := e.frame_pointer(step.line, step.col)!
-	low := e.accumulator(step.line, step.col)!
-	high := e.remainder(step.line, step.col)!
-	other := e.scratch(step.line, step.col)!
-	word := e.target.word_size
-	signed := !e.wide_unsigned(step.left) && !e.wide_unsigned(step.right)
-	work := e.wide_working_slot(depth)
-	// A zero divisor faults in the machine, which is the behaviour the language
-	// asks for and the one gcc has, so the reachable instruction is a division by
-	// it: nothing after this runs in that case.
-	e.wide_load_word(right, 0, low, step.line, step.col)!
-	e.wide_load_word(right, 1, other, step.line, step.col)!
-	e.append(e.target.or_word(low, other)!)
-	divisor_is_not_zero := e.label()
-	e.branch(.branch_nonzero, divisor_is_not_zero, step.line, step.col)!
-	e.wide_load_word(right, 0, other, step.line, step.col)!
-	e.append(e.target.move_immediate32(low, 0)!)
-	e.append(e.target.move_immediate32(high, 0)!)
-	e.append(e.target.divide_pair(other)!)
-	e.place(divisor_is_not_zero)
-	// Each operand is made positive, and whether it had to be is kept: one word per
-	// operand.
-	e.append(e.target.move_immediate32(low, 0)!)
-	e.append(e.target.store_slot(frame, work.flags.offset, low, word)!)
-	e.append(e.target.store_slot(frame, work.flags.offset + word, low, word)!)
-	if signed {
-		for side in 0 .. 2 {
-			operand := if side == 0 { left } else { right }
-			e.wide_load_word(operand, 1, low, step.line, step.col)!
-			e.append(e.target.test_word(low)!)
-			e.append(e.target.set_condition(.less, low)!)
-			e.append(e.target.widen_byte(low)!)
-			e.append(e.target.store_slot(frame, work.flags.offset + side * word, low, word)!)
-			e.append(e.target.test_word(low)!)
-			was_positive := e.label()
-			e.branch(.branch_zero, was_positive, step.line, step.col)!
-			e.wide_negate_slot(operand, step.line, step.col)!
-			e.place(was_positive)
-		}
-	}
-	// The quotient starts as the dividend, the remainder as zero, and there is one
-	// pass per bit of the value.
-	e.wide_copy_slot(left, work.quotient, step.line, step.col)!
-	e.append(e.target.move_immediate32(low, 0)!)
-	e.wide_store_word(work.remainder, 0, low, step.line, step.col)!
-	e.wide_store_word(work.remainder, 1, low, step.line, step.col)!
-	e.append(e.target.move_immediate32(low, 128)!)
-	e.append(e.target.store_slot(frame, work.counter.offset, low, word)!)
-	loop := e.label()
-	no_subtraction := e.label()
-	done := e.label()
-	e.place(loop)
-	// The bit the remainder takes in is the top bit of the quotient.
-	e.wide_load_word(work.quotient, 1, other, step.line, step.col)!
-	e.append(e.target.shift_right_word(other, 63)!)
-	// The quotient and the remainder each shift left one, and the bit joins the
-	// remainder at its bottom, where the shift has just left a zero.
-	e.wide_load_word(work.quotient, 0, low, step.line, step.col)!
-	e.wide_load_word(work.quotient, 1, high, step.line, step.col)!
-	e.append(e.target.shift_wide_left(high, low, 1)!)
-	e.append(e.target.shift_left_word(low, 1)!)
-	e.wide_store_word(work.quotient, 0, low, step.line, step.col)!
-	e.wide_store_word(work.quotient, 1, high, step.line, step.col)!
-	e.wide_load_word(work.remainder, 0, low, step.line, step.col)!
-	e.wide_load_word(work.remainder, 1, high, step.line, step.col)!
-	e.append(e.target.shift_wide_left(high, low, 1)!)
-	e.append(e.target.shift_left_word(low, 1)!)
-	e.append(e.target.or_word(low, other)!)
-	e.wide_store_word(work.remainder, 0, low, step.line, step.col)!
-	e.wide_store_word(work.remainder, 1, high, step.line, step.col)!
-	// The subtraction that decides it is also the comparison: the borrow out of the
-	// high word says whether the divisor fitted.
-	e.wide_load_word(work.remainder, 0, low, step.line, step.col)!
-	e.wide_load_word(right, 0, other, step.line, step.col)!
-	e.append(e.target.subtract_word(low, other)!)
-	e.wide_load_word(work.remainder, 1, low, step.line, step.col)!
-	e.wide_load_word(right, 1, other, step.line, step.col)!
-	e.append(e.target.subtract_with_borrow(low, other)!)
-	e.append(e.target.set_condition(.above_or_equal, low)!)
-	e.append(e.target.widen_byte(low)!)
-	e.append(e.target.test_word(low)!)
-	e.branch(.branch_zero, no_subtraction, step.line, step.col)!
-	e.wide_load_word(work.remainder, 0, low, step.line, step.col)!
-	e.wide_load_word(right, 0, other, step.line, step.col)!
-	e.append(e.target.subtract_word(low, other)!)
-	e.wide_store_word(work.remainder, 0, low, step.line, step.col)!
-	e.wide_load_word(work.remainder, 1, low, step.line, step.col)!
-	e.wide_load_word(right, 1, other, step.line, step.col)!
-	e.append(e.target.subtract_with_borrow(low, other)!)
-	e.wide_store_word(work.remainder, 1, low, step.line, step.col)!
-	e.wide_load_word(work.quotient, 0, low, step.line, step.col)!
-	e.append(e.target.move_immediate32(other, 1)!)
-	e.append(e.target.or_word(low, other)!)
-	e.wide_store_word(work.quotient, 0, low, step.line, step.col)!
-	e.place(no_subtraction)
-	// One fewer bit to go, and the loop ends when there are none.
-	e.append(e.target.load_slot(frame, work.counter.offset, low, word)!)
-	e.append(e.target.add_immediate(low, -1))
-	e.append(e.target.store_slot(frame, work.counter.offset, low, word)!)
-	e.append(e.target.test_word(low)!)
-	e.branch(.branch_nonzero, loop, step.line, step.col)!
-	e.place(done)
-	if signed {
-		// The remainder takes the dividend's sign, and the quotient takes the two
-		// signs together. Both are written out, because which one is the answer
-		// depends on the operator rather than on the routine.
-		remainder_kept := e.label()
-		e.append(e.target.load_slot(frame, work.flags.offset, low, word)!)
-		e.append(e.target.test_word(low)!)
-		e.branch(.branch_zero, remainder_kept, step.line, step.col)!
-		e.wide_negate_slot(work.remainder, step.line, step.col)!
-		e.place(remainder_kept)
-		quotient_kept := e.label()
-		e.append(e.target.load_slot(frame, work.flags.offset, low, word)!)
-		e.append(e.target.load_slot(frame, work.flags.offset + word, other, word)!)
-		e.append(e.target.xor_word(low, other)!)
-		e.append(e.target.test_word(low)!)
-		e.branch(.branch_zero, quotient_kept, step.line, step.col)!
-		e.wide_negate_slot(work.quotient, step.line, step.col)!
-		e.place(quotient_kept)
-	}
-	answer := if step.op == '/' { work.quotient } else { work.remainder }
-	e.wide_load_word(answer, 0, low, step.line, step.col)!
-	e.wide_load_word(answer, 1, high, step.line, step.col)!
 }
 
 // check_count_register holds the one register the machine reads a shift count from
@@ -9365,10 +9178,17 @@ fn (mut e Emitter) apply_wide_binary(step ast.Binary, left Slot, right Slot, dep
 			e.append(e.word_operation(step.op, high, other, true)!)
 		}
 		'/', '%' {
-			// A division is a routine rather than a sequence, so it is written
-			// where it is called and given both operands: it works in the frame
-			// for the whole of itself.
-			return e.emit_wide_division(step, left, right, depth)
+			// A division of two pairs has no machine instruction, so it is the
+			// runtime's call whether or not -fignore-natives is given: gcc
+			// 16.2.1 emits `call __divti3` and `call __umodti3` here at -O0.
+			// The signedness of the call is the type the two operands convert
+			// to, which is the step's own type once the pair is the wider one.
+			unsigned := e.wide_unsigned(step.left) || e.wide_unsigned(step.right)
+			name := wide_helper_name(step.op, unsigned) or {
+				e.diagnostics << problem(step.line, step.col, 'internal: a division of two 128-bit values has no runtime helper')
+				return error('no helper for a wide division')
+			}
+			return e.emit_wide_binary_helper(step, left, right, name)
 		}
 		'*' {
 			// A pair multiplied by a pair, which gcc emits the same way for both
@@ -9377,7 +9197,15 @@ fn (mut e Emitter) apply_wide_binary(step ast.Binary, left Slot, right Slot, dep
 			// that product. What a cross product carries above its own low word
 			// cannot reach the answer, because it is a multiple of 2^128, so gcc
 			// adds the two with a lea, which does not set the flags; a plain add
-			// is the same instruction here.
+			// is the same instruction here. -fignore-natives asks for the
+			// runtime's __multi3 instead.
+			if e.emits_wide_helper('*') {
+				name := wide_helper_name('*', false) or {
+					e.diagnostics << problem(step.line, step.col, 'internal: a multiplication of two 128-bit values has no runtime helper')
+					return error('no helper for a wide multiply')
+				}
+				return e.emit_wide_binary_helper(step, left, right, name)
+			}
 			crossed := e.wide_pair_slot(mut e.wide_scratch, depth)
 			e.append(e.target.load_slot(frame, left.offset + word, low, word)!)
 			e.append(e.target.load_slot(frame, right.offset, other, word)!)

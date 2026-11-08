@@ -97,6 +97,21 @@ fn test_the_position_independent_flag_is_read_from_either_spelling() {
 	assert pie.ignored.contains('-fPIE')
 }
 
+// -fignore-natives asks the back end for the runtime's copy of a 128-bit
+// operation the machine has instructions for. It is a feature of the code the
+// compiler writes, so it is read rather than recorded, and its negative spelling
+// turns it back off for a build that appends one flag to another.
+fn test_the_ignore_natives_flag_is_read_and_can_be_turned_off() {
+	asked := parse(['-fignore-natives', 'src.c'])!
+	assert asked.ignore_natives
+	assert !asked.ignored.contains('-fignore-natives')
+	absent := parse(['src.c'])!
+	assert !absent.ignore_natives
+	off := parse(['-fignore-natives', '-fno-ignore-natives', 'src.c'])!
+	assert !off.ignore_natives
+	assert usage(false).contains('-fignore-natives')
+}
+
 fn test_the_standard_is_recorded_from_either_spelling() {
 	// V passes -std=gnu11 and a person types -std gnu11. The second one has to
 	// be read as a value, or the version name becomes an input file and the

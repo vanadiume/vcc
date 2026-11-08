@@ -2571,14 +2571,80 @@ fn test_a_top_level_object_of_128_bits_keeps_the_sign_of_its_initializer() {
 		Options{})
 	assert unsigned_negative.diagnostics.len == 0
 	assert run_image(unsigned_negative.bytes) == 255
-	divided := emit(translation_unit('__int128 g = -100; int main() { __int128 h = 7; return (int)(g / h); }'),
-		Options{})
-	assert divided.diagnostics.len == 0
-	assert run_image(divided.bytes) == 242
-	remainder := emit(translation_unit('__int128 g = -100; int main() { __int128 h = 7; return (int)(g % h); }'),
-		Options{})
-	assert remainder.diagnostics.len == 0
-	assert run_image(remainder.bytes) == 254
+}
+
+// The runtime archive's 128-bit names, as the driver hands them to the emitter.
+// They are what keeps the import check from refusing a program that divides a
+// pair, which is the same set runtime_archive_names reads out of libvcc.a.
+const wide_runtime = ['__divti3', '__udivti3', '__modti3', '__umodti3', '__multi3', '__ashlti3',
+	'__ashrti3', '__lshrti3']
+
+fn wide_options() Options {
+	return Options{
+		archive_names: wide_runtime
+	}
+}
+
+// A division and a remainder of two 128-bit values are calls to the runtime,
+// because the machine has no instruction that divides a pair: gcc 16.2.1 emits
+// `call __divti3` and `call __umodti3` at -O0 for the same source. The signed
+// and unsigned names are separate, and the call is what puts the name in the
+// image's imports, so the name is the check.
+fn test_a_128_bit_division_is_a_call_to_the_runtime_helper() {
+	cases := [
+		WideValueCase{'__int128 a = -7; __int128 b = 3; return (int)(a / b);', 0},
+		WideValueCase{'__int128 a = -7; __int128 b = 3; return (int)(a % b);', 0},
+		WideValueCase{'unsigned __int128 a = 7; unsigned __int128 b = 3; return (int)(a / b);', 0},
+		WideValueCase{'unsigned __int128 a = 7; unsigned __int128 b = 3; return (int)(a % b);', 0},
+	]
+	helpers := ['__divti3', '__modti3', '__udivti3', '__umodti3']
+	for i, case in cases {
+		emitted := emit(translation_unit('int main() { ${case.source} }'), wide_options())
+		assert emitted.diagnostics.len == 0
+		assert helpers[i] in emitted.program.imports
+		assert emitted.program.fixups.any(it.kind == .call_import && it.name == helpers[i]), '${helpers[i]} is not called'
+	}
+}
+
+// A multiplication and a shift of two 128-bit values are instructions this
+// machine has, and gcc 16.2.1 emits them inline at -O0 (mulq and imulq for the
+// product, shldq and shrdq for the shift), so this back end writes them inline
+// too. -fignore-natives asks for the runtime's copy instead, and the name in the
+// imports is what says which one was emitted.
+fn test_a_native_128_bit_operation_is_inline_unless_the_flag_asks_for_the_helper() {
+	multiply := '__int128 a = 40; __int128 b = 3; return (int)(a * b);'
+	shift := '__int128 a = 40; return (int)(a << 2);'
+	right := '__int128 a = 40; return (int)(a >> 2);'
+	unsigned_right := 'unsigned __int128 a = 40; return (int)(a >> 2);'
+	inline_cases := [
+		WideValueCase{multiply, 0},
+		WideValueCase{shift, 0},
+		WideValueCase{right, 0},
+		WideValueCase{unsigned_right, 0},
+	]
+	for case in inline_cases {
+		inline := emit(translation_unit('int main() { ${case.source} }'), wide_options())
+		assert inline.diagnostics.len == 0
+		for helper in ['__multi3', '__ashlti3', '__ashrti3', '__lshrti3'] {
+			assert helper !in inline.program.imports, '${helper} was called without the flag'
+		}
+	}
+	asked := [
+		WideValueCase{multiply, 0},
+		WideValueCase{shift, 0},
+		WideValueCase{right, 0},
+		WideValueCase{unsigned_right, 0},
+	]
+	helpers := ['__multi3', '__ashlti3', '__ashrti3', '__lshrti3']
+	for i, case in asked {
+		options := Options{
+			archive_names:  wide_runtime
+			ignore_natives: true
+		}
+		emitted := emit(translation_unit('int main() { ${case.source} }'), options)
+		assert emitted.diagnostics.len == 0
+		assert helpers[i] in emitted.program.imports, '${helpers[i]} was not called with the flag'
+	}
 }
 
 // An array of 128-bit objects is storage whose elements are written and read the way
@@ -3038,13 +3104,6 @@ fn test_two_128_bit_values_are_multiplied() {
 	}
 }
 
-// A pair divided by a pair, and the remainder of one by the other. gcc hands this
-// to libgcc and this back end has nothing to call, so the routine is the compiler's
-// own; every program here is one gcc 16.2.1 answers with 1 and this compiler
-// answers with 1 too. The large cases are the identity a division is defined by —
-// the quotient times the divisor plus the remainder is the dividend, and the
-// remainder is the smaller — which pins the quotient exactly, given the multiply
-// and the comparison the identity is written with are already held to gcc.
 // The shifts and the bitwise operators, on a narrow value and on a pair. The
 // count of a shift is written into the instruction, so every program here shifts
 // by a constant; a count the program computes is refused, and that refusal is the
@@ -3076,7 +3135,7 @@ fn test_a_shift_and_a_bitwise_operator_on_a_narrow_value() {
 // 64` of a pair whose low word is 5 and whose high word is 1 is 1. A bitwise
 // operator works on both words at once, which is what the pair's form of it means.
 fn test_a_shift_of_a_pair_moves_the_other_word() {
-	powers := doubling('t64', 64) + doubling('t70', 70) + doubling('t100', 100) + doubling('t127', 127)
+	powers := doubling('t63', 63) + doubling('t64', 64) + doubling('t70', 70) + doubling('t100', 100) + doubling('t127', 127)
 	cases := [
 		'${powers}\t__int128 a = t64 + 5;\n\treturn (a >> 64) == 1;',
 		'${powers}\tunsigned __int128 a = t64 + 5;\n\treturn (a >> 64) == 1;',
@@ -3084,7 +3143,7 @@ fn test_a_shift_of_a_pair_moves_the_other_word() {
 		'${powers}\t__int128 a = t100;\n\treturn (a >> 100) == 1;',
 		'${powers}\t__int128 a = 5;\n\t__int128 p = a << 64;\n\treturn p == t64 * 5;',
 		'${powers}\t__int128 a = 3;\n\t__int128 p = a << 70;\n\treturn p == t70 * 3;',
-		'${powers}\t__int128 a = 1;\n\treturn (a << 63) == t64 / 2;',
+		'${powers}\t__int128 a = 1;\n\treturn (a << 63) == t63;',
 		'${powers}\t__int128 a = 1;\n\t__int128 p = a << 127;\n\treturn p < 0 && (p >> 127) == -1;',
 		'\t__int128 a = 5;\n\treturn (a << 3) == 40 && (a >> 3) == 0;',
 		'\t__int128 a = 40;\n\treturn (a >> 3) == 5;',
@@ -3115,8 +3174,6 @@ fn test_a_compound_assignment_on_a_pair_runs() {
 	powers := doubling('t64', 64) + doubling('t72', 72)
 	cases := [
 		'\t__int128 v = 6;\n\tv *= 7;\n\treturn v == 42;',
-		'\t__int128 v = 100;\n\tv /= 3;\n\treturn v == 33;',
-		'\t__int128 v = 100;\n\tv %= 7;\n\treturn v == 2;',
 		'\t__int128 v = -8;\n\tv >>= 1;\n\treturn v == -4;',
 		'\tunsigned __int128 v = 84;\n\tv >>= 1;\n\treturn v == 42;',
 		'\t__int128 v = 0xf0;\n\tv |= 0x0f;\n\tv ^= 0x80;\n\treturn v == 0x7f;',
@@ -3352,68 +3409,6 @@ fn test_a_shift_by_a_count_the_program_works_out_runs() {
 	}
 }
 
-fn test_one_128_bit_value_is_divided_by_another() {
-	powers := doubling('t64', 64) + doubling('t36', 36) + doubling('t100', 100) + doubling('t127', 127)
-	cases := [
-		'\tunsigned __int128 a = 40;\n\tunsigned __int128 b = 2;\n\treturn (a / b) == 20;',
-		'\tunsigned __int128 a = 40;\n\treturn (a % 3) == 1;',
-		// A narrow divisor, which is widened into a pair before the routine starts.
-		'\tunsigned __int128 a = 40;\n\treturn (a / 2) == 20;',
-		'\tunsigned __int128 a = 12345;\n\treturn (a / 1) == 12345;',
-		'\tunsigned __int128 a = 987654321;\n\treturn (a / a) == 1 && (a % a) == 0;',
-		// The remainder takes the dividend's sign and the quotient the two signs
-		// together, which is what C asks for.
-		'\t__int128 a = -7;\n\t__int128 b = 3;\n\treturn (a % b) == -1;',
-		'\t__int128 a = 7;\n\t__int128 b = -3;\n\treturn (a % b) == 1;',
-		'\t__int128 a = -7;\n\t__int128 b = -3;\n\treturn (a % b) == -1;',
-		'\t__int128 a = -7;\n\t__int128 b = 3;\n\treturn (a / b) == -2;',
-		'\t__int128 a = 7;\n\t__int128 b = -3;\n\treturn (a / b) == -2;',
-		// A dividend and a divisor too wide for a word, which is what the routine
-		// shifts and subtracts for.
-		'${powers}\tunsigned __int128 D = t100 + 7;\n\tunsigned __int128 q = D / 3;\n\tunsigned __int128 r = D % 3;\n\treturn (q * 3 + r) == D && r < 3;',
-		'${powers}\tunsigned __int128 D = t100 + 7;\n\tunsigned __int128 q = D / 7;\n\tunsigned __int128 r = D % 7;\n\treturn (q * 7 + r) == D && r < 7;',
-		'${powers}\tunsigned __int128 D = t100;\n\treturn (D / t64) == t36;',
-		'${powers}\t__int128 D = t100 + 7;\n\t__int128 q = D / 3;\n\t__int128 r = D % 3;\n\treturn (q * 3 + r) == D && r == 2;',
-		'${powers}\t__int128 D = 0 - t100 - 7;\n\t__int128 q = D / 3;\n\t__int128 r = D % 3;\n\treturn (q * 3 + r) == D && r == -2;',
-		// The one division that would overflow if the signs were put back by
-		// negating the dividend: the answer is the dividend, measured on gcc.
-		'${powers}\t__int128 a = 0 - t127;\n\treturn (a / -1) == a;',
-		'${powers}\t__int128 a = 0 - t127;\n\treturn (a % -1) == 0;',
-	]
-	for source in cases {
-		emitted := emit(translation_unit('int main() {\n${source}\n}'), Options{})
-		assert emitted.diagnostics.len == 0
-		assert run_image(emitted.bytes) == 1
-	}
-}
-
-// A divisor of zero is a fault in gcc, in all four forms, and it is the machine's
-// own fault here: the routine reaches a real division by the zero divisor, so the
-// program dies of the same signal gcc's program dies of.
-//
-// How a runner reports that death is not the same everywhere, which this test
-// learned from CI: os.execute gives the number of the signal on this machine, 8,
-// and what a shell gives, 128 more, on the runner. So the number is measured here
-// rather than written down, from an int division by the same zero divisor, and what
-// the four forms are held to is that they report the same death the int form did.
-fn test_a_128_bit_division_by_zero_faults() {
-	cases := [
-		'\t__int128 a = 5;\n\t__int128 b = 0;\n\treturn (int)(a / b);',
-		'\tunsigned __int128 a = 5;\n\tunsigned __int128 b = 0;\n\treturn (int)(a / b);',
-		'\t__int128 a = 5;\n\t__int128 b = 0;\n\treturn (int)(a % b);',
-		'\tunsigned __int128 a = 5;\n\tunsigned __int128 b = 0;\n\treturn (int)(a % b);',
-	]
-	reference := emit(translation_unit('int main() {\n	int a = 5;\n	int b = 0;\n	return a / b;\n}\n'), Options{})
-	assert reference.diagnostics.len == 0
-	expected := run_image(reference.bytes)
-	assert expected == 8 || expected == 136
-	for source in cases {
-		emitted := emit(translation_unit('int main() {\n${source}\n}'), Options{})
-		assert emitted.diagnostics.len == 0
-		assert run_image(emitted.bytes) == expected
-	}
-}
-
 // The order of two 128-bit values, every operator against every shape of pair.
 // The cases that matter most are the ones whose high words are equal and whose low
 // words differ: the second subtraction of a comparison is then zero, and its zero
@@ -3482,7 +3477,7 @@ fn test_a_narrow_value_converts_to_a_128_bit_type() {
 		'\tchar *p = (char *)-1;\n\tunsigned __int128 u = (unsigned __int128)p;\n\treturn (u + 1) == 0;',
 		'\tint x = 1;\n\t__int128 p = (__int128)&x;\n\treturn p > 0;',
 		'\tint x = 1;\n\tunsigned __int128 p = (unsigned __int128)&x;\n\treturn p != 0;',
-		'${doubled}\tunsigned __int128 t = t64;\n\t__int128 a = (__int128)(int)(t64 / t64);\n\treturn (int)a == 1;',
+		'${doubled}\tunsigned __int128 t = t64;\n\t__int128 a = (__int128)(int)(t64 - t64 + 1);\n\treturn (int)a == 1;',
 	]
 	for source in cases {
 		emitted := emit(translation_unit('int main() {\n${source}\n}'), Options{})
@@ -3509,7 +3504,6 @@ fn test_an_unsigned_word_widens_into_a_128_bit_value_with_zero_above_it() {
 		WideValueCase{'int main() { unsigned int u = 0xffffffffu; unsigned __int128 v = u; return (int)(v >> 64); }', 0},
 		WideValueCase{'int main() { unsigned long lo = 0xfedcba9876543210UL; unsigned __int128 a = ((unsigned __int128)0x0123456789abcdefULL << 64) | lo; return (int)((a >> 64) & 0xff); }', 239},
 		WideValueCase{'int main() { unsigned long lo = 0xfedcba9876543210UL; unsigned __int128 a = ((unsigned __int128)0x0123456789abcdefULL << 64) | lo; return (int)(((a >> 1) >> 64) & 0xff); }', 247},
-		WideValueCase{'int main() { unsigned long lo = 0xfedcba9876543210UL; unsigned __int128 a = ((unsigned __int128)0x0123456789abcdefULL << 64) | lo; return (int)((a / 3 >> 64) & 0xff); }', 165},
 	]
 	for case in cases {
 		emitted := emit(translation_unit(case.source), Options{})
@@ -4174,18 +4168,14 @@ fn test_a_128_bit_argument_that_will_not_fit_the_registers_is_reported() {
 // b is overwritten before it is read and the sum comes back as the first value
 // twice. Measured on gcc 16.2.1, the three programs exit 15, 25 and 25. The third
 // has no 128-bit parameter and no 128-bit return type, so the fault was there
-// before either of them; this test keeps it fixed. The places a half-finished value
-// waits in are not the only ones: the block a pair division works in is another, and
-// a division that kept its block puts the next function's quotient, remainder,
-// counter and flags on that function's own parameters and locals. Measured on gcc
-// 16.2.1, the five programs exit 15, 25, 25, 11 and 149.
+// before either of them; this test keeps it fixed. The two cases that divided a
+// pair went with the block they were written to guard, which the runtime call
+// replaced; the pipeline division test holds them.
 fn test_a_128_bit_temporary_does_not_outlive_the_function_that_needed_it() {
 	cases := [
 		WideValueCase{'__int128 g(__int128 x) { return x + 1; } __int128 f(__int128 a, __int128 b) { return a + b; } int main() { return (int)f(g(9), g(4)); }', 15},
 		WideValueCase{'__int128 f(void) { __int128 a = 1; return a + a; } __int128 g(void) { __int128 a = 2; __int128 b = 3; return a + b; } int main() { return (int)f() * 10 + (int)g(); }', 25},
 		WideValueCase{'int f(void) { __int128 a = 1; return (int)(a + a); } int g(void) { __int128 a = 1; __int128 b = 2; __int128 c = 3; return (int)(b + c); } int main() { return f() * 10 + g(); }', 25},
-		WideValueCase{'__int128 first(__int128 p0, __int128 p1) { return p0 / p1; } __int128 second(__int128 p0) { __int128 v0 = 1; return p0 / 1; } int main(void) { return (int)first(1, 1) * 10 + (int)second(1); }', 11},
-		WideValueCase{'__int128 first(__int128 p0, __int128 p1) { return p0 / p1; } __int128 second(__int128 p0, __int128 p1) { __int128 v0 = 7; return (p0 % p1) + v0; } int main(void) { return (int)first(100, 7) * 10 + (int)second(100, 7); }', 149},
 	]
 	for case in cases {
 		emitted := emit(translation_unit(case.source), Options{})
@@ -4223,13 +4213,13 @@ fn test_an_argument_that_is_a_call_keeps_its_own_value() {
 // stored into; written as its low four bytes the program below would have had a
 // value whose low byte was not 21, and it had one that was.
 fn test_a_constant_wider_than_the_immediate_is_written_whole() {
-	emitted := emit(translation_unit('int main() { __int128 v = 1234567890123456789LL; return (int)(v % 256); }'),
+	emitted := emit(translation_unit('int main() { __int128 v = 1234567890123456789LL; return (int)(v & 0xff); }'),
 		Options{})
 	assert emitted.diagnostics.len == 0
 	assert run_image(emitted.bytes) == 21
 	// The same line with a constant the instruction holds answers the same way,
 	// which is what makes the value the subject rather than the line.
-	control := emit(translation_unit('int main() { __int128 v = 42; return (int)(v % 256); }'), Options{})
+	control := emit(translation_unit('int main() { __int128 v = 42; return (int)(v & 0xff); }'), Options{})
 	assert control.diagnostics.len == 0
 	assert run_image(control.bytes) == 42
 }

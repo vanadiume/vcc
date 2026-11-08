@@ -1002,3 +1002,8 @@ it owns the change, which is the same vocabulary the commits use.
 * github: a release is a tarball of vcc and libvcc (f86e4bb)
 * docs: the build and release text carries libvcc (7e3686b)
 * docs: the changelog names the install and the tarball (19e289f)
+* cli: the -fignore-natives flag is read (100fdd1)
+* codegen: a 128-bit operation calls the runtime archive (8f2a6cd)
+* docs: the changelog names the runtime helper work (7bc49b3)
+* codegen: the _BitInt program reads its value without dividing (ecc9fe8)
+* docs: the changelog names the _BitInt test (239d20c)

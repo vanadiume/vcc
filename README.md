@@ -318,12 +318,13 @@ how a parse or an optimization is read rather than guessed at.
 
 Also accepted: `--version`, `-v`, `-vv`, `-h`, `-hh`, `-E`, `-c`, `-o`, `-run`,
 `-bench`, `-print-ast`, the `-O0` through `-O3` and `-Os` levels, `-fno-builtin`
-and `-fno-builtin-NAME`, `-fPIC`/`-fpic`, `-nostdinc`, `-undef`, `-include`,
-`-imacros`, the dependency flags `-M`/`-MM`/`-MD`/`-MMD`/`-MF`/`-MT`/`-MQ`,
-`-dM`, `-Wclass`/`-Wno-class`, `-femulation=NAME` (define the identity macros of
-gcc, clang or tcc instead of vcc's own), `-external-linker=NAME`, `-shared`,
-`-static`, `-nostdlib`, `-nodefaultlibs`, `--link-libgcc`, and the gcc `-print-`
-family. See `./vcc -hh` for the annotated list.
+and `-fno-builtin-NAME`, `-fignore-natives`, `-fPIC`/`-fpic`, `-nostdinc`,
+`-undef`, `-include`, `-imacros`, the dependency flags `-M`/`-MM`/`-MD`/`-MMD`
+and `-MF`/`-MT`/`-MQ`, `-dM`, `-Wclass`/`-Wno-class`, `-femulation=NAME`
+(define the identity macros of gcc, clang or tcc instead of vcc's own),
+`-external-linker=NAME`, `-shared`, `-static`, `-nostdlib`, `-nodefaultlibs`,
+`--link-libgcc`, and the gcc `-print-` family. See `./vcc -hh` for the annotated
+list.
 
 The runtime archive a program links is `libvcc.a`, the helpers the machine has
 no instruction for under libgcc's symbol names. It is looked for where a `-l`
@@ -337,6 +338,15 @@ program that comes out leaves through the kernel's exit because there is no
 library's exit to call. `--link-libgcc` puts the toolchain's `libgcc.a` in
 libvcc's place, and only a compiler built with `-d experimental_libgcc` accepts
 the flag.
+
+A division or a remainder of two `__int128` values is a call to the archive,
+because the machine has no instruction that divides a pair: the compiler emits
+`__divti3`, `__udivti3`, `__modti3` or `__umodti3`, and a program that divides
+without an archive to link is refused by the helper's name. A multiplication and
+a shift of that width are instructions the machine has, so they are emitted
+inline; `-fignore-natives` asks for the archive's `__multi3` and `__ashlti3`,
+`__ashrti3` or `__lshrti3` instead, which is how the runtime's own copy of them
+is reached.
 
 `-target x86_64-linux-freestanding` is the same machine and the same system calls
 with no C library at all: no standard header directories, no start files, no
