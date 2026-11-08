@@ -1148,12 +1148,14 @@ fn (mut e Emitter) build() ![]u8 {
 	// with. The container refuses a name the file itself cannot leave
 	// unresolved when the kind is a static program, which is where that belongs.
 	//
-	// A run with no default libraries is left out for a plainer reason: there is
-	// no C library to ask, and the command line named every library the image
-	// runs against. A name left unresolved is then what -nostdlib and
-	// -nodefaultlibs mean the command line to answer, and refusing it here would
-	// make the flags useless for the one thing they are for.
-	if !e.compile_only && !e.link && e.link_kind != .shared && !e.no_default_libraries {
+	// A run with no default libraries is asked a different question rather than
+	// left out of this one. There is no C library in the image, so it is not one
+	// of the libraries to ask; what the image does name is the command line's
+	// -l list, and a name none of those defines is still a name that cannot
+	// bind. Leaving the whole check out with -nostdlib is what wrote a program
+	// whose first call died in the loader: `-nostdlib` says the command line
+	// answers for the names, not that a name nobody answered is accepted.
+	if !e.compile_only && !e.link && e.link_kind != .shared {
 		dirs := linux.search_dirs(e.library_dirs, e.target.library_dirs)
 		// The names a program reaches out of a library are the functions it
 		// calls and the objects it copies, and both have to bind: a copy is not
@@ -1168,7 +1170,7 @@ fn (mut e Emitter) build() ![]u8 {
 		// the image here: an undefined weak symbol stands for zero, which is what
 		// the runtime's own startup files reach their optional hooks with.
 		requested = requested.filter(it !in e.program.weak_imports)
-		unresolved := linux.unresolved_imports(requested, e.libraries, dirs)
+		unresolved := linux.unresolved_imports(requested, e.libraries, dirs, !e.no_default_libraries)
 		// A name the runtime archive answers is not one a library owes an
 		// answer for: the link merges the archive's member, and the driver
 		// hands a program that reaches one of these names to the link rather

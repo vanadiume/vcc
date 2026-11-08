@@ -246,30 +246,30 @@ pub fn link(units []image.Program, options Options) !image.Program {
 	// import in the image. The check is the one codegen already makes, so the
 	// message is its message.
 	//
-	// A link with no default libraries is not checked: there is no C library in
-	// its image to ask, and the command line named every library it runs
-	// against. Whatever is left unresolved is that command line's answer to
-	// give, which is what -nostdlib and -nodefaultlibs are for.
-	if !options.no_default_libraries {
-		mut requested := []string{cap: names.imports.len + copies.len}
-		for name in names.imports {
-			// A weak import is the one name a link does not have to answer, so it
-			// is not asked of any library: `unresolved_imports` would report it
-			// and this link would refuse a program that runs.
-			if name !in bound && name !in names.weak_imports {
-				requested << name
-			}
+	// A link with no default libraries is checked against the libraries the
+	// command line named, and against none else. Its image carries no C library
+	// for the loader to map, so that library answers nothing here: a name it
+	// alone defines is a name this link leaves to a loader that has no such
+	// library, which is the symbol lookup error this check exists to refuse.
+	mut requested := []string{cap: names.imports.len + copies.len}
+	for name in names.imports {
+		// A weak import is the one name a link does not have to answer, so it
+		// is not asked of any library: `unresolved_imports` would report it
+		// and this link would refuse a program that runs.
+		if name !in bound && name !in names.weak_imports {
+			requested << name
 		}
-		for name in copies {
-			if name !in requested {
-				requested << name
-			}
+	}
+	for name in copies {
+		if name !in requested {
+			requested << name
 		}
-		dirs := linux.search_dirs(options.library_dirs, options.target.library_dirs)
-		unresolved := linux.unresolved_imports(requested, options.libraries, dirs)
-		if unresolved.len > 0 {
-			return error('undefined reference to `${unresolved[0]}`: no library the image names defines it')
-		}
+	}
+	dirs := linux.search_dirs(options.library_dirs, options.target.library_dirs)
+	unresolved := linux.unresolved_imports(requested, options.libraries, dirs,
+		!options.no_default_libraries)
+	if unresolved.len > 0 {
+		return error('undefined reference to `${unresolved[0]}`: no library the image names defines it')
 	}
 	return merged
 }

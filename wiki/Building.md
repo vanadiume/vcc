@@ -84,9 +84,12 @@ no instruction for live under libgcc's symbol names. It is looked for where a
 program reaches are pulled, so an ordinary program carries none of it.
 `-nodefaultlibs` keeps the start files and takes the C library and libvcc away,
 `-nostdlib` takes the start files too, and `--link-libgcc` names the toolchain's
-`libgcc.a` instead. That last flag needs a compiler built with
-`-d experimental_libgcc`, which `v run tools/build.vsh build` takes as
-`--experimental-libgcc`; every other build refuses the flag by name.
+`libgcc.a` instead. With either of the first two the image names only the
+libraries the command line names, and an import none of them defines is refused
+at compile time rather than left for the loader to report at start. That last
+flag needs a compiler built with `-d experimental_libgcc`, which
+`v run tools/build.vsh build` takes as `--experimental-libgcc`; every other
+build refuses the flag by name.
 `v run tools/build.vsh libvcc` builds the archive from its sibling tree with
 this compiler and links a program against it. `v run tools/build.vsh install`
 puts that archive and the compiler under a prefix.

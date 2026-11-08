@@ -4231,6 +4231,62 @@ fn test_an_nostdlib_program_names_no_library_and_leaves_through_the_kernel() {
 	assert !content.contains('libc.so.6')
 }
 
+// -nostdlib says the command line answers for the names the image imports. It
+// does not say a name nothing on the command line answered is accepted: the image
+// names no C library, so `puts` there is a name no library in the image defines,
+// and a program written with it dies in the loader with a symbol lookup error.
+// The compiler refuses it instead, naming the import, the way a link refuses an
+// undefined reference.
+fn test_a_nostdlib_program_with_an_unanswered_import_is_refused() {
+	source := scratch('nostdlib_puts.c')
+	body := 'int puts(const char *s);\nint main(void) { return puts("x"); }\n'
+	os.write_file(source, body) or { panic(err) }
+	opts := cli.parse(['-nostdlib', source]) or { panic(err) }
+	target := backend.resolve(opts.target) or { panic(err.msg()) }
+	lexed := tokenize.lex(body)
+	parsed := parser.parse(lexed.tokens)
+	emitted := codegen.emit(parsed.unit, codegen.Options{
+		target:               opts.target
+		entry:                'main'
+		libraries:            opts.libraries
+		library_dirs:         opts.library_dirs
+		link_kind:            link_kind(opts)
+		no_default_libraries: !default_libraries(opts, target)
+	})
+	assert emitted.diagnostics.len == 1
+	assert emitted.diagnostics[0].msg.contains('undefined reference to `puts`')
+	assert emitted.bytes.len == 0
+}
+
+// The same program with the library the name lives in named on the command line
+// is a program: the image names that library, the loader maps it, and the call
+// binds. -nostdlib is still useful for exactly what it is for, which is a
+// command line that says which libraries there are.
+fn test_a_nostdlib_program_whose_library_the_command_line_names_runs() {
+	source := scratch('nostdlib_atoi.c')
+	binary := scratch('nostdlib_atoi_out')
+	body := 'int atoi(const char *s);\nint main(void) { return atoi("42"); }\n'
+	os.write_file(source, body) or { panic(err) }
+	opts := cli.parse(['-nostdlib', '-lc', source, '-o', binary]) or { panic(err) }
+	target := backend.resolve(opts.target) or { panic(err.msg()) }
+	assert !opts.default_libraries()
+	lexed := tokenize.lex(body)
+	parsed := parser.parse(lexed.tokens)
+	emitted := codegen.emit(parsed.unit, codegen.Options{
+		target:               opts.target
+		entry:                'main'
+		libraries:            opts.libraries
+		library_dirs:         opts.library_dirs
+		link_kind:            link_kind(opts)
+		no_default_libraries: !default_libraries(opts, target)
+	})
+	assert emitted.diagnostics.len == 0
+	assert emitted.program.libraries == ['libc.so.6']
+	os.write_file_array(binary, emitted.bytes) or { panic(err) }
+	os.chmod(binary, 0o755) or { panic(err) }
+	assert os.execute(os.quoted_path(binary)).exit_code == 42
+}
+
 // The archive a link takes is this compiler's own unless --link-libgcc asked for
 // the toolchain's. The flag is experimental, so this test has a branch per kind
 // of binary rather than one answer: a build without the define never sees it, and

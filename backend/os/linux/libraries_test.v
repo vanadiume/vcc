@@ -149,7 +149,7 @@ fn test_an_archive_without_an_object_beside_it_does_not_break_the_import_check()
 	system_dirs := backend.host() or { panic('this test needs the host target') }.library_dirs
 	// `exit` is in the C library the check always reads, so the only question
 	// here is whether the archive beside the -L directory stops the check.
-	assert unresolved_imports(['exit'], ['probe'], search_dirs([dir], system_dirs)) == []string{}
+	assert unresolved_imports(['exit'], ['probe'], search_dirs([dir], system_dirs), true) == []string{}
 }
 
 // A library with no unversioned name is still found: glibc 2.44 ships
@@ -209,11 +209,24 @@ fn test_a_library_behind_a_script_answers_its_symbols() {
 // when -lm is on the command line, and a name in neither is reported.
 fn test_an_import_no_library_provides_is_reported() {
 	system_dirs := backend.host() or { panic('this test needs the host target') }.library_dirs
-	assert unresolved_imports(['exit', 'nowhere'], [], system_dirs) == ['nowhere']
+	assert unresolved_imports(['exit', 'nowhere'], [], system_dirs, true) == ['nowhere']
 	if find_system_library(system_dirs, 'libm.so') != none {
-		assert unresolved_imports(['fetestexcept'], ['m'], system_dirs).len == 0
-		assert unresolved_imports(['fetestexcept'], [], system_dirs) == ['fetestexcept']
+		assert unresolved_imports(['fetestexcept'], ['m'], system_dirs, true).len == 0
+		assert unresolved_imports(['fetestexcept'], [], system_dirs, true) == ['fetestexcept']
 	}
+}
+
+// An image that names no C library cannot be answered by one. The name the C
+// library defines is reported when the base library is not one of the image's,
+// and naming the C library with -l puts it back: that is the pair a run with no
+// default libraries turns on, where the command line answers for the names and a
+// name it does not answer is still unresolved.
+fn test_the_c_library_answers_nothing_when_the_image_names_none() {
+	system_dirs := backend.host() or { panic('this test needs the host target') }.library_dirs
+	assert unresolved_imports(['exit'], [], system_dirs, false) == ['exit']
+	assert unresolved_imports(['exit'], ['c'], system_dirs, false) == []string{}
+	// A name libc does not define is reported either way.
+	assert unresolved_imports(['nowhere'], [], system_dirs, false) == ['nowhere']
 }
 
 fn copy_bytes(from string, to string) {
