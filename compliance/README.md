@@ -36,12 +36,17 @@ pads and does not terminate a truncated copy, `snprintf` returns the length it
 needed rather than the length it wrote, `longjmp(env, 0)` arrives as 1,
 `ungetc(EOF, f)` pushes nothing back, `feupdateenv` re-raises the flags that
 were set when it was called, and `mktime` returns the instant `localtime` came
-from. Every file was measured under `gcc -std=c99 -pedantic-errors -Wall
--Wextra -Werror` first: it compiles, exits 0 and prints nothing there too.
+from. Every file was measured under `gcc -std=c99 -pedantic-errors
+-fno-builtin -Wall -Wextra -Werror` and under clang with the same flags first:
+it compiles, exits 0 and prints nothing there too. `-fno-builtin` is the point
+of that run: it makes the reference compiler call the library the way this one
+does, so a check is about libm's answer and not about what the reference folded
+into the code at compile time.
 
-Two mathematical checks compare against a bound instead of an equality: this
-glibc's `cbrt` returns 3.0000000000000004 for 27 and its `log10l` is not exact
-at 1000, while gcc folds both calls at compile time and looks exact.
+Two mathematical checks compare against a bound instead of an equality, and
+this is the library talking: glibc 2.44's `cbrt` returns 3.0000000000000004 for
+27 and its `log10l` is not exact at 1000, in a build of those calls as much as
+in a folded one.
 
 A test this compiler accepts only under a GNU dialect belongs in `gnu/` beside
 its ISO sibling. `NNNN-name.c` is one check with the declarations and the
