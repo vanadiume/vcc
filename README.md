@@ -33,7 +33,7 @@ runtime archive. The source is ordinary V in separate modules, so the whole
 pipeline is something you can read and change without leaving the language.
 
 This is a working compiler, not a plan for one. `v test .` runs 1,725 tests;
-`v run tools/compliance.vsh` compiles and runs 1,154 conformance cases across
+`v run tools/compliance.vsh` compiles and runs 1,183 conformance cases across
 the C dialects; `v run tools/regress.vsh` runs 126 programs, one per bug that
 must not come back. The badges above read the counts from the runners, not from
 a number kept by hand.

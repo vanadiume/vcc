@@ -16,7 +16,7 @@ machine has no instruction for come from `libvcc.a`.
 The evidence, counted by the runners rather than kept by hand:
 
 - `v test .` runs 1,725 tests.
-- `v run tools/compliance.vsh` runs 1,154 conformance cases across the dialects.
+- `v run tools/compliance.vsh` runs 1,183 conformance cases across the dialects.
 - `v run tools/regress.vsh` runs 126 regression cases and the goldens.
 
 Self-compilation was measured on this tree: `v -nocache -cc ./vcc -o

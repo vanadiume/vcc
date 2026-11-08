@@ -12,6 +12,7 @@ the standard it is compiled under: the leaf name is the `-std=` spelling, so a
 new standard is a new directory and not a change to the runner.
 
     compliance/iso/c99/     ISO C99, compiled -std=c99
+    compliance/std/c99/     the standard library, compiled -std=c99
     compliance/iso/c11/     empty until the first ISO C11 case lands
     compliance/iso/c17/     empty
     compliance/iso/c23/     empty
@@ -19,6 +20,28 @@ new standard is a new directory and not a change to the runner.
     compliance/gnu/gnu99/   GNU C99, compiled -std=gnu99
     compliance/gnu/gnu11/   empty
     compliance/gnu/gnu17/   empty
+
+## The standard library, under std/
+
+`compliance/std/c99/` tests clause 7 rather than the language, one file per
+header area: `ctype`, the string and memory functions, the conversions, the
+allocator and the sort, five parts of `stdio`, five of `math`, the complex
+functions, `time`, `locale`, `fenv`, `setjmp` and `signal`, the fixed-width
+integers and the widest one, the wide-character and `wctype` functions, wide
+`stdio`, and the headers that describe the implementation's types rather than
+calling anything.
+
+The checks are about behaviour and not about a name being declared: `strncpy`
+pads and does not terminate a truncated copy, `snprintf` returns the length it
+needed rather than the length it wrote, `longjmp(env, 0)` arrives as 1,
+`ungetc(EOF, f)` pushes nothing back, `feupdateenv` re-raises the flags that
+were set when it was called, and `mktime` returns the instant `localtime` came
+from. Every file was measured under `gcc -std=c99 -pedantic-errors -Wall
+-Wextra -Werror` first: it compiles, exits 0 and prints nothing there too.
+
+Two mathematical checks compare against a bound instead of an equality: this
+glibc's `cbrt` returns 3.0000000000000004 for 27 and its `log10l` is not exact
+at 1000, while gcc folds both calls at compile time and looks exact.
 
 A test this compiler accepts only under a GNU dialect belongs in `gnu/` beside
 its ISO sibling. `NNNN-name.c` is one check with the declarations and the
@@ -137,7 +160,8 @@ Measured on this compiler, each test compiled on its own:
 
 So `iso/c99` holds the 898 programs that hold under strict `-std=c99` and the 68
 that must be refused, and `gnu/gnu99` holds those 159 plus the 26 GNU extensions
-nothing reads yet: 1151 test files.
+nothing reads yet: 1154 test files, and `std/c99` holds the 29 library tests:
+1183 in all.
 
 ## Running it
 
@@ -147,7 +171,7 @@ That builds the compiler from this tree, compiles and runs every test under the
 standard of the directory it sits in, runs `monolithic.c` as well, and fails
 when a test exits non-zero, prints something it should not, when the compiler
 refuses a test it should accept or accepts a test it should refuse, when fewer
-than 1151 test files are present, or when the monolith holds fewer than 906
+than 1183 test files are present, or when the monolith holds fewer than 906
 checks. `tools/README.md` says what the script checks in more detail.
 
 `monolithic.c` is the file the corpus arrived as, kept whole at the root: 12,340

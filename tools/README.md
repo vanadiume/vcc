@@ -103,7 +103,9 @@ v run tools/compliance.vsh --count                # print how many tests there a
 
 The tests live in a directory per standard, and the directory is the mode: the
 leaf name is the `-std=` spelling, so `compliance/iso/c99/` is compiled
-`-std=c99` and `compliance/gnu/gnu99/` `-std=gnu99`. `monolithic.c` is the file
+`-std=c99` and `compliance/gnu/gnu99/` `-std=gnu99`. `compliance/std/c99/` is the
+same arrangement for the standard library, one file per header area.
+`monolithic.c` is the file
 the corpus arrived as, kept at the root, and `NNNN-name.c` inside a dialect
 directory is one of its checks with the declarations and statements that check
 needs. Each test is a program, so the runner is a work queue: it compiles and
@@ -115,7 +117,7 @@ describes the current source rather than one from an earlier edit. It fails on a
 test that does not build, a test that exits non-zero, a test that prints
 something other than the two lines the corpus prints on purpose, a test that
 expects a refusal the compiler does not make or an acceptance it does not give, a
-test file count below 1151, and a `monolithic.c` run that holds fewer than 906
+test file count below 1183, and a `monolithic.c` run that holds fewer than 906
 checks. Both floors are floors and not equalities: adding tests needs no edit
 here, losing them is a failure.
 
