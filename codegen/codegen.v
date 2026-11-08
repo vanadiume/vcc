@@ -4495,6 +4495,32 @@ fn (mut e Emitter) emit_discard(expr ast.Expr, depth int) !void {
 		ast.IncDec {
 			e.emit_inc_dec(expr, depth)!
 		}
+		ast.Conditional {
+			// 6.5.15 evaluates only the arm the condition selects, and a
+			// conditional whose two arms are void is worth nothing at all: it
+			// is written for what the selected arm does. glibc's strict-ISO
+			// `assert` is `expr ? (void)0 : (void)0`, whose whole body is the
+			// refusals on either side of it. A condition the reader folded to
+			// a literal selects the same arm on every run, so only that arm is
+			// written, which is what emit_conditional does for a value.
+			if expr.cond is ast.IntLit {
+				arm := if (expr.cond as ast.IntLit).value != 0 {
+					expr.then_expr
+				} else {
+					expr.else_expr
+				}
+				return e.emit_effect(arm, depth + 1)
+			}
+			e.emit_condition(expr.cond, depth + 1, expr.line, expr.col)!
+			else_label := e.label()
+			end_label := e.label()
+			e.branch(.branch_zero, else_label, expr.line, expr.col)!
+			e.emit_effect(expr.then_expr, depth + 1)!
+			e.jump(end_label)!
+			e.place(else_label)
+			e.emit_effect(expr.else_expr, depth + 1)!
+			e.place(end_label)
+		}
 		else {
 			e.diagnostics << problem(expr.line, expr.col, 'unsupported: a ${expr.typ.describe()} expression in a statement is not one this back end evaluates for its side effects')
 			return error('void expression shape')

@@ -5819,3 +5819,37 @@ fn test_a_name_the_nested_function_declares_itself_is_not_a_capture() {
 	assert emitted.diagnostics.len == 0
 	assert run_image(emitted.bytes) == 100
 }
+
+fn test_a_comma_expression_statement_evaluates_both_operands() {
+	// 6.8.3 makes an expression statement a full expression, so the comma is an
+	// operator there: `a = 1, b = 2;` writes both in that order and the
+	// statement is worth the second assignment, which is thrown away. glibc's
+	// strict-ISO `assert` is written as `(void) sizeof (...), __extension__
+	// ({ ... })`, so the left operand has to run and be discarded.
+	emitted := emit(translation_unit('int main() { int a = 0; int b = 0; a = 1, b = 2; return a * 10 + b; }'),
+		Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 12
+}
+
+fn test_a_void_conditional_statement_runs_the_arm_the_condition_selects() {
+	// A conditional both of whose arms are void is worth nothing; it is written
+	// for what the arm the condition selects does. glibc's strict-ISO `assert`
+	// expands to `expr ? (void)0 : (void)0`, whose body is the refusal on
+	// either side.
+	emitted := emit(translation_unit('int main() { int a = 0; int n = 0; a ? (void)(n = 1) : (void)(n = 2); return n; }'),
+		Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 2
+	// The condition is evaluated, and a step in it is what it does.
+	stepped := emit(translation_unit('int main() { int a = 0; a++ ? (void)0 : (void)0; return a; }'),
+		Options{})
+	assert stepped.diagnostics.len == 0
+	assert run_image(stepped.bytes) == 1
+	// A condition the reader folded to a constant writes the arm it selects and
+	// leaves the other one out.
+	folded := emit(translation_unit('int main() { int n = 0; 1 ? (void)(n = 4) : (void)(n = 9); return n; }'),
+		Options{})
+	assert folded.diagnostics.len == 0
+	assert run_image(folded.bytes) == 4
+}
