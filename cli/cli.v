@@ -105,6 +105,14 @@ pub mut:
 	// writes, so those spellings stay in `ignored` like the rest of the -f
 	// family it cannot honor.
 	pic bool
+	// ignore_natives is -fignore-natives: a 128-bit operation the machine has
+	// instructions for is written as a call to the runtime's helper anyway. A
+	// multiply and a shift are the operations it changes, because those are the
+	// ones this back end writes inline: with the flag they become __multi3 and
+	// __ashlti3, __ashrti3 or __lshrti3. A division of two pairs has no machine
+	// instruction and is a call to __divti3 or one of its siblings whether the
+	// flag is given or not.
+	ignore_natives bool
 	// static_link is -static: the link resolves every library into the file
 	// rather than leaving the loader to map it, and the program that comes out
 	// names no loader and no library.
@@ -337,6 +345,13 @@ pub fn parse(args []string) !Options {
 			opts.pic = true
 		} else if arg == '-fno-pic' || arg == '-fno-PIC' {
 			opts.pic = false
+		} else if arg == '-fignore-natives' {
+			// A feature of the code this compiler writes and not of the C it
+			// reads, so it is a -f flag: the operations it changes are the ones
+			// the back end chooses between an instruction and a runtime call.
+			opts.ignore_natives = true
+		} else if arg == '-fno-ignore-natives' {
+			opts.ignore_natives = false
 		} else if arg == '-o' {
 			opts.output = cursor.value_of('')!
 		} else if arg.starts_with('-o') {
@@ -589,6 +604,8 @@ pub fn usage(all bool) string {
 	out << '                top-level object another object may define is reached'
 	out << '                through the global offset table, so the object links into'
 	out << '                a shared object; -fno-pic turns it back off'
+	out << '  -fignore-natives  call the runtime archive for a 128-bit operation the'
+	out << '                machine has instructions for, rather than writing them'
 	out << '  -Idir -Dname -Uname -Ldir -llib -x type -o outfile'
 	out << '  -nostdinc     do not search the standard directories for headers'
 	out << '  -nostdlib     the link takes neither the system start files nor the'
@@ -708,6 +725,9 @@ pub fn usage(all bool) string {
 		out << '                        and -O1 upwards turns on the passes that exist'
 		out << '  -fno-builtin          calls to abs and friends stay calls; the reserved'
 		out << '                        __builtin_ spellings still fold'
+		out << '  -fignore-natives      a 128-bit multiply or shift is a call to the'
+		out << '                        runtime archive even though the machine has an'
+		out << '                        instruction for it; a division is a call anyway'
 		out << '  -Dname=value -Uname  in force before the source is read, as if written'
 		out << '                        above it as #define and #undef'
 		out << '  @listfile             expanded before anything else'
