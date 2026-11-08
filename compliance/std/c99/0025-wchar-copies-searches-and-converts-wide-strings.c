@@ -91,6 +91,15 @@ int main(void)
     CHECK(other[0] == L'a' && other[1] == L'a' && other[3] == L'c');
     CHECK(wmemset(other, L'q', 2) == other && other[0] == L'q');
 
+    /* 7.24.4.4: collation and the transform that sorts like it */
+    CHECK(wcscoll(L"abc", L"abd") < 0);
+    CHECK(wcscoll(L"abc", L"abc") == 0);
+    CHECK(wcscoll(L"abd", L"abc") > 0);
+    count = wcsxfrm(text, L"abc", 32);
+    CHECK(count == 3);
+    CHECK(wcscmp(text, L"abc") == 0);
+    CHECK(wcsxfrm(text, L"abcdef", 0) == 6);
+
     /* 7.24.4.1: the multibyte conversions in the C locale */
     CHECK(wcstombs(narrow, L"abc", sizeof narrow) == 3);
     CHECK(strcmp(narrow, "abc") == 0);

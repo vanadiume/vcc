@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <wchar.h>
 
 #define CHECK(...)                                                            \
     do {                                                                      \
@@ -81,6 +82,14 @@ int main(void)
 
     /* 7.23.3.5p3: a result that needs more room than there is returns zero */
     CHECK(strftime(text, 4, "%Y-%m-%d", &g) == 0);
+
+    /* 7.24.5.1: wcsftime is the same format into a wide array */
+    {
+        wchar_t wide[64];
+        CHECK(wcsftime(wide, 64, L"%Y-%m-%d", &g) == 10);
+        CHECK(wide[0] == L'1' && wide[9] == L'1');
+        CHECK(wcsftime(wide, 4, L"%Y-%m-%d", &g) == 0);
+    }
 
     /* 7.23.3.1: asctime names the fields in a fixed 25-character shape */
     shaped = asctime(&g);
