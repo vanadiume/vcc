@@ -1018,3 +1018,4 @@ it owns the change, which is the same vocabulary the commits use.
 * docs: the guides and policies describe a general-purpose compiler (8e8bcc3)
 * cli: the help text describes a general-purpose compiler (9497eb1)
 * docs: the changelog names the direction change
+* docs: the changelog names its own entry (da34064)
