@@ -1,14 +1,18 @@
 # Architecture
 
-vcc is a C compiler written in V. It exists to replace the tcc that V vendors in
-`thirdparty/tcc`, on the same command line and at the same speed, so the C
-compiler in V's build is a program V can build, read and patch in V. Two
-constraints run through the tree. The compiler is pure V: no C source, no
+vcc is a general-purpose C compiler written in V, for Linux x86-64. It carries
+its own preprocessor, parser, optimizer, code generator and linker, and writes
+ELF64 executables, relocatable objects and shared objects. It began as a
+replacement for the tcc that V vendors in `thirdparty/tcc`, and it still works
+there, but the compatibility is one use rather than the definition of the
+project.
+
+Two constraints run through the tree. The compiler is pure V: no C source, no
 delegation to a C compiler or a C library, and a piece V cannot express yet
 stays unimplemented and is refused with a diagnostic naming the construct. And
-the speed target is the V self-build, a few megabytes of generated C per run, so
-a change is judged by whether it moves the compiler toward compiling V's
-generated C and does not make it slower.
+compile speed is part of the product, with the V self-build as the largest
+workload available to measure against, so a change is judged by the C it adds,
+the correctness it keeps, and what it does to wall time and peak memory.
 
 The size of the tree is counted by `v run tools/lines.vsh`, which is what the
 lines badge in README.md reads: the `.v` files the tree tracks that are not
@@ -68,22 +72,22 @@ second with `backend.host()`, and the tests use it; the driver uses the second.
 
 | Path | Lines (files) | Job |
 |---|---|---|
-| `main.v` | 964 | the driver: command line in, output file out |
-| `cli/` | 910 (3) | flags, usage, version, input classification, the external-linker policy |
-| `tokenize/` | 925 (2) | source text to tokens; defines `Token` and `Diagnostic` |
-| `preprocess/` | 2,773 (5) | the C preprocessor |
-| `standard/` | 881 (2) | the `-std=` modes and the dialect feature table |
-| `types/` | 3,106 (7) | the type model, the object representation, the symbol table |
-| `parser/` | 14,364 (7) | tokens in, `ast` out |
-| `ast/` | 893 | node types only |
-| `optimizer/` | 603 | `ast` in, `ast` out |
-| `printer/` | 304 | `ast` in, text out |
-| `codegen/` | 13,026 (3) | `ast` in, an emitted unit out |
-| `image/` | 195 | the emitted unit: code, data, references |
-| `backend/` | 7,238 (8) | a target in three dimensions |
-| `diagnostics/` | 252 | what a diagnostic is: class, severity, one renderer |
+| `main.v` | 1,694 | the driver: command line in, output file out |
+| `cli/` | 990 (3) | flags, usage, version, input classification, the external-linker policy |
+| `tokenize/` | 930 (2) | source text to tokens; defines `Token` and `Diagnostic` |
+| `preprocess/` | 2,867 (5) | the C preprocessor |
+| `standard/` | 994 (2) | the `-std=` modes and the dialect feature table |
+| `types/` | 3,472 (7) | the type model, the object representation, the symbol table |
+| `parser/` | 17,491 (8) | tokens in, `ast` out |
+| `ast/` | 1,060 | node types only |
+| `optimizer/` | 673 | `ast` in, `ast` out |
+| `printer/` | 336 | `ast` in, text out |
+| `codegen/` | 24,624 (12) | `ast` in, an emitted unit out |
+| `image/` | 459 | the emitted unit: code, data, references |
+| `backend/` | 9,395 (8) | a target in three dimensions |
+| `diagnostics/` | 264 | what a diagnostic is: class, severity, one renderer |
 | `extensions/` | 152 | the `-fvcc-exts=` interface |
-| `linking/` | 0 | empty; the linker is not written |
+| `linking/` | 3,186 (7) | the in-house linker: units in, one image out |
 
 `tokenize/` owns the `Diagnostic` struct (`tokenize/token.v:60`), which every
 stage produces, and `errors()` beside it, which is the list of diagnostics that
@@ -105,12 +109,12 @@ say. Nothing here holds a size or an alignment: those are machine facts, and
 `from_target(target)` is how the model gets them. `measured/measured.v` is a test
 fixture of measured layouts.
 
-`parser/` is split by construct: `parser.v` (3,427 lines) is the driver of the
-parse and the expression grammar, and `declarations.v` (5,928), `statements.v`
-(2,310), `literals.v`, `builtins.v`, `compound.v` and `attributes.v` carry the
-rest. `codegen/` is `codegen.v` (12,123 lines) plus `long_double.v` and
-`complex_long_double.v` for the two float formats the general emitter does not
-handle inline.
+`parser/` is split by construct: `parser.v` (4,039 lines) is the driver of the
+parse and the expression grammar, and `declarations.v` (6,598), `statements.v`
+(2,867), `builtins.v`, `literals.v`, `compound.v`, `attributes.v` and
+`decimal_fold.v` carry the rest. `codegen/` is `codegen.v` (14,971 lines) plus
+`long_double.v`, `complex_long_double.v`, the `decimal_*` files for the decimal
+formats, `wide_helpers.v`, and `builtin_memory.v`.
 
 `ast/` imports `types` and nothing else. Its doc states the rule: a node carries
 both the resolved type clause and the spelling the declaration was written with,
@@ -184,11 +188,11 @@ reads the extension column off the rows and `pedantic_messages` is the check.
 
 ## What is verified how
 
-Tests sit beside their module as `*_test.v`. There are 37 of them, including
-three at the tree root: `pipeline_test.v`, which drives the same functions
-`main()` drives, writes an image, runs it and checks the exit status;
-`query_test.v` for the `-print-*` answers; and `verbose_test.v`. `v test .` runs
-the suite.
+Tests sit beside their module as `*_test.v`, with a few at the tree root:
+`pipeline_test.v`, which drives the same functions `main()` drives, writes an
+image, runs it and checks the exit status; `query_test.v` for the `-print-*`
+answers; and `verbose_test.v`. `v test .` runs the suite, and `tools/tests.vsh`
+counts it for the badge, so the number is written by the runner.
 
 `tools/gate.vsh` is the same set of checks a pull request passes, and CI runs it.
 It reports seven steps: formatting (`v fmt -verify .`), the pure-V rule (C only in
@@ -207,9 +211,10 @@ standard of the directory it sits in, and the 12,340-line `monolithic.c` with it
 `tools/bench.vsh` measures wall time and peak memory against the vendored tcc,
 which is where a speed claim gets its number.
 
-## The bootstrap chain
+## The V self-build
 
-The definition of done is four builds, in `README.md`:
+The hardest input available, and a stress test rather than a condition on the
+project. Four builds:
 
 ```sh
 v -cc tcc -o v-tcc cmd/v              # 1. V, built with the vendored tcc
@@ -218,11 +223,11 @@ v-tcc -cc ./vcc-v1 -o v-v2 cmd/v      # 3. V, built by vcc instead of tcc
 ./v-v2 -cc ./vcc-v1 -o vcc-v2 .       # 4. vcc, built by the V that vcc built
 ```
 
-Step 3 is the one that cannot be faked: vcc has to compile the C V emits for
-itself, link it, and produce a V that passes V's own suite. Step 4 has to produce
-a vcc that behaves like the one it came from. Neither passes today; the tree is
-past the stub and compiles a large slice of Linux x86-64 C, but the in-house
-linker and `-no-ast` do not exist and the subset is smaller than GCC's.
+Steps 2 and 4 work today in the in-house form: `v -nocache -cc ./vcc -o
+/tmp/vcc-self .` exits 0, and the compiler that comes out runs and compiles a
+program. Step 3 is the one that cannot be faked: vcc has to compile the C V
+emits for itself, link it, and produce a V that passes V's own suite. It is
+still open, and `ROADMAP.md` M8 carries the record.
 
 ## Invariants to keep
 
