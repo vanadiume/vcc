@@ -231,8 +231,8 @@ fn output_path(workload string, compiler string) string {
 	return os.join_path(os.temp_dir(), 'vcc-bench-out-${os.getpid()}-${compiler}-${os.file_name(workload)}')
 }
 
-// find_tcc finds the tcc that V vendors, which is the compiler this project is
-// meant to replace and the only comparison that matters.
+// find_tcc finds the tcc that V vendors, which is the fastest compiler on this
+// machine and the comparison the speed goal is measured against.
 fn find_tcc(explicit string) string {
 	if explicit != '' {
 		return explicit

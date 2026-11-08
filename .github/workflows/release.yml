@@ -8,8 +8,7 @@ name: release
 # so the way to cut a release is to bump the version in v.mod and merge. v.mod is
 # the single source: the tag, the release title and the binary's `--version` all
 # come from it, and a compiler that reports the wrong version is one V will key
-# its cached builds against incorrectly (see "What a drop-in has to satisfy" in
-# README.md).
+# its cached builds against incorrectly (see Compatibility in README.md).
 
 on:
   push:

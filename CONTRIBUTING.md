@@ -6,9 +6,8 @@ sit above everything else here:
 
 - The compiler is written in pure V. No C is added to the pipeline, and no piece
   of the compiler delegates work to a C compiler or a C library.
-- It is fast, and the speed does not regress. The measurement that counts is
-  compiling the C that V generates for its own build, because that is the load a
-  replacement for the vendored tcc has to carry.
+- It is fast, and the speed does not regress. The heaviest input available is
+  the C V generates for its own build, and it is the benchmark to beat.
 
 ## Getting set up
 
@@ -35,13 +34,13 @@ Nothing in this tree needs a C compiler of its own beyond the one V itself uses
 to build it. If you find yourself adding a `cc` invocation, that is the rule
 above being broken, not a build problem to solve.
 
-## Preprocessor, flags, and the V contract
+## Flags and compatibility
 
 V does not treat a C compiler as an opaque binary. It classifies it by name and
 by its `--version` output, caches artifacts against that identity, and passes a
-specific flag set. The list and the classification rules are in the README under
-"What a drop-in has to satisfy", read off `vlib/v/driver/driver.v` and
-`vlib/v/pref/pref.v`.
+specific flag set. The classification rules and the flags are in README.md
+under Compatibility and in `wiki/Interop.md`, read off `vlib/v/driver/driver.v`
+and `vlib/v/pref/pref.v`.
 
 Three consequences for changes that touch the command line:
 
@@ -66,10 +65,9 @@ v run tools/bench.vsh src.c --runs 5  # a file you name, more repetitions
 v -showcc -cc tcc -o /tmp/probe probe.v   # what V actually asks a compiler to do
 ```
 
-The workload that decides this project is the V self-build, and no milestone
-before M3 can run it, so the harness measures what it can compile and the number
-is reported with the file it came from. Quote the command when you quote the
-number.
+The heaviest workload is the V self-build. `tools/bench.vsh` measures generated
+input, and the self-compile runs in CI as a correctness gate. Quote the command
+when you quote the number.
 
 `./vcc -bench` prints per-phase timings, which is where you find out whether a
 slow build is the lexer, the parser, or the back end. A change that makes the

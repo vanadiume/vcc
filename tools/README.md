@@ -217,7 +217,7 @@ to `main` and the lines badge reads it, the same arrangement the tests badge use
 ## bench.vsh
 
 Wall time and peak memory for a compile, with tcc on the same input as the
-comparison, because "near TCC's speed" is the requirement and a number nobody
+comparison, because tcc-class speed is one of the goals and a number nobody
 prints is a number nobody watches.
 
 ```sh
@@ -235,23 +235,21 @@ startup; peak memory comes from `/usr/bin/time` for the attempt that was kept.
 Generated workloads are one function returning a long constant expression, which
 is a workload both compilers accept and one that grows with `--terms`.
 
-The V self-build is the workload that will decide this project, and it is not
-here yet: the stub cannot compile real C. Until then this harness measures the
-gap on what it can compile, so the numbers move as the compiler grows into the
-workload that matters.
+The V self-build is the heaviest input available, and the harness does not take
+it as a case yet. Until it does, the numbers describe generated input, which is
+a workload both compilers accept and one that grows with `--terms`.
 
 ## What is not here yet
 
-- A self-build benchmark, for the reason above: it needs a compiler that can
-  compile V's output, which is M3's problem and not a tooling problem.
+- A self-build benchmark. The self-compile runs in CI as a correctness gate,
+  not as a timed case with a budget.
 - A phase-by-phase profile. `./vcc -bench` reports microseconds per phase and the
   harness prints them, but there is no history of those numbers across commits.
 - A speed gate. `.github/workflows/ci.yml` runs the harness and writes the
   numbers into the run summary,
   but nothing fails on them yet: a shared runner's wall time is not a budget to
-  hold a pull request to, and the workload that decides this project is the V
-  self-build, which no milestone can run yet. The gate appears when that number
-  exists (ROADMAP M6).
+  hold a pull request to. The gate appears when the self-build number exists
+  (ROADMAP M6).
 
 ## What CI does with them
 

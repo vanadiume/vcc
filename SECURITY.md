@@ -2,18 +2,14 @@
 
 ## Supported versions
 
-Nothing has been released. `main` is the only build that exists, and it is a
-stub, so there is no version of vcc anyone should be running in a situation
-where security matters.
+`main` is the development build. Releases are cut from it and carry the version
+`v.mod` names; the release workflow puts every one through the same gate a pull
+request passes before it publishes the tarball.
 
 | Version | Supported |
 |---|---|
-| `main` (unreleased) | Development only. Fixes land here; nothing is backported because there is nothing to backport to. |
-| Tagged releases | None yet. |
-
-That table will get more interesting when the first release exists. Until then,
-treat every report as a development-tree bug and expect a fix on `main` rather
-than a patch release.
+| `main` (unreleased) | Development. Fixes land here. |
+| The latest tagged release | Fixes land on `main` and ship in the next release. |
 
 ## What counts as a vulnerability here
 
@@ -27,24 +23,24 @@ different threat surface from an application, and a shorter one.
   miscompile that only shows up under unusual input is still this.
 - Code execution or file access driven by the compiler is a crafted C input, or a
   crafted command line, that makes vcc execute a program, read a file it was
-  never asked to read, or write outside the output path. Include the preprocessor
-  once it exists: includes, macro expansion, and pragma handling are where a
-  compiler starts touching files the input names.
+  never asked to read, or write outside the output path. The preprocessor is in
+  scope: includes, macro expansion, and pragma handling are where a compiler
+  starts touching files the input names.
 - Memory unsafety in the compiler itself: vcc is written in V with bounds
   checking, but the back end does raw pointer arithmetic and offset math, and a
   hand-written ELF writer is exactly where an integer overflow turns into a bad
   write. A crash on well-formed input is a bug to file as an issue; a crash from
   input that reaches outside the compiler's own memory is this category.
-- Input parsing with a bad trust boundary, once linking exists. Object files and
-  archives are attacker-shaped data, and parsing ELF or `ar` containers is the
-  classic route from "compile this" to "run this".
+- Input parsing with a bad trust boundary. Object files and archives are
+  attacker-shaped data, and parsing ELF or `ar` containers is the classic route
+  from "compile this" to "run this".
 - Reproducibility failures with a security consequence: output that changes
   between runs of the same input and flags, in a way that lets one build differ
   from the build someone verified.
 
 ## What does not count
 
-- Bugs in upstream TCC, in the V compiler, or in the Linux kernel.
+- Bugs in upstream TCC, gcc or clang, in the V compiler, or in the Linux kernel.
 - Anything about the program vcc produces. A compiler is not a sandbox: it
   compiles whatever you point it at, and a program with a vulnerability written
   in C has that vulnerability after vcc compiles it.
@@ -75,8 +71,11 @@ is in scope and how severe it looks, and a fix on `main` with the advisory
 published once it is out. Credit in the advisory unless you would rather not be
 named.
 
-## This policy is about a stub
+## Scope
 
-Most of what is listed above cannot happen yet, because the compiler does not do
-enough for it to happen. The list is one thing that grows with the compiler, and
-it is worth writing down before the code that makes it true exists.
+Most of the compiler is written and links a program, so the list above is live:
+the preprocessor touches files the input names, the back end does raw offset
+arithmetic, and the linker reads ELF and `ar` containers that are
+attacker-shaped data. A report about a path that does not exist yet is still
+welcome, and it is better written down before the code that makes it true
+exists.

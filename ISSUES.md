@@ -4,9 +4,11 @@ The tracker is at <https://github.com/HuntedByTheIRS/vcc/issues>. Bugs, feature
 requests and questions all go there now that discussions are off: a question is
 an issue labeled `question`, and a direction is one labeled `enhancement`.
 
-vcc is early. Most of C is unimplemented, on purpose, and the roadmap says so.
-An error telling you a construct is not implemented yet is the compiler working
-as designed, not a bug. The bugs worth filing are the other ones.
+vcc is a working compiler for a very large subset of C. A refusal that names a
+construct the roadmap lists as unimplemented is the compiler working as
+designed, not a bug. The bugs worth filing are the other ones: valid C that
+vcc refuses without a roadmap entry, a program that miscompiles, a crash, or a
+diagnostic that describes the wrong thing.
 
 ## Before you file
 
@@ -54,13 +56,13 @@ report that names a phase and a number usually can.
 
 ## Out of scope
 
-- Bugs in upstream TCC. This project replaces it, it does not track it.
+- Bugs in upstream TCC, gcc or clang. vcc does not track them.
 - Bugs in the V compiler, or in V's generated C being invalid C. Reduce it and
   file it against V. If vcc is the thing that refuses valid C, that is ours.
 - C that uses extensions no one has implemented yet. Those are roadmap items;
   file them as feature requests if the roadmap does not already cover them.
-- Support for your program. vcc compiles C or it does not; it is not a build
-  system and not a linker at this point.
+- Support for your program. vcc compiles C and links it; it is not a build
+  system.
 
 ## Security
 
