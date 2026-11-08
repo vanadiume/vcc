@@ -1005,3 +1005,4 @@ it owns the change, which is the same vocabulary the commits use.
 * cli: the -fignore-natives flag is read (100fdd1)
 * codegen: a 128-bit operation calls the runtime archive (8f2a6cd)
 * docs: the changelog names the runtime helper work (7bc49b3)
+* codegen: the _BitInt program reads its value without dividing (ecc9fe8)
