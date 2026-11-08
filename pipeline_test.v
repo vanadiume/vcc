@@ -44,7 +44,9 @@ fn compile(args []string, source string) codegen.Result {
 fn compile_and_run(args []string, source string) int {
 	opts := cli.parse(args) or { panic(err) }
 	image := compile(args, source)
-	assert image.diagnostics.len == 0
+	if image.diagnostics.len > 0 {
+		assert false, '${image.diagnostics[0].msg}\n${source}'
+	}
 	os.write_file_array(opts.output, image.bytes) or { panic(err) }
 	os.chmod(opts.output, 0o755) or { panic(err) }
 	result := os.execute(os.quoted_path(opts.output))
@@ -2244,12 +2246,13 @@ fn test_a_128_bit_parameter_that_will_not_fit_the_registers_is_refused() {
 
 // C23 spells the 128-bit type `_BitInt(128)`, and a declaration written that way
 // is the same type as one written `__int128`. Measured on gcc 16.2.1, this
-// program exits 10: a thousand cubed is a thousand million, and the quotient by
-// a hundred million is ten.
+// program exits 10: a thousand cubed is a thousand million, and the program
+// answers 10 when the object holds that value. A division would have made the
+// program reach the runtime archive, which a test without one cannot link.
 fn test_the_bitint_spelling_names_the_128_bit_type() {
 	source := scratch('wide_bitint.c')
 	binary := scratch('wide_bitint')
-	program := 'int main(void) { _BitInt(128) a = 1000; a = a * 1000; a = a * 1000; return (int)(a / 100000000); }'
+	program := 'int main(void) { _BitInt(128) a = 1000; a = a * 1000; a = a * 1000; return (int)(a == 1000000000) * 10; }'
 	exit_status := compile_and_run([source, '-o', binary], program)
 	assert exit_status == 10
 	os.rm(source) or {}
