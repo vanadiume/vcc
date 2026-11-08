@@ -384,6 +384,48 @@ fn test_a_static_definition_does_not_answer_another_units_import() {
 	assert false, 'the link bound an import to another unit static definition'
 }
 
+// calling_exit builds a unit whose entry calls `exit`, a name only the C library
+// defines.
+fn calling_exit() image.Program {
+	mut caller := defining('main', []u8{len: 5, init: u8(0x90)})
+	caller.imports << 'exit'
+	caller.fixups << image.Fixup{
+		start:  0
+		length: 5
+		kind:   .call_import
+		name:   'exit'
+	}
+	return caller
+}
+
+fn test_a_link_with_no_default_libraries_still_refuses_an_unanswered_import() {
+	// A link with no default libraries names no C library, so the C library
+	// answers nothing for its imports: `exit` is then a name no library on the
+	// command line defines, and a program carrying it would die in the loader
+	// with a symbol lookup error. Naming the library the name lives in is what
+	// answers it, which is what -nostdlib leaves a command line to do.
+	bare := Options{
+		entry:                'main'
+		target:               host()
+		no_default_libraries: true
+	}
+	link([calling_exit()], bare) or {
+		assert err.msg().contains('undefined reference')
+		assert err.msg().contains('exit')
+		named := Options{
+			entry:                'main'
+			target:               host()
+			no_default_libraries: true
+			libraries:            ['c']
+		}
+		link([calling_exit()], named) or {
+			assert false, 'a link that names the C library should answer ${err.msg()}'
+		}
+		return
+	}
+	assert false, 'a link with no C library answered an import out of one'
+}
+
 // The process stub's one code reference calls the entry function, which another
 // unit defines, and the stub carries no label of its own for that name. A name a
 // unit holds no label for is not one of its private labels, so the reference

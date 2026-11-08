@@ -874,9 +874,14 @@ pub fn library_symbols(path string) ?map[string]bool {
 }
 
 // unresolved_imports answers which of an image's imports no library it names
-// provides. The C library is always one of them, because every image this system
-// writes runs against it whether or not a flag named it; the rest are the -l
-// names on the command line.
+// provides. The rest are the -l names on the command line.
+//
+// base_library_counts says whether the C library is one of those libraries. It is
+// for every image this system writes except the ones a run with no default
+// libraries asks for: -nostdlib and -nodefaultlibs name no C library in the
+// image, so the loader does not map one and a name only it defines is as
+// unresolved as any other. Asking it there answered a program that dies at load
+// with a symbol lookup error, which is the shape this check exists to refuse.
 //
 // An import none of those libraries defines is what a link refuses as an
 // undefined reference, and it is the shape this compiler used to leave in an
@@ -885,16 +890,21 @@ pub fn library_symbols(path string) ?map[string]bool {
 // read contributes nothing, and when the C library itself cannot be read the
 // check is not made at all, because the loader reads the same file and a compile
 // refused over this reader's failure would be a worse answer than the loader's.
-pub fn unresolved_imports(imports []string, names []string, dirs []string) []string {
+// That last answer belongs to the C library alone: a -l name the reader cannot
+// read leaves the import it answers reported, since no file it could read
+// defines it.
+pub fn unresolved_imports(imports []string, names []string, dirs []string, base_library_counts bool) []string {
 	if imports.len == 0 {
 		return []string{}
 	}
-	base := find_file(base_library, dirs) or { return []string{} }
 	mut tables := []LibrarySymbols{}
-	if table := open_library_symbols(base) {
-		tables << table
-	} else {
-		return []string{}
+	if base_library_counts {
+		base := find_file(base_library, dirs) or { return []string{} }
+		if table := open_library_symbols(base) {
+			tables << table
+		} else {
+			return []string{}
+		}
 	}
 	for library in resolve_library_files(names, dirs) or { []Library{} } {
 		if table := open_library_symbols(library.path) {
