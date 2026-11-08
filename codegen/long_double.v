@@ -133,6 +133,37 @@ fn (e Emitter) long_double_argument(call ast.Call, position int, arg ast.Expr) ?
 	return none
 }
 
+// emit_long_double_argument materializes argument `expr` as a value of the
+// extended type and leaves the address of its sixteen bytes in the accumulator,
+// which is what the call's stack pass pushes for a parameter the convention
+// hands over in memory.
+//
+// The parameter decides that the argument travels as a long double, and the
+// language converts the argument to the parameter's type, so an argument of
+// another type is converted here. A double, a float or an integer goes into a
+// frame temporary of the extended type and the address of that is what is left;
+// an argument that is already one is left as the address it is worth, because a
+// long double value in this back end is the address of its bytes and a copy
+// would only move them.
+//
+// Measured before this existed, on the issue's program: the argument was
+// evaluated as a double, which leaves the value in the floating register and
+// nothing in the accumulator, and the accumulator was then parked as though it
+// held the address of sixteen bytes. The two words were pushed from an address
+// that was never written, and the callee read a NaN.
+fn (mut e Emitter) emit_long_double_argument(expr ast.Expr, line int, col int, depth int) !void {
+	if e.is_extended(expr) {
+		return e.emit_expr_at(expr, depth)
+	}
+	if e.is_a_pointer(expr) {
+		e.diagnostics << problem(line, col, 'unsupported: a pointer is passed where a long double parameter is declared, and there is no conversion between an address and a floating type')
+		return error('pointer to a long double argument')
+	}
+	temporary := e.reserve(long_double_bytes)
+	e.store_long_double(temporary, expr, line, col, depth)!
+	return e.leave_address(temporary, line, col)
+}
+
 // is_extended says whether an expression is worth a long double value, which is
 // the address of its sixteen bytes. A call whose signature returns one is one
 // even where the reader left the call expression's own type unresolved, so the

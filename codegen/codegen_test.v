@@ -942,6 +942,47 @@ int main(void) { return pick(1, 2, 3, 4, 5, 6, 7, 8.125L) == 8.125L ? 0 : 1; }')
 	assert run_image(odd.bytes) == 0
 }
 
+// A parameter of the extended type takes a value of that type, and an argument
+// is converted to its parameter's type the way an assignment converts (C99
+// 6.5.2.2). A double, a float or an integer argument is converted into the
+// extended format before its sixteen bytes are handed over. Every program here
+// exits 0 exactly when the callee read the value the caller wrote, and gcc
+// 16.2.1 at -O0 -fno-builtin exits 0 on each.
+//
+// Before the conversion was written the argument was evaluated and the register
+// it left its value in was parked as though it held the address of sixteen
+// bytes, so the callee read whatever that address held: vcc printed a NaN for
+// the issue's `ident(x)` where gcc printed 27, and these comparisons answer 1.
+fn test_a_narrower_argument_is_converted_to_a_long_double_parameter() {
+	// The issue's program: a volatile double in an object, so the value is read
+	// from the object rather than folded into a constant.
+	variable := emit(translation_unit('long double ident(long double v) { return v; }
+int main(void) { volatile double x = 27.0; return ident(x) == 27.0L ? 0 : 1; }'),
+		Options{})
+	assert variable.diagnostics.len == 0
+	assert run_image(variable.bytes) == 0
+	literal := emit(translation_unit('long double ident(long double v) { return v; }
+int main(void) { return ident(27.0) == 27.0L ? 0 : 1; }'), Options{})
+	assert literal.diagnostics.len == 0
+	assert run_image(literal.bytes) == 0
+	// The same conversion for a float, an int and a char, whose source widths
+	// are the other three the machine converts from.
+	narrower := emit(translation_unit('long double ident(long double v) { return v; }
+int main(void) { float f = 2.5f; int i = -7; char c = 3;
+return (ident(f) == 2.5L && ident(i) == -7.0L && ident(c) == 3.0L) ? 0 : 1; }'),
+		Options{})
+	assert narrower.diagnostics.len == 0
+	assert run_image(narrower.bytes) == 0
+	// A converted argument carries a place of its own in the argument list: both
+	// long double parameters here are handed a double, and the ints between them
+	// keep the places they had.
+	mixed := emit(translation_unit('long double pick(int a, long double z, int b, long double w) { return w + z; }
+int main(void) { double half = 0.5; return pick(1, half, 3, 4.75) == 5.25L ? 0 : 1; }'),
+		Options{})
+	assert mixed.diagnostics.len == 0
+	assert run_image(mixed.bytes) == 0
+}
+
 // Two long double calls in one argument list are two values, and the second is
 // not lost to the first. A call's stack arguments are staged in the pass that
 // pushes them, and an argument that is itself a call runs in the middle of that
@@ -5777,4 +5818,38 @@ fn test_a_name_the_nested_function_declares_itself_is_not_a_capture() {
 		Options{})
 	assert emitted.diagnostics.len == 0
 	assert run_image(emitted.bytes) == 100
+}
+
+fn test_a_comma_expression_statement_evaluates_both_operands() {
+	// 6.8.3 makes an expression statement a full expression, so the comma is an
+	// operator there: `a = 1, b = 2;` writes both in that order and the
+	// statement is worth the second assignment, which is thrown away. glibc's
+	// strict-ISO `assert` is written as `(void) sizeof (...), __extension__
+	// ({ ... })`, so the left operand has to run and be discarded.
+	emitted := emit(translation_unit('int main() { int a = 0; int b = 0; a = 1, b = 2; return a * 10 + b; }'),
+		Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 12
+}
+
+fn test_a_void_conditional_statement_runs_the_arm_the_condition_selects() {
+	// A conditional both of whose arms are void is worth nothing; it is written
+	// for what the arm the condition selects does. glibc's strict-ISO `assert`
+	// expands to `expr ? (void)0 : (void)0`, whose body is the refusal on
+	// either side.
+	emitted := emit(translation_unit('int main() { int a = 0; int n = 0; a ? (void)(n = 1) : (void)(n = 2); return n; }'),
+		Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 2
+	// The condition is evaluated, and a step in it is what it does.
+	stepped := emit(translation_unit('int main() { int a = 0; a++ ? (void)0 : (void)0; return a; }'),
+		Options{})
+	assert stepped.diagnostics.len == 0
+	assert run_image(stepped.bytes) == 1
+	// A condition the reader folded to a constant writes the arm it selects and
+	// leaves the other one out.
+	folded := emit(translation_unit('int main() { int n = 0; 1 ? (void)(n = 4) : (void)(n = 9); return n; }'),
+		Options{})
+	assert folded.diagnostics.len == 0
+	assert run_image(folded.bytes) == 4
 }

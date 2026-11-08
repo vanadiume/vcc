@@ -148,25 +148,26 @@ Each was compiled and run under `gcc -std=gnu99` first: it exits 0 and prints
 nothing. That is what makes "the program is right and only this compiler is
 behind" a measurement rather than a claim.
 
-## Why 159 of the tests sit under gnu/gnu99 and not iso/c99
+## Why 158 of the tests sit under gnu/gnu99 and not iso/c99
 
 Measured on this compiler, each test compiled on its own:
 
-- Under `-std=c99`, 159 of the tests that predate the GNU gap tests fail. 158 of
-  them include `<tgmath.h>` and stop at `/usr/include/tgmath.h:802: #error
-  "Unsupported compiler; you cannot use <tgmath.h>"`, because this compiler
-  claims `__GNUC__` only in a GNU dialect and glibc's `<tgmath.h>` refuses a
-  compiler that does not claim it. The 159th,
-  `0941-assert-a-true-expression-does-nothing`, uses `assert()`, whose glibc
-  expansion under strict ISO needs a construct this back end does not evaluate
-  yet.
-- Under `-std=gnu99` the 1057 accepted programs compile and run. The 68 that must
+- Under `-std=c99`, 158 of the tests that predate the GNU gap tests fail. Each
+  of them includes `<tgmath.h>` and stops at
+  `/usr/include/tgmath.h:802: #error "Unsupported compiler; you cannot use
+  <tgmath.h>"`, because this compiler claims `__GNUC__` only in a GNU dialect
+  and glibc's `<tgmath.h>` refuses a compiler that does not claim it. There used
+  to be a 159th, `0941-assert-a-true-expression-does-nothing`: `assert()`
+  expands under strict ISO to a comma expression statement whose right operand
+  is a conditional with two void arms, and neither was read. Both are now, so
+  that test sits in `iso/c99`.
+- Under `-std=gnu99` every accepted program compiles and runs. The 68 that must
   be refused are refused under either mode.
 
-So `iso/c99` holds the 898 programs that hold under strict `-std=c99` and the 68
-that must be refused, and `gnu/gnu99` holds those 159 plus the 26 GNU extensions
-nothing reads yet: 1154 test files, and `std/c99` holds the 29 library tests:
-1183 in all.
+So `iso/c99` holds the 902 programs that hold under strict `-std=c99` and the 68
+that must be refused, 970 test files. `gnu/gnu99` holds those 158 plus the 26
+GNU extensions nothing reads yet: 184 test files. `std/c99` holds the 29 library
+tests, and the corpus is 1183 test files in all.
 
 ## Running it
 

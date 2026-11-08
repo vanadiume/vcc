@@ -928,6 +928,48 @@ fn test_a_for_condition_reads_a_comma_expression() {
 	assert (cond as ast.Comma).typ.kind == .int_
 }
 
+// An expression statement is a full expression (6.8.3), so a comma written
+// after its first operand is 6.5.17's comma operator inside that statement and
+// not the end of it. glibc's strict-ISO `assert` is written as one:
+// `((void) sizeof ((expr) ? 1 : 0), __extension__ ({ ... }))`, whose left
+// operand alone was refused here with `expected ;, found ','`. A for's clauses
+// stay the exception, where the comma separates statements, which
+// test_a_for_init_and_update_read_a_comma pins.
+fn test_an_expression_statement_reads_a_comma_expression() {
+	result := parsed('int main(void) { (void)sizeof(1), (void)0; return 0; }')
+	assert result.diagnostics.len == 0
+	stmt := result.unit.decls[0].body[0]
+	assert stmt.kind == .expr_stmt
+	expr := stmt.expr or {
+		assert false
+		return
+	}
+	assert expr is ast.Comma
+	comma := expr as ast.Comma
+	assert comma.left is ast.Cast
+	assert comma.right is ast.Cast
+	assert comma.typ.kind == .void_
+}
+
+// The first operand of an expression statement can be an assignment, which the
+// statement reader keeps as a statement of its own: `a = 1, b = 2;` is one
+// statement worth the second assignment, so the first is put back together as
+// the expression it is before the comma is read over it.
+fn test_a_comma_after_an_assignment_is_one_statement() {
+	result := parsed('int main(void) { int a; int b; a = 1, b = 2; return a + b; }')
+	assert result.diagnostics.len == 0
+	stmt := result.unit.decls[0].body[2]
+	assert stmt.kind == .expr_stmt
+	expr := stmt.expr or {
+		assert false
+		return
+	}
+	assert expr is ast.Comma
+	comma := expr as ast.Comma
+	assert comma.left is ast.Assign
+	assert comma.right is ast.Assign
+}
+
 // A GNU statement expression is `({ ... })`: a brace-enclosed compound statement
 // in parentheses, read as a primary expression. Its value is the value of its
 // last statement when that statement is an expression, and the statements before

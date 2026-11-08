@@ -4495,6 +4495,32 @@ fn (mut e Emitter) emit_discard(expr ast.Expr, depth int) !void {
 		ast.IncDec {
 			e.emit_inc_dec(expr, depth)!
 		}
+		ast.Conditional {
+			// 6.5.15 evaluates only the arm the condition selects, and a
+			// conditional whose two arms are void is worth nothing at all: it
+			// is written for what the selected arm does. glibc's strict-ISO
+			// `assert` is `expr ? (void)0 : (void)0`, whose whole body is the
+			// refusals on either side of it. A condition the reader folded to
+			// a literal selects the same arm on every run, so only that arm is
+			// written, which is what emit_conditional does for a value.
+			if expr.cond is ast.IntLit {
+				arm := if (expr.cond as ast.IntLit).value != 0 {
+					expr.then_expr
+				} else {
+					expr.else_expr
+				}
+				return e.emit_effect(arm, depth + 1)
+			}
+			e.emit_condition(expr.cond, depth + 1, expr.line, expr.col)!
+			else_label := e.label()
+			end_label := e.label()
+			e.branch(.branch_zero, else_label, expr.line, expr.col)!
+			e.emit_effect(expr.then_expr, depth + 1)!
+			e.jump(end_label)!
+			e.place(else_label)
+			e.emit_effect(expr.else_expr, depth + 1)!
+			e.place(end_label)
+		}
 		else {
 			e.diagnostics << problem(expr.line, expr.col, 'unsupported: a ${expr.typ.describe()} expression in a statement is not one this back end evaluates for its side effects')
 			return error('void expression shape')
@@ -12063,10 +12089,16 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 			line := expr_line(arg)
 			col := expr_col(arg)
 			if place.extended {
+				// The parameter is of the extended type, so the argument is
+				// materialized as a value of it: the argument's own bytes when
+				// it already is one, a conversion of it into a frame temporary
+				// when it is a double, a float or an integer. What is parked is
+				// the address of sixteen bytes either way, which is what the
+				// second pass here reads the two words from.
 				if place.complex_long_double {
 					e.complex_long_double_argument_address(arg, depth + call.args.len + i + 1)!
 				} else {
-					e.emit_expr_at(arg, depth + call.args.len + i + 1)!
+					e.emit_long_double_argument(arg, line, col, depth + call.args.len + i + 1)!
 				}
 				source := e.value_slot(depth + i)
 				e.store_accumulator(source, line, col)!

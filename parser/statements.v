@@ -140,9 +140,14 @@ const assignment_operators = ['=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=
 
 // parse_simple_statement reads the statements that are one expression: an
 // assignment, which writes to a name, or an expression evaluated for what it
-// does.
+// does. The expression is a full one (6.8.3), so the comma operators written
+// after its first operand belong to it.
 fn (mut p Parser) parse_simple_statement() []ast.Stmt {
-	stmt := p.parse_expression_statement() or {
+	first := p.parse_expression_statement() or {
+		p.skip_statement()
+		return []ast.Stmt{}
+	}
+	stmt := p.comma_continuation(first) or {
 		p.skip_statement()
 		return []ast.Stmt{}
 	}
@@ -151,6 +156,55 @@ fn (mut p Parser) parse_simple_statement() []ast.Stmt {
 		return []ast.Stmt{}
 	}
 	return [stmt]
+}
+
+// comma_continuation reads the comma operators that follow the first operand of
+// an expression statement. 6.8.3 makes an expression statement a full
+// expression and 6.5.17 puts the comma at the top of the expression grammar,
+// above the conditional: `(void)sizeof(1), (void)0;` is one statement, worth its
+// right operand, with the left operand evaluated for what it does and thrown
+// away. glibc's strict-ISO `assert` is written as exactly that expression, which
+// is what this reader is here for.
+//
+// It is read here and not by parse_expression_statement, because a for's init
+// and update clauses hold a comma as a separator between statements rather than
+// an operator inside one.
+//
+// The statement reader keeps an assignment as a statement of its own, so the
+// assignment is put back together as the expression it is before the comma is
+// read over it, the way trailing_value does for a statement expression. A
+// compound assignment is the one shape left alone: its statement carries the
+// operator so the target's address is computed once, and the expression it
+// would be put back as computes that address a second time, so the comma stays
+// unread and the statement is refused where it is written.
+fn (mut p Parser) comma_continuation(stmt ast.Stmt) !ast.Stmt {
+	if !p.at_punct(',') {
+		return stmt
+	}
+	if stmt.kind == .assign && stmt.compound.len > 0 {
+		return stmt
+	}
+	mut expr := p.trailing_value(stmt) or {
+		p.error_at(p.peek(), 'unsupported: the expression before a comma is not one this reader keeps a value for')
+		return error('comma expression operand')
+	}
+	for p.at_punct(',') {
+		comma := p.next()
+		right := p.parse_assignment_expression()!
+		expr = ast.Expr(ast.Comma{
+			left:  expr
+			right: right
+			typ:   p.value_type(right)
+			line:  comma.line
+			col:   comma.col
+		})
+	}
+	return ast.Stmt{
+		kind: .expr_stmt
+		expr: expr
+		line: stmt.line
+		col:  stmt.col
+	}
 }
 
 // parse_asm_statement reads a statement-level GNU asm:
