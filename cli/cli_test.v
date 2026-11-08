@@ -437,9 +437,9 @@ fn test_the_external_linker_needs_a_value() {
 	}
 }
 
-// A C compiler may not be the external linker. The compiler exists to replace
-// the C compiler V vendors, so one finishing C compilation would be circular,
-// and the refusal names the flag and points at a linker instead.
+// A C compiler may not be the external linker. vcc compiles C itself, so a C
+// compiler finishing the job would be circular, and the refusal names the flag
+// and points at a linker instead.
 fn test_a_c_compiler_may_not_be_the_external_linker() {
 	for name in ['gcc', 'cc', 'clang', 'c++', 'tcc'] {
 		said := external_linker_refusal(name) or {
@@ -729,8 +729,8 @@ fn test_the_version_paths_and_verbose_switches_are_separate() {
 }
 
 // -h and -hh are the two help flags, and they name the two texts main.v prints:
-// -h the short usage and -hh the replacement section as well. They can be given
-// together, which is what a command line appending -hh to -h does.
+// -h the short usage and -hh the section on compiler flags as well. They can be
+// given together, which is what a command line appending -hh to -h does.
 fn test_the_two_help_flags_select_the_two_texts() {
 	short := parse(['-h'])!
 	assert short.show_help
@@ -781,15 +781,15 @@ fn test_the_version_is_the_one_vmod_names() {
 	assert version == manifest.version
 }
 
-// The short usage and the full help differ by the section on what a drop-in
-// replacement for the bundled tcc is asked to accept. The short text stops
-// before it, and the short text is the one an error prints.
-fn test_the_full_help_adds_the_replacement_section() {
+// The short usage and the full help differ by the section on what a build
+// system passes a C compiler. The short text stops before it, and the short
+// text is the one an error prints.
+fn test_the_full_help_adds_the_compatibility_section() {
 	short := usage(false)
 	all := usage(true)
 	assert short.contains('-print-search-dirs')
-	assert !short.contains('What a replacement for the bundled tcc')
-	assert all.contains('What a replacement for the bundled tcc')
+	assert !short.contains('What a build system passes a C compiler')
+	assert all.contains('What a build system passes a C compiler')
 	assert all.len > short.len
 	assert all.contains(short)
 }

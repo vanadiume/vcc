@@ -467,9 +467,8 @@ pub fn parse(args []string) !Options {
 			// spellings. Nothing to do here beyond not recording it as ignored.
 		} else {
 			// Everything else is accepted and recorded. The list of what V
-			// actually passes is in README.md under "What a drop-in has to
-			// satisfy"; each of those lands here until the milestone that
-			// honors it.
+			// actually passes is in README.md under Compatibility; each of
+			// those lands here until the milestone that honors it.
 			opts.ignored << arg
 		}
 	}
@@ -581,9 +580,10 @@ pub fn usage(all bool) string {
 	mut out := []string{}
 	out << 'Usage: vcc [options...] [-o outfile] infile.c'
 	out << ''
-	out << 'A C compiler written in V, meant to replace the tcc that V vendors in'
-	out << 'thirdparty/tcc. It compiles a subset of C to a Linux x86-64 executable and'
-	out << 'refuses the rest with a diagnostic naming the construct and its location.'
+	out << 'A general-purpose C compiler written in V. It compiles C to Linux'
+	out << 'x86-64 executables, relocatable objects and shared objects, and refuses'
+	out << 'a construct it cannot compile with a diagnostic naming the construct'
+	out << 'and its location.'
 	out << ''
 	out << 'General options:'
 	out << '  -o outfile    set the output filename (default a.out)'
@@ -683,8 +683,8 @@ pub fn usage(all bool) string {
 	out << '                            without changing what is compiled'
 	if all {
 		out << ''
-		out << 'What a replacement for the bundled tcc is asked to accept, and what'
-		out << 'this compiler does with each one today:'
+		out << 'What a build system passes a C compiler, and what this compiler'
+		out << 'does with each one today:'
 		out << '  -std=gnu11 -std c99   both spellings; the spelling selects a dialect mode,'
 		out << '                        and one this compiler does not implement is recorded,'
 		out << '                        never refused'
