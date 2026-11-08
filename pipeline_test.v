@@ -780,9 +780,6 @@ fn test_an_array_of_128_bit_objects_is_written_at_an_element_address() {
 	os.rm(element) or {}
 }
 
-// A 128-bit division and remainder run: the routine the compiler emits is exercised
-// end to end, through the command line, and the answers are gcc 16.2.1's. The large
-// one is the identity a division is defined by rather than a wished-for quotient.
 // A shift and a bitwise operator on a 128-bit value, run through the command line:
 // the high word of a pair is read by shifting it down, which is the read that the
 // pair had no form for until the shifts existed.
@@ -819,23 +816,234 @@ fn test_a_shift_by_a_count_the_program_works_out_runs() {
 	os.rm(binary) or {}
 }
 
-fn test_a_128_bit_division_and_remainder_run() {
+// A 128-bit division and remainder are calls to the runtime archive, so the
+// programs that exercise them link a stand-in for libvcc.a built here: the
+// division is written against the pair ABI the helper takes, and the compiler
+// emits the call. The expected answers are gcc 16.2.1's, and the large value is
+// the one regression 0013 checked while the division was emitted inline.
+//
+// The stand-in divides by shifting and subtracting, which is a different
+// implementation from the one that used to be emitted, so a wrong call cannot
+// agree with it by being the same code.
+fn wide_runtime_source() string {
+	return [
+		'typedef unsigned __int128 u128;',
+		'typedef __int128 i128;',
+		'static u128 wide_quotient;',
+		'static u128 wide_remainder;',
+		'static void wide_divide(u128 n, u128 d) {',
+		'    u128 q = 0;',
+		'    u128 r = 0;',
+		'    if (d == 0) {',
+		'        wide_quotient = q;',
+		'        wide_remainder = n;',
+		'        return;',
+		'    }',
+		'    for (int i = 127; i >= 0; i--) {',
+		'        r = (r << 1) | ((n >> i) & 1);',
+		'        if (r >= d) {',
+		'            r = r - d;',
+		'            q = q | (((u128)1) << i);',
+		'        }',
+		'    }',
+		'    wide_quotient = q;',
+		'    wide_remainder = r;',
+		'}',
+		'static u128 wide_magnitude(i128 v) {',
+		'    u128 u = (u128)v;',
+		'    if (v < 0) { u = 0 - u; }',
+		'    return u;',
+		'}',
+		'u128 __udivti3(u128 n, u128 d) { wide_divide(n, d); u128 out = wide_quotient; return out; }',
+		'u128 __umodti3(u128 n, u128 d) { wide_divide(n, d); u128 out = wide_remainder; return out; }',
+		'i128 __divti3(i128 a, i128 b) {',
+		'    wide_divide(wide_magnitude(a), wide_magnitude(b));',
+		'    u128 q = wide_quotient;',
+		'    if ((a < 0) != (b < 0)) { q = 0 - q; }',
+		'    i128 out = q;',
+		'    return out;',
+		'}',
+		'i128 __modti3(i128 a, i128 b) {',
+		'    wide_divide(wide_magnitude(a), wide_magnitude(b));',
+		'    u128 r = wide_remainder;',
+		'    i128 out = r;',
+		'    if (a < 0) { out = 0 - out; }',
+		'    return out;',
+		'}',
+	].join('\n')
+}
+
+// wide_runtime_archive writes a libvcc.a whose members answer the four division
+// helpers, and answers the directory a -L has to name.
+fn wide_runtime_archive(directory string) string {
+	helper := object_of('wide_helper.c', wide_runtime_source())
+	names := ['__udivti3', '__umodti3', '__divti3', '__modti3']
+	os.write_file_array(os.join_path(directory, 'libvcc.a'), archive_of('wide_helper.o', helper, names)) or {
+		panic(err)
+	}
+	return directory
+}
+
+fn test_a_128_bit_division_links_the_runtime_archive_and_runs() {
+	directory := scratch('wide_runtime_dir')
+	os.mkdir(directory) or { panic(err) }
+	wide_runtime_archive(directory)
 	mut powers := '\tunsigned __int128 t64 = 1;\n'
 	for _ in 0 .. 64 {
 		powers += '\tt64 = t64 + t64;\n'
 	}
-	powers += '\tunsigned __int128 t100 = 1;\n'
-	for _ in 0 .. 100 {
-		powers += '\tt100 = t100 + t100;\n'
-	}
 	source := scratch('wide_div.c')
 	binary := scratch('wide_div')
-	small := compile_and_run([source, '-o', binary], 'int main(void) { __int128 a = -7; __int128 b = 3; return (int)(a / b) == -2 && (int)(a % b) == -1; }\n')
-	assert small == 1
-	large := compile_and_run([source, '-o', binary], 'int main(void) {\n${powers}\tunsigned __int128 D = t100 + 7;\n\tunsigned __int128 q = D / 3;\n\tunsigned __int128 r = D % 3;\n\treturn (q * 3 + r) == D && r < 3;\n}\n')
-	assert large == 1
+	// The small one is a signed quotient and remainder, whose helper names are
+	// __divti3 and __modti3. The large one is the value regression 0013 held
+	// while the division was inline: a 100-bit dividend, its quotient's high word
+	// read back by the shift.
+	programs := [
+		'int main(void) { __int128 a = -7; __int128 b = 3; return !((int)(a / b) == -2 && (int)(a % b) == -1); }\n',
+		'int main(void) {\n${powers}	unsigned __int128 a = ((unsigned __int128)0x0123456789abcdefULL << 64) | 0xfedcba9876543210ULL;\n	unsigned __int128 q = a / 3;\n	return !(((q >> 64) == 0x00611722833944a5ULL) && ((q & 0xffffffffffffffffULL) == 0x54f43e32d21c10b0ULL) && (a / t64) == 0x0123456789abcdefULL);\n}\n',
+	]
+	for i, program in programs {
+		os.write_file(source, program) or { panic(err) }
+		opts := cli.parse([source, '-L', directory, '-o', binary]) or { panic(err) }
+		link_inputs(opts)
+		assert os.exists(binary)
+		result := os.execute(os.quoted_path(binary))
+		assert result.exit_code == 0, 'program ${i} answered ${result.exit_code}'
+	}
 	os.rm(source) or {}
 	os.rm(binary) or {}
+	os.rmdir_all(directory) or {}
+}
+
+// doubling writes the source for one power of two, the way the codegen tests do:
+// the language has no 128-bit literal, so an expected answer is a sum of them.
+fn doubling(name string, times int) string {
+	mut text := '\tunsigned __int128 ${name} = 1;\n'
+	for _ in 0 .. times {
+		text += '\t${name} = ${name} + ${name};\n'
+	}
+	return text
+}
+
+// A pair divided by a pair, and the remainder of one by the other, through a link
+// against the archive: the compiler emits the call now and the archive answers
+// it. Every program here is one gcc 16.2.1 answers with 1, and the large cases
+// are the identity a division is defined by, which pins the quotient exactly
+// given the multiply and the comparison the identity is written with.
+fn test_one_128_bit_value_is_divided_by_another() {
+	powers := doubling('t64', 64) + doubling('t36', 36) + doubling('t100', 100) + doubling('t127', 127)
+	cases := [
+		'\tunsigned __int128 a = 40;\n\tunsigned __int128 b = 2;\n\treturn (a / b) == 20;',
+		'\tunsigned __int128 a = 40;\n\treturn (a % 3) == 1;',
+		// A narrow divisor, which is widened into a pair before the routine starts.
+		'\tunsigned __int128 a = 40;\n\treturn (a / 2) == 20;',
+		'\tunsigned __int128 a = 12345;\n\treturn (a / 1) == 12345;',
+		'\tunsigned __int128 a = 987654321;\n\treturn (a / a) == 1 && (a % a) == 0;',
+		// The remainder takes the dividend's sign and the quotient the two signs
+		// together, which is what C asks for.
+		'\t__int128 a = -7;\n\t__int128 b = 3;\n\treturn (a % b) == -1;',
+		'\t__int128 a = 7;\n\t__int128 b = -3;\n\treturn (a % b) == 1;',
+		'\t__int128 a = -7;\n\t__int128 b = -3;\n\treturn (a % b) == -1;',
+		'\t__int128 a = -7;\n\t__int128 b = 3;\n\treturn (a / b) == -2;',
+		'\t__int128 a = 7;\n\t__int128 b = -3;\n\treturn (a / b) == -2;',
+		'\t__int128 v = 100;\n\tv /= 3;\n\treturn v == 33;',
+		'\t__int128 v = 100;\n\tv %= 7;\n\treturn v == 2;',
+		// A dividend and a divisor too wide for a word, which is what the routine
+		// shifts and subtracts for.
+		'${powers}\tunsigned __int128 D = t100 + 7;\n\tunsigned __int128 q = D / 3;\n\tunsigned __int128 r = D % 3;\n\treturn (q * 3 + r) == D && r < 3;',
+		'${powers}\tunsigned __int128 D = t100 + 7;\n\tunsigned __int128 q = D / 7;\n\tunsigned __int128 r = D % 7;\n\treturn (q * 7 + r) == D && r < 7;',
+		'${powers}\tunsigned __int128 D = t100;\n\treturn (D / t64) == t36;',
+		'${powers}\t__int128 D = t100 + 7;\n\t__int128 q = D / 3;\n\t__int128 r = D % 3;\n\treturn (q * 3 + r) == D && r == 2;',
+		'${powers}\t__int128 D = 0 - t100 - 7;\n\t__int128 q = D / 3;\n\t__int128 r = D % 3;\n\treturn (q * 3 + r) == D && r == -2;',
+		// The one division that would overflow if the signs were put back by
+		// negating the dividend: the answer is the dividend, measured on gcc.
+		'${powers}\t__int128 a = 0 - t127;\n\treturn (a / -1) == a;',
+		'${powers}\t__int128 a = 0 - t127;\n\treturn (a % -1) == 0;',
+	]
+	directory := scratch('wide_cases_dir')
+	os.mkdir(directory) or { panic(err) }
+	wide_runtime_archive(directory)
+	source := scratch('wide_cases.c')
+	binary := scratch('wide_cases')
+	for source_text in cases {
+		os.write_file(source, 'int main() {\n${source_text}\n}\n') or { panic(err) }
+		opts := cli.parse([source, '-L', directory, '-o', binary]) or { panic(err) }
+		link_inputs(opts)
+		assert os.exists(binary)
+		result := os.execute(os.quoted_path(binary))
+		assert result.exit_code == 1, '${source_text} answered ${result.exit_code}'
+	}
+	os.rm(source) or {}
+	os.rm(binary) or {}
+	os.rmdir_all(directory) or {}
+}
+
+// Division by zero is undefined, and the runtime decides what happens: gcc's
+// libgcc traps with SIGFPE at every level (measured, 136 through the shell), and
+// libvcc's header says its helpers answer a zero quotient with the dividend as
+// the remainder instead. These programs run to the end, and the values are the
+// ones that ABI names.
+fn test_a_128_bit_division_by_zero_answers_the_runtime_helper() {
+	directory := scratch('wide_zero_dir')
+	os.mkdir(directory) or { panic(err) }
+	wide_runtime_archive(directory)
+	source := scratch('wide_zero.c')
+	binary := scratch('wide_zero')
+	cases := [
+		'int main(void) { __int128 a = 5; __int128 b = 0; return (int)(a / b); }',
+		'int main(void) { unsigned __int128 a = 5; unsigned __int128 b = 0; return (int)(a / b); }',
+		'int main(void) { __int128 a = 5; __int128 b = 0; return (int)(a % b); }',
+		'int main(void) { unsigned __int128 a = 5; unsigned __int128 b = 0; return (int)(a % b); }',
+	]
+	answers := [0, 0, 5, 5]
+	for i, program in cases {
+		os.write_file(source, program + '\n') or { panic(err) }
+		opts := cli.parse([source, '-L', directory, '-o', binary]) or { panic(err) }
+		link_inputs(opts)
+		assert os.exists(binary)
+		result := os.execute(os.quoted_path(binary))
+		assert result.exit_code == answers[i], 'case ${i} answered ${result.exit_code}'
+	}
+	os.rm(source) or {}
+	os.rm(binary) or {}
+	os.rmdir_all(directory) or {}
+}
+
+// -fignore-natives asks for the runtime's copy of an operation the machine has
+// instructions for. The archive below answers a multiply and a shift with their
+// first argument and nothing else, so a program asking whether `40 * 3` is 120
+// answers 1 when the instruction ran and 0 when the helper did. That is how a
+// call and an inline sequence are told apart by running a program rather than by
+// reading the image.
+fn test_ignore_natives_calls_the_runtime_for_a_multiply_and_a_shift() {
+	directory := scratch('wide_natives_dir')
+	os.mkdir(directory) or { panic(err) }
+	source := scratch('wide_natives.c')
+	binary := scratch('wide_natives')
+	helper := object_of('natives_helper.c', [
+		'typedef unsigned __int128 u128;',
+		'u128 __multi3(u128 a, u128 b) { u128 out = a; return out; }',
+		'u128 __ashlti3(u128 a, int b) { u128 out = a; return out; }',
+	].join('\n'))
+	os.write_file_array(os.join_path(directory, 'libvcc.a'), archive_of('natives_helper.o', helper, [
+		'__multi3',
+		'__ashlti3',
+	])) or { panic(err) }
+	program := 'int main(void) {\n\t__int128 a = 40;\n\t__int128 b = 3;\n\tint n = 2;\n\t__int128 p = a * b;\n\t__int128 s = a << n;\n\treturn (int)(p == 120) * 2 + (int)(s == 160);\n}\n'
+	os.write_file(source, program) or { panic(err) }
+	inline := cli.parse([source, '-L', directory, '-o', binary]) or { panic(err) }
+	link_inputs(inline)
+	assert os.exists(binary)
+	native := os.execute(os.quoted_path(binary))
+	assert native.exit_code == 3
+	asked := cli.parse(['-fignore-natives', source, '-L', directory, '-o', binary]) or { panic(err) }
+	link_inputs(asked)
+	assert os.exists(binary)
+	helper_calls := os.execute(os.quoted_path(binary))
+	assert helper_calls.exit_code == 0
+	os.rm(source) or {}
+	os.rm(binary) or {}
+	os.rmdir_all(directory) or {}
 }
 
 // A 128-bit value computed in the program and run: the pair the two words travel

@@ -278,6 +278,7 @@ fn main() {
 		entry:                'main'
 		compile_only:         opts.compile_only
 		pic:                  opts.pic
+		ignore_natives:       opts.ignore_natives
 		link_kind:            link_kind(opts)
 		libraries:            opts.libraries
 		library_dirs:         opts.library_dirs
@@ -621,10 +622,11 @@ fn link_inputs(opts cli.Options) {
 		optimizing += time.since(started).microseconds()
 		started = time.now()
 		emitted := codegen.emit(optimized, codegen.Options{
-			target:       opts.target
-			link:         true
-			libraries:    opts.libraries
-			library_dirs: opts.library_dirs
+			target:         opts.target
+			link:           true
+			ignore_natives: opts.ignore_natives
+			libraries:      opts.libraries
+			library_dirs:   opts.library_dirs
 		})
 		emitting += time.since(started).microseconds()
 		if report(path, emitted.diagnostics, opts.warnings) > 0 {
@@ -1447,12 +1449,13 @@ fn compile_source_object(path string, source string, opts cli.Options) ![]u8 {
 	}
 	optimized := optimizer.optimize(parsed.unit, opts.optimization)
 	image := codegen.emit(optimized, codegen.Options{
-		target:       opts.target
-		entry:        'main'
-		compile_only: true
-		pic:          opts.pic
-		libraries:    opts.libraries
-		library_dirs: opts.library_dirs
+		target:         opts.target
+		entry:          'main'
+		compile_only:   true
+		pic:            opts.pic
+		ignore_natives: opts.ignore_natives
+		libraries:      opts.libraries
+		library_dirs:   opts.library_dirs
 	})
 	if report(path, image.diagnostics, opts.warnings) > 0 {
 		return error('the compile stopped at a diagnostic')
