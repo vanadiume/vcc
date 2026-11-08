@@ -1009,3 +1009,12 @@ it owns the change, which is the same vocabulary the commits use.
 * docs: the changelog names the _BitInt test (239d20c)
 * backend, codegen, linking: an import check asks only the image's libraries (c17754e)
 * docs: the README names the import check under -nostdlib (ed6e1af)
+
+## 2026-11-08
+
+* docs: the README markets a general-purpose compiler (97f902c)
+* docs: the architecture and roadmap describe a general-purpose compiler (2a2416a)
+* docs: the wiki follows the README's direction (b2f535f)
+* docs: the guides and policies describe a general-purpose compiler (8e8bcc3)
+* cli: the help text describes a general-purpose compiler (9497eb1)
+* docs: the changelog names the direction change
