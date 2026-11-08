@@ -2,15 +2,15 @@
 
 The compiler is written in V and nothing else. No C source among the files it
 is built from, no stage handed to a C compiler, no vendored C library. The
-rule is the point of the project rather than a preference about it: vcc exists
-so that the C compiler in V's build is a program V can build, read and patch
-in V, and a step that delegates to a C compiler removes the property the
-replacement is for.
+rule is the point of the project rather than a preference about it: the whole
+compiler is readable, buildable and debuggable in one language, and a step that
+delegates to a C compiler makes the tree depend on exactly the kind of opaque
+binary it is meant to replace.
 
 Where a piece cannot be written in V yet, the piece stays unimplemented. The
 compiler refuses the construct and names it, which is a worse answer than
 working code and a better one than a C shortcut. [[C-Support]] lists what is
-missing today; the in-house linker is the largest of them.
+missing today.
 
 ## Where C is allowed
 
@@ -20,17 +20,16 @@ than C it is built from: `compliance/` for the C99 conformance corpus,
 for the programs whose recorded output is compared byte for byte.
 
 Those three are the whole exception. A `.v` file inside a test directory is
-still this compiler's source, so the rule reaches there too. A fourth
-directory in the tree is empty on purpose: `linking/` holds nothing, because
-the linker that would be written in V has not been written.
+still this compiler's source, so the rule reaches there too.
 
 ## The one exception
 
 `-external-linker=NAME` hands the final link to a linker the system already
-has. It exists for the inputs this compiler cannot consume yet, a relocatable
-object or an archive, so that linking behaviour is available before an
-in-house linker is written. It is off by default, and with the flag unset
-every refusal stands exactly as it does without it.
+has. It exists for the inputs this compiler cannot consume yet, such as an
+object carrying a section or a relocation the reader does not model, so that
+linking behaviour is available before the in-house linker reads everything. It
+is off by default, and with the flag unset every refusal stands exactly as it
+does without it.
 
 `NAME` may not be a C compiler. `cc`, `gcc`, `clang`, `c++` and `tcc` are
 refused by name, because a C compiler finishing C compilation is the one thing

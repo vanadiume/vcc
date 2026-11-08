@@ -64,10 +64,10 @@ status. It writes no image, so the tree keeps no file behind.
 stops without writing anything. A parse or an optimization is read from that
 output rather than guessed at.
 
-## Flags beyond the V contract
+## Flags
 
-V passes a C compiler a fixed flag set, and vcc accepts it; [[Interop]] covers
-that contract. Beyond the set, vcc accepts its own flags:
+vcc accepts the flag surface a build system hands a C compiler; [[Interop]]
+covers the V side of that contract. It also has flags of its own:
 
 `--version`, `-v`, `-vv`, `-h`, `-hh`, `-E`, `-c`, `-o`, `-run`, `-bench`,
 `-print-ast`, the `-O0` through `-O3` and `-Os` levels, `-fno-builtin` and
@@ -99,7 +99,8 @@ puts that archive and the compiler under a prefix.
 makes the call and `-O2` folds it. `-fno-builtin` takes the fold back.
 
 `-external-linker=NAME` hands the final link to a linker already on the
-system, for the inputs this compiler cannot consume yet. It refuses `cc`,
+system, for an input the in-house linker cannot consume yet, such as an object
+carrying a section or a relocation it does not model. It refuses `cc`,
 `gcc`, `clang`, `c++` and `tcc` by name, because a C compiler finishing C
 compilation is the one thing the pure-V rule exists to prevent. It is the
 single exception to that rule, and it is off by default. [[Pure-V]] covers the
@@ -113,7 +114,7 @@ a compiler that errors on `-bt25` fails a build it was supposed to serve.
 | Path | Contents |
 |---|---|
 | `main.v` | entry point: command line in, output file out, pipeline in between |
-| `cli/` | the tcc-compatible command line: flags, usage, version, phase timings |
+| `cli/` | the command line: flags, usage, version, phase timings |
 | `tokenize/` | lexer: source text to tokens |
 | `diagnostics/` | what a diagnostic is: class, severity, and the one place it becomes text |
 | `standard/` | the dialects: `-std=` spellings, the modes, and the feature table |

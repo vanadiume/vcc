@@ -2,10 +2,11 @@
 
 ## The target
 
-Near tcc's speed, which is not open to compromise. The benchmark that decides
-this is the V self-build: a few megabytes of generated C per run, and vcc has
-to get through it in the time the bundled tcc does, at comparable peak memory.
-A compiler that is correct but slower is not a replacement.
+Compile speed is part of what this compiler is for, not a stretch goal. tcc is
+the bar, and the largest workload available here is the V self-build: a few
+megabytes of generated C per run. Wall time and peak memory both count, and a
+compiler that is correct but does not finish in a usable time is not a compiler
+anyone will keep using.
 
 `AGENTS.md` puts the same constraint in the tree: TCC-class speed, wall time
 and peak RSS both, and never a speed improvement claimed from intuition. Speed
@@ -34,18 +35,14 @@ The numbers the repository records, from `README.md`, measured with
 
 | terms | vcc wall | tcc wall | ratio | vcc peak | tcc peak | ratio |
 |---|---|---|---|---|---|---|
-| 2 000 | 30.2 ms | 5.1 ms | 6.0x | 14.4 MB | 3.4 MB | 4.2x |
-| 20 000 | 196.2 ms | 7.2 ms | 27.1x | 55.4 MB | 3.4 MB | 16.4x |
+| 2 000 | 23.2 ms | 5.7 ms | 4.1x | 27.0 MB | 3.1 MB | 8.7x |
+| 20 000 | 127.9 ms | 6.8 ms | 18.9x | 62.5 MB | 3.2 MB | 19.6x |
 
-The ratio grows with the input because tcc's own time barely moves, 5.1 ms to
-7.2 ms across these two counts, while vcc's tracks the tokens and nodes it
+The ratio grows with the input because tcc's own time barely moves, 5.7 ms to
+6.8 ms across these two counts, while vcc's tracks the tokens and nodes it
 allocates. That is a design problem and the M6 problem, not a constant factor
-to trim.
-
-`ROADMAP.md` records the same measurement at a larger count: on a 100000-term
-constant chain vcc is about 69x the wall time and 57x the peak memory of tcc,
-from `v run tools/bench.vsh --terms 100000`. The gap is measured rather than
-felt.
+to trim. Each row is one run of `v run tools/bench.vsh`, with `--terms 20000`
+for the second.
 
 ## The commands
 
@@ -62,8 +59,8 @@ number of attempts. `./vcc -bench` reports microseconds per phase, which
 `tools/README.md` notes are printed but not kept as a history across commits.
 `.github/workflows/ci.yml` runs the harness and writes the numbers into the
 run summary, and nothing fails on them yet: a shared runner's wall time is not
-a budget to hold a pull request to, and the workload that decides this
-project, the V self-build, no milestone can run yet.
+a budget to hold a pull request to. The self-compile runs in CI as a
+correctness gate, not as a timed benchmark yet.
 
 ## What counts as a speed claim
 
@@ -90,9 +87,9 @@ the same bytes on both paths. The AST path is the reference implementation and
 the streaming path is a verified fast version of it, not a second compiler
 with its own opinions. Any difference is a bug in the streaming path, and the
 comparison belongs in the gate over the same corpus the tests use. The
-sequencing is M3 first, then the streaming path as an alternative front end
-feeding the same back end, then the byte-for-byte comparison, and only then a
-number that claims to beat tcc. [[Roadmap]] has the milestones.
+sequencing is the emitter first, then the streaming path as an alternative
+front end feeding the same back end, then the byte-for-byte comparison, and
+only then a number that claims to beat tcc. [[Roadmap]] has the milestones.
 
 ## The long-input case
 

@@ -1,13 +1,14 @@
 # Architecture
 
-vcc is a C compiler written in V, built to replace the tcc V vendors in
-`thirdparty/tcc` on the same command line. It reads one source file per run
-and writes one emitted image. The tree is a set of modules, each named after a
-stage or a concern and each with a stated job. Two rules run through all of
-them: the compiler is pure V, and the speed target is V's self-build.
-[[Pure-V]] and [[Performance]] cover those two. `ARCHITECTURE.md` at the tree
-root is the full statement of the design; this page is the short form and
-follows its wording where the two overlap.
+vcc is a general-purpose C compiler written in V, for Linux x86-64. It has its
+own preprocessor, parser, optimizer, code generator and linker, and writes
+ELF64 executables, relocatable objects, shared objects and static programs.
+The tree is a set of modules, each named after a stage or a concern and each
+with a stated job. Two rules run through all of them: the compiler is pure V,
+and compile speed is part of the product. [[Pure-V]] and [[Performance]] cover
+those two. `ARCHITECTURE.md` at the tree root is the full statement of the
+design; this page is the short form and follows its wording where the two
+overlap.
 
 ## The pipeline
 
@@ -90,7 +91,7 @@ beside it, not a branch in a caller.
 | `codegen/` | `ast` in, an emitted unit out |
 | `image/` | the emitted unit: machine code, the data it reads, the references between them |
 | `extensions/` | the `-fvcc-exts=` interface, built on the rows in `standard/features.v` |
-| `linking/` | empty; the in-house linker is not written |
+| `linking/` | the in-house linker: `symbols/` resolves names across units, `place/` lays the image out, `reloc/` fills the references in, `output/` wraps it, and `object/` and `archive/` read a relocatable file and an `ar` archive |
 | `tools/` | gate, benchmark and corpus scripts; not part of the compiler |
 | `compliance/`, `regression/`, `goldens/` | C the compiler is handed, not C it is built from |
 
@@ -160,5 +161,5 @@ an empty output file that fails later is a bug. A speed claim is a number from
 `tools/bench.vsh`, printed with the command that produced it. Tests sit beside
 their module as `*_test.v`, `v test .` runs the suite, and `tools/gate.vsh` is
 the same set of checks a pull request passes, which [[The-Gate]] describes.
-The definition of done is the four-build bootstrap chain, which [[Interop]]
-has.
+The hardest verification available is the four-build V self-build, which
+[[Interop]] has.

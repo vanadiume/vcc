@@ -1,11 +1,11 @@
 # C-Support
 
-vcc reads a large subset of Linux x86-64 ISO C99 and refuses the rest with a
-diagnostic. This page is what the tree reads today and what it does not, and
-the claims below were checked by running the binaries the compiler produces
-rather than by reading the source. The dialect table lives in
-`standard/features.v`, and how the pipeline is put together is in
-[[Architecture]].
+vcc reads a very large subset of Linux x86-64 C, from C89 through C23 and the
+GNU dialects, and refuses the rest with a diagnostic. This page is what the
+tree reads today and what it does not, and the claims below were checked by
+running the binaries the compiler produces rather than by reading the source.
+The dialect table lives in `standard/features.v`, and how the pipeline is put
+together is in [[Architecture]].
 
 ## The preprocessor
 
@@ -45,6 +45,13 @@ file it finds is one, and the SONAME of the file at the end of that is what
 the image asks for, which is how `-lm` gets `sqrt` to resolve. `-c` writes a
 real ELF64 relocatable object. `-fPIC` reaches top-level objects through the
 global offset table, so the object can go into a shared library later.
+`-shared` writes a shared object and `-static` writes a program with its
+libraries resolved into the file. Thread-local storage, `.eh_frame` and
+`.eh_frame_hdr`, and the runtime archive `libvcc.a` are part of what the
+compiler emits and links.
+
+The in-house linker merges translation units, reads relocatable objects and
+`ar` archives, and refuses an unresolved import at compile time by name.
 
 ## Dialects and the -std= modes
 
@@ -132,8 +139,8 @@ The conformance corpus under `compliance/` is compiled and run by
 `v run tools/compliance.vsh`, which checks the compiler against the standard
 rather than against its own tests. It is one directory per standard and the leaf
 name is the mode, so `iso/c99/` is compiled `-std=c99` and `gnu/gnu99/`
-`-std=gnu99`. `monolithic.c` holds 906 checks and the corpus holds 1151 test
-files, 68 of them programs the compiler must refuse, and `-lm` is not optional.
+`-std=gnu99`. `monolithic.c` holds 906 checks and the corpus holds 1,154 test files, some of
+them programs the compiler must refuse, and `-lm` is not optional.
 `regression/` holds one program per bug that must not come back, run by
 `v run tools/regress.vsh`. The suite itself
 is counted by `v run tools/tests.vsh`.
@@ -144,18 +151,24 @@ runs the same checks a pull request has to pass.
 
 ## What is not there yet
 
-- Multi-unit linking. The in-house linker is not written, so linking more than
-  one translation unit, archives, `-shared` and `-static` currently need
-  `-external-linker=NAME`. Archive support is not optional for the V contract:
-  every `-cc tcc` build links `thirdparty/tcc/lib/libgc.a`.
-- V's generated C code. The compiler is not self-hosting and cannot compile it
-  yet. That is bootstrap step 3, the V self-build, targeted for the end of Q4
-  2026 or early Q1 2027. [[Interop]] has what V asks of a C compiler.
 - Other targets. It is Linux x86-64 only. arm64, macOS and Windows are back
   ends that do not exist yet.
+- Debug information. `-g` is accepted and currently ignored.
+- A few standard constructs: `_Alignof` and `<stdalign.h>`'s `alignof`,
+  `_Noreturn`, C23 `constexpr`, the C23 keywords `bool`, `true`, `false` and
+  `nullptr`, the decimal floating types, and the `d` and `D` suffixes on
+  floating constants. Each is refused by name and location.
 - `_Imaginary`, which the dialect table carries as unimplemented: C99 makes the
   imaginary types optional and this compiler has none, so a use of the word is
   refused by name and location. `_Complex` is read; see above.
+- A static link that reaches a library the linker cannot unpack into the file.
+  It resolves what its archives provide and refuses the import it could not
+  resolve, naming it.
+- An object or archive carrying a section or a relocation the reader does not
+  model. It is refused by name; `-external-linker=NAME` is the way through.
+- The last step of the V self-build: V itself built by vcc and passing V's own
+  suite. The C V generates from vcc's own source does compile and the result
+  runs. [[Interop]] has what V asks of a C compiler.
 
 ## Refusals
 

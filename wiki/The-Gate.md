@@ -163,8 +163,8 @@ its case count: losing a case is a failure and adding one is not. The count
 ## The benchmark harness
 
 `v run tools/bench.vsh` measures wall time and peak memory for a compile, with
-the tcc V vendors on the same input beside it, because near tcc's speed is one
-of the two constraints on this project.
+the tcc V vendors on the same input beside it, because tcc-class speed is one
+of the goals on this project.
 
 ```sh
 v run tools/bench.vsh                          # generated workload, vcc against tcc
@@ -182,22 +182,22 @@ for the attempt that was kept. The generated workload is one function
 returning a long constant expression, a file both compilers accept, and one
 that grows with `--terms` (2000 by default).
 
-The V self-build is the workload that will decide this project, and no
-milestone reaches it yet, so the harness measures the gap on what the compiler
-can compile. The README prints the current wall time and peak memory against
-the vendored tcc. CI runs the harness and writes the numbers into the run
-summary, and nothing fails on them: a shared runner's wall time is not a
-budget to hold a pull request to. The speed gate appears when the self-build
-number exists ([[Roadmap]] M6).
+The V self-build is the largest C input available for this project. The
+harness measures the gap on generated input; the self-compile runs as a
+correctness gate rather than a timed benchmark. The README prints the current
+wall time and peak memory against the vendored tcc. CI runs the harness and
+writes the numbers into the run summary, and nothing fails on them: a shared
+runner's wall time is not a budget to hold a pull request to. The speed gate
+appears when the self-build number exists ([[Roadmap]] M6).
 
 ## The self compile
 
 `v . -o vcc1` builds this compiler with V, and `v . -cc vcc1 -o vcc` asks V to
-generate the same C again and hand it to the compiler it just built. That second
-command is the first link of the bootstrap chain: vcc reads and emits the C V
-writes for it, about 110,000 lines of it, and the compiler that comes out runs.
-Both commands pass or CI fails, which makes this the milestone the tree was
-working toward rather than a record of how far it got.
+generate the same C again and hand it to the compiler it just built. vcc reads
+and emits the C V writes for it, about 110,000 lines of it, and the compiler
+that comes out runs. Both commands pass or CI fails. It is a check on the
+compiler's ability to read a large real input, not the definition of the
+project.
 
 The line it used to stop at was `src.c:6166:135: unsupported: * takes int
 operands, and this one is a pointer`, and that was a parser bug rather than a

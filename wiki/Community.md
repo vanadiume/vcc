@@ -28,15 +28,15 @@ has no such mark, and that is the one thing the move gives up.
 
 ## House rules for a proposal
 
-vcc is written in pure V and has to stay at TCC-class speed. A proposal that
-needs a C dependency, or that trades the speed target away for convenience, is
-arguing against the two constraints this project exists to satisfy. Say why it
-is worth it anyway if you think it is.
+vcc is written in pure V and has to stay at tcc-class speed. A proposal that
+needs a C dependency, or that trades the speed goal away for convenience, is
+arguing against what makes this compiler different. Say why it is worth it
+anyway if you think it is.
 
-Bring numbers for anything about performance. Compiling the C that V generates
-for its own build is the benchmark that decides. `ISSUES.md` adds that a
-report which says "it feels slow" cannot be acted on, while one that names a
-phase and a number usually can.
+Bring numbers for anything about performance. The V self-build is the heaviest
+input available and the benchmark to beat. `ISSUES.md` adds that a report which
+says "it feels slow" cannot be acted on, while one that names a phase and a
+number usually can.
 
 Quote the error output and the version you are on. `vcc --version` and the
 commit hash answer most "which build is this" questions in one line.
