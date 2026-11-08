@@ -12063,10 +12063,16 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 			line := expr_line(arg)
 			col := expr_col(arg)
 			if place.extended {
+				// The parameter is of the extended type, so the argument is
+				// materialized as a value of it: the argument's own bytes when
+				// it already is one, a conversion of it into a frame temporary
+				// when it is a double, a float or an integer. What is parked is
+				// the address of sixteen bytes either way, which is what the
+				// second pass here reads the two words from.
 				if place.complex_long_double {
 					e.complex_long_double_argument_address(arg, depth + call.args.len + i + 1)!
 				} else {
-					e.emit_expr_at(arg, depth + call.args.len + i + 1)!
+					e.emit_long_double_argument(arg, line, col, depth + call.args.len + i + 1)!
 				}
 				source := e.value_slot(depth + i)
 				e.store_accumulator(source, line, col)!
