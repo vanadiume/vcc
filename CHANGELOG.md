@@ -1019,3 +1019,15 @@ it owns the change, which is the same vocabulary the commits use.
 * cli: the help text describes a general-purpose compiler (9497eb1)
 * docs: the changelog names the direction change
 * docs: the changelog names its own entry (da34064)
+* docs: the changelog names its own entry (76e160a)
+* compliance: the standard library tests under std/c99 (dd33154)
+* tools: the compliance floor follows the library suite (8e2b111)
+* compliance: the wide library names the suite had not reached (d4744c3)
+* compliance: the library suite's reference run builds with -fno-builtin (06d28d2)
+* codegen: a double argument is converted to a long double parameter (267eeae)
+* parser: read the comma operators of an expression statement (1fb7c81)
+* codegen: evaluate a void conditional statement for its effect (59fc3b1)
+* compliance: the assert test holds under -std=c99 (e6f01c3)
+* regression: a comma expression statement and a void conditional statement (4e374cf)
+* tools: the regression floor follows the merged cases (1bd894d)
+* docs: the changelog catches up with the standard library work and the two C99 fixes
