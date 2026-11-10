@@ -27,14 +27,17 @@ file fails behind it. The comment on `V_COMMIT` records both facts.
 ```sh
 git clone https://github.com/vlang/v && cd v && make   # once
 cd /path/to/vcc
-v -o vcc .                 # build the compiler
+v -gc none -o vcc .        # build the compiler
 v test .                   # the suite
 v run tools/gate.vsh       # format, pure-V rule, build, prod build, tests, doc links, workflows
 v run tools/bench.vsh      # wall time and peak memory, tcc alongside
 ./vcc -bench file.c -o out # per-phase timings
 ```
 
-`v -o vcc .` writes the compiler to `./vcc`. `v test .` runs the suite.
+`v -gc none -o vcc .` writes the compiler to `./vcc`. The compiler frees what it
+allocates, so it is built with no garbage collector; `v -o vcc .` builds the same
+source with V's default collector and is not the compiler this tree ships.
+`v test .` runs the suite.
 [[The-Gate]] describes the gate, the suite and the corpora.
 `v run tools/build.vsh` is the front door over the same commands when one run
 is wanted.

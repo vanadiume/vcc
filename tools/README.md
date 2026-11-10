@@ -61,9 +61,9 @@ Seven steps, each reporting on its own line, exit status zero only when all pass
 - **pure V**: no C sources in the tree apart from the test directories
   (`compliance/`, `regression/`, `goldens/`), and no `#include`, `#flag`, or `C.`
   interop in the compiler's own sources, including inside a test directory
-- **build**: `v -o <temp> .`
-- **prod build**: `v -prod -o <temp> .`, the build the image makes, where V's
-  warnings are errors
+- **build**: `v -gc none -o <temp> .`
+- **prod build**: `v -prod -gc none -o <temp> .`, the build the image makes, where
+  V's warnings are errors
 - **tests**: `v -nocache test .`
 - **documents**: every relative link between the markdown files resolves
 - **workflows**: the files under `.github/workflows` pin the same V commit,

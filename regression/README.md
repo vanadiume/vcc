@@ -61,7 +61,7 @@ refusal and a silently wrong value are both failures here.
 Every case compiles and runs correctly under the tree-built vcc with exactly the
 flags its directory names:
 
-    v -o /tmp/vcc-reg .
+    v -gc none -o /tmp/vcc-reg .
     /tmp/vcc-reg -x c -std=c99 -w -lm regression/iso/c99/NNNN-group-individual.c -o /tmp/case
     /tmp/case ; echo $?
 

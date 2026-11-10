@@ -22,6 +22,11 @@ import time
 // step of its own here.
 const default_steps = ['build', 'libvcc', 'gate', 'compliance', 'regress']
 
+// The compiler is built without a garbage collector. Every stage frees what it
+// allocated before the next one runs, so there is nothing left for a collector
+// to find, and the binary carries none.
+const gc_flag = '-gc none'
+
 // What `all` runs, each step once; `corpora` is those two runners together.
 const every_step = ['build', 'gate', 'test', 'compliance', 'regress', 'bench', 'libvcc', 'docker',
 	'version']
@@ -114,9 +119,13 @@ fn run_step(mut ctx Context, name string, args []string) Outcome {
 // where the caller said, otherwise under the temp directory for the runners.
 // --experimental-libgcc compiles the binary that accepts --link-libgcc, and it
 // is the only way to get one: the flag does not exist in any other build.
+// --prod is the build the image makes: V's warnings become errors, so a
+// deprecation that the plain build carries on past stops this one, and the
+// generated C is compiled without debug information.
 fn step_build(mut ctx Context, args []string) Outcome {
 	mut path := os.join_path(ctx.scratch, 'vcc')
 	mut defines := ''
+	mut production := ''
 	mut rest := []string{}
 	for arg in args {
 		if arg == '--experimental-libgcc' {
@@ -125,25 +134,33 @@ fn step_build(mut ctx Context, args []string) Outcome {
 			defines = '-d experimental_libgcc'
 			continue
 		}
+		if arg == '--prod' {
+			production = '-prod'
+			continue
+		}
 		rest << arg
 	}
 	if rest.len > 0 {
 		if rest[0] != '-o' || rest.len < 2 {
-			return failed('build', 'only -o PATH and --experimental-libgcc are taken here')
+			return failed('build', 'only -o PATH, --prod and --experimental-libgcc are taken here')
 		}
 		path = rest[1]
 	}
 	os.mkdir_all(os.dir(path)) or {}
-	if run_in(ctx.root, 'v ${defines} -o ${os.quoted_path(path)} .') != 0 {
+	if run_in(ctx.root, 'v ${gc_flag} ${production} ${defines} -o ${os.quoted_path(path)} .') != 0 {
 		return failed('build', 'the compiler did not build')
 	}
 	ctx.compiler = path
-	detail := if defines == '' {
-		if rest.len > 0 { path } else { '' }
-	} else if rest.len > 0 {
-		'${path}, experimental libgcc'
-	} else {
-		'scratch binary, experimental libgcc'
+	mut features := []string{}
+	if production != '' {
+		features << 'production'
+	}
+	if defines != '' {
+		features << 'experimental libgcc'
+	}
+	mut detail := if rest.len > 0 { path } else { 'scratch binary' }
+	if features.len > 0 {
+		detail += ', ${features.join(', ')}'
 	}
 	return Outcome{ verdict: .passed, name: 'build', detail: detail }
 }
@@ -335,7 +352,7 @@ fn ensure_compiler(mut ctx Context) string {
 	}
 	os.mkdir_all(ctx.scratch) or {}
 	path := os.join_path(ctx.scratch, 'vcc')
-	if run_in(ctx.root, 'v -o ${os.quoted_path(path)} .') != 0 {
+	if run_in(ctx.root, 'v ${gc_flag} -o ${os.quoted_path(path)} .') != 0 {
 		return ''
 	}
 	ctx.compiler = path
@@ -507,7 +524,7 @@ fn failed(name string, detail string) Outcome {
 
 fn usage() {
 	println('usage: v run tools/build.vsh [STEP] [args]')
-	println('  build [-o PATH] [--experimental-libgcc]  build the compiler only')
+	println('  build [-o PATH] [--prod] [--experimental-libgcc]  build the compiler only')
 	println('  test              the unit suite, `v -nocache test .`')
 	println('  gate              tools/gate.vsh')
 	println('  compliance        the corpus under compliance/, a directory per standard')

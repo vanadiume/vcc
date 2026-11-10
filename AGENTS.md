@@ -46,7 +46,7 @@ Linux x86-64.
 ## Commands
 
 ```sh
-v -o vcc .                 # build
+v -gc none -o vcc .        # build
 v test .                   # the suite
 v run tools/gate.vsh       # format, pure-V rule, build, prod build, tests, doc links
 v run tools/build.vsh      # the front door: build, gate, corpora, bench, image, version
