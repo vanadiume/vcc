@@ -145,6 +145,12 @@ fn (mut p Processor) collect_arguments(tokens []Piece, from int, tok tokenize.To
 // are read from the tokens after it in the same list — which is what a call in
 // a file looks like, what a call inside a replacement looks like, and what a
 // call in the controlling expression of an #if looks like.
+//
+// The list that comes out is the caller's: the expansion arrays this function
+// and the ones under it build are freed here, so the tokens are copied into one
+// list and that list is the whole cost of a run. The list it is given is spent:
+// a run that expands is freed on the way out, and a run that cannot expand is
+// handed back as it stands, without a copy, because it is the list it was given.
 fn (mut p Processor) expand_all(tokens []tokenize.Token) []tokenize.Token {
 	// A run with no name that could expand is handed back as it stands. Every
 	// token of straight-line code would otherwise be copied into a Piece, read
@@ -155,15 +161,21 @@ fn (mut p Processor) expand_all(tokens []tokenize.Token) []tokenize.Token {
 		return tokens
 	}
 	mut pieces := []Piece{cap: tokens.len}
+	defer {
+		unsafe { pieces.free() }
+	}
 	for t in tokens {
 		pieces << Piece{
 			tok: t
 		}
 	}
 	mut out := []tokenize.Token{cap: pieces.len}
-	for piece in p.expand_pieces(pieces) {
+	expanded := p.expand_pieces(pieces)
+	for piece in expanded {
 		out << piece.tok
 	}
+	unsafe { expanded.free() }
+	unsafe { tokens.free() }
 	return out
 }
 
@@ -193,13 +205,14 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 	// Expansion is recursive, and the guard that stops a macro naming itself
 	// stops the shapes a person writes. This limit is for the shapes nobody
 	// writes: without it, one that slipped past the guard would be a crash
-	// instead of a diagnostic.
+	// instead of a diagnostic. The list that comes back is the caller's to free
+	// either way, so this way out answers a copy of the list it was given.
 	if p.expansion_depth >= max_expansion_depth {
 		if !p.expansion_reported && tokens.len > 0 {
 			p.expansion_reported = true
 			p.problem(tokens[0].tok, 'the expansion here is ${max_expansion_depth} levels deep and still going')
 		}
-		return tokens
+		return tokens.clone()
 	}
 	p.expansion_depth++
 	defer {
@@ -236,6 +249,7 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 						tok: t
 					}
 				}
+				unsafe { builtin.free() }
 				i++
 				continue
 			}
@@ -263,7 +277,9 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 				i++
 				continue
 			}
-			out << p.expand_call(macro, use_args, piece)
+			call := p.expand_call(macro, use_args, piece)
+			out << call
+			unsafe { call.free() }
 			i = use_args.next
 			continue
 		}
@@ -282,7 +298,10 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 				tok: body_token
 			}, piece)
 		}
-		out << p.expand_pieces(replacement)
+		expanded := p.expand_pieces(replacement)
+		unsafe { replacement.free() }
+		out << expanded
+		unsafe { expanded.free() }
 		i++
 	}
 	return out
@@ -304,7 +323,10 @@ fn (mut p Processor) expand_call(macro Macro, use_args Arguments, site Piece) []
 	for piece in replacement {
 		hidden << produced_from(piece, site)
 	}
-	return p.expand_pieces(hidden)
+	unsafe { replacement.free() }
+	out := p.expand_pieces(hidden)
+	unsafe { hidden.free() }
+	return out
 }
 
 // substitute is the replacement itself: every parameter is replaced by its
@@ -457,11 +479,19 @@ fn (mut p Processor) substitute(macro Macro, arguments Arguments, site Piece) []
 				}
 			}
 			if !beside_paste {
-				text = p.expand_pieces(text)
+				expanded := p.expand_pieces(text)
+				unsafe { text.free() }
+				for u in expanded {
+					out << u
+				}
+				unsafe { expanded.free() }
+				i++
+				continue
 			}
 			for u in text {
 				out << u
 			}
+			unsafe { text.free() }
 			i++
 			continue
 		}
