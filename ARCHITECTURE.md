@@ -229,6 +229,23 @@ program. Step 3 is the one that cannot be faked: vcc has to compile the C V
 emits for itself, link it, and produce a V that passes V's own suite. It is
 still open, and `ROADMAP.md` M8 carries the record.
 
+## Memory, which has no collector
+
+The compiler is built with `-gc none`, so nothing is freed unless the code frees
+it, and those frees are part of the ownership a stage hands on. A stage frees its
+input when the next one has copied what it needs: the preprocessor frees a file's
+token list when the file ends, the expander frees the run it was given, and a
+block frees the lists a statement came back as once they are in its own. What is
+stored in the tree lives until the process ends, because `ast.Expr` is a boxed
+sum type and V generates no free for one.
+
+An array that grows tells the runtime whether a slice of it can be alive: with no
+collector, `ensure_cap` frees the buffer it copied from only when the array
+carries `.noslices` (`vlib/builtin/array.v`). An array that is appended to and
+never sliced sets the flag where it is created, which is what the two token lists
+do; an array that is sliced and then grown leaves the copy behind, so reserve its
+capacity when the count is known.
+
 ## Invariants to keep
 
 One module per directory. Imports run one way: `parser` does not know `codegen`,

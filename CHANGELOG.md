@@ -1037,3 +1037,8 @@ it owns the change, which is the same vocabulary the commits use.
 * docs: the readme stops reciting its own size (d4cc861)
 * docs: the changelog records the readme trim (7fe025d)
 * docs: the readme decides before it explains (baea737)
+* build: the compiler is built without a garbage collector (e7d2978)
+* types: the specifier check frees the map it builds (2c1c6a6)
+* preprocess: the expansion lists are freed (ac0d015)
+* preprocess: a file's token list is freed when the file ends (d80e607)
+* parser: the statement lists a block does not keep are freed (bbb47e3)
