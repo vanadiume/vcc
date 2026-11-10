@@ -1031,3 +1031,7 @@ it owns the change, which is the same vocabulary the commits use.
 * regression: a comma expression statement and a void conditional statement (4e374cf)
 * tools: the regression floor follows the merged cases (1bd894d)
 * docs: the changelog catches up with the standard library work and the two C99 fixes
+
+## 2026-11-10
+
+* docs: the readme stops reciting its own size (d4cc861)
