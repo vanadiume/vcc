@@ -1042,3 +1042,4 @@ it owns the change, which is the same vocabulary the commits use.
 * preprocess: the expansion lists are freed (ac0d015)
 * preprocess: a file's token list is freed when the file ends (d80e607)
 * parser: the statement lists a block does not keep are freed (bbb47e3)
+* docs: the architecture says what the memory mode asks of a stage (f0a193d)
