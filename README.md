@@ -20,68 +20,12 @@
 
 vcc compiles C to native Linux x86-64 programs. The preprocessor, parser,
 optimizer, code generator and linker are its own, so a build needs nothing from
-the system but a C library: no assembler and no system linker. The compiler and
-its runtime archive are the whole toolchain.
+the system but a C library: no assembler and no system linker.
 
 It accepts the C that real projects are written in, C89 through C23 and their
 GNU variants, with the gaps listed under Status. It writes ELF64 executables,
-relocatable objects, shared objects and static binaries. The source is ordinary
-V in separate modules with no dependency in `v.mod`, so the pipeline is
-something you can read and change without leaving the language.
-
-## What it supports
-
-- The dialects: `-std=c89`, `c99`, `c11`, `c17`, `c23` and `c29`, the GNU
-  spelling of each (`gnu89` through `gnu29`), the ISO spellings
-  (`iso9899:1990` through `iso9899:2029`), and the `c90`, `c18`, `c2y` and
-  `gnu2y` aliases. A construct the selected mode forbids is a pedantic message,
-  silent until `-Wpedantic`; `-pedantic-errors` makes it an error.
-- A real preprocessor, including `#include_next`, function-like macros with `#`
-  and `##`, variadic arguments, the full `#if` grammar, `#pragma once`,
-  `#line`, `#error`, `_Pragma` and `__has_include`. Its output is compared with
-  `tcc -E` token by token.
-- The whole front end and type system: typedefs, structs, unions, enums,
-  bitfields, designated initializers, compound literals, function pointers,
-  variadic functions, aggregates passed and returned by value, variable-length
-  arrays, the full operator set, `switch` and `goto`, `char` through `__int128`
-  signed and unsigned, `float`, `double`, `long double`, `_Complex` at all
-  three widths, `_Bool` and C23 `_BitInt(128)`, with the standard's conversions.
-- The extensions real code uses: `typeof`, `__typeof__`, `typeof_unqual`, C23
-  `auto`, `_Generic`, `_Static_assert`, statement expressions, `__asm__`,
-  `__attribute__`, the `__atomic_*` operations, the common `__builtin_*` set,
-  and the count-leading and count-trailing builtins. `-fvcc-exts=` turns the
-  gated ones on by name.
-- SysV x86-64 code generation with stack frames, thread-local storage, unwind
-  tables and position-independent code, `-O0` through `-O3` and `-Os`, and a
-  linker that takes translation units, relocatable objects and `ar` archives on
-  one command line, resolves `-l` names through the system ld scripts, pulls
-  only the members a program reaches, and refuses an unresolved import by name.
-  `-shared`, `-static`, `-nostdlib` and `-nodefaultlibs` are supported.
-- Diagnostics that name the construct and its file, line and column, and never
-  an empty output file that fails later.
-
-## Status
-
-What is missing, in full:
-
-- Other targets. The compiler is Linux x86-64 only. arm64, macOS and Windows are
-  back ends and linking stories that do not exist yet.
-- Debug information. `-g` is accepted and currently ignored.
-- A few standard constructs. `_Alignof` and `<stdalign.h>`'s `alignof`,
-  `_Noreturn`, C23 `constexpr`, the C23 keywords `bool`, `true`, `false` and
-  `nullptr`, the decimal floating types, and the `d` and `D` suffixes on
-  floating constants are refused by name. `_Imaginary` is refused by name,
-  which C99 allows an implementation to do.
-- A static link that reaches a library the linker cannot unpack. It resolves
-  what its archives provide and refuses an import it could not resolve, naming
-  it. A dynamic program or shared object that names the library works.
-- An object or archive carrying a section or relocation the linker does not
-  model. It is refused by name rather than placed at a guessed address.
-  `-external-linker=NAME` is the way through.
-- Speed. vcc is behind tcc, and the numbers are under Performance.
-- A complete V self-build. vcc does compile the C that V generates from vcc's
-  own source, and the compiler it produces runs. V itself built by vcc and
-  passing V's own suite is still open.
+relocatable objects, shared objects and static binaries. The source is plain V
+in separate modules with no dependency in `v.mod`.
 
 ## Quick start
 
@@ -138,6 +82,62 @@ itself. A compiler installed without the archive still builds programs that call
 no helper, and refuses one that calls a helper by the name of the helper. The
 install step finishes by compiling and running a program that calls one, so an
 install that cannot find its own archive fails there.
+
+## What it supports
+
+- The dialects: `-std=c89`, `c99`, `c11`, `c17`, `c23` and `c29`, the GNU
+  spelling of each (`gnu89` through `gnu29`), the ISO spellings
+  (`iso9899:1990` through `iso9899:2029`), and the `c90`, `c18`, `c2y` and
+  `gnu2y` aliases. A construct the selected mode forbids is a pedantic message,
+  silent until `-Wpedantic`; `-pedantic-errors` makes it an error.
+- A real preprocessor, including `#include_next`, function-like macros with `#`
+  and `##`, variadic arguments, the full `#if` grammar, `#pragma once`,
+  `#line`, `#error`, `_Pragma` and `__has_include`. Its output is compared with
+  `tcc -E` token by token.
+- The whole front end and type system: typedefs, structs, unions, enums,
+  bitfields, designated initializers, compound literals, function pointers,
+  variadic functions, aggregates passed and returned by value, variable-length
+  arrays, the full operator set, `switch` and `goto`, `char` through `__int128`
+  signed and unsigned, `float`, `double`, `long double`, `_Complex` at all
+  three widths, `_Bool` and C23 `_BitInt(128)`, with the standard's conversions.
+- The extensions real code uses: `typeof`, `__typeof__`, `typeof_unqual`, C23
+  `auto`, `_Generic`, `_Static_assert`, statement expressions, `__asm__`,
+  `__attribute__`, the `__atomic_*` operations, the common `__builtin_*` set,
+  and the count-leading and count-trailing builtins. `-fvcc-exts=` turns the
+  gated ones on by name.
+- SysV x86-64 code generation with stack frames, thread-local storage, unwind
+  tables and position-independent code, `-O0` through `-O3` and `-Os`, and a
+  linker that takes translation units, relocatable objects and `ar` archives on
+  one command line, resolves `-l` names through the system ld scripts, pulls
+  only the members a program reaches, and refuses an unresolved import by name.
+  `-shared`, `-static`, `-nostdlib` and `-nodefaultlibs` are supported.
+- Diagnostics that name the construct and its file, line and column, and never
+  an empty output file that fails later.
+
+`wiki/C-Support.md` has the same ground in more detail.
+
+## Status
+
+What is missing:
+
+- Other targets. The compiler is Linux x86-64 only. arm64, macOS and Windows are
+  back ends and linking stories that do not exist yet.
+- Debug information. `-g` is accepted and currently ignored.
+- A few standard constructs. `_Alignof` and `<stdalign.h>`'s `alignof`,
+  `_Noreturn`, C23 `constexpr`, the C23 keywords `bool`, `true`, `false` and
+  `nullptr`, the decimal floating types, and the `d` and `D` suffixes on
+  floating constants are refused by name. `_Imaginary` is refused by name,
+  which C99 allows an implementation to do.
+- A static link that reaches a library the linker cannot unpack. It resolves
+  what its archives provide and refuses an import it could not resolve, naming
+  it. A dynamic program or shared object that names the library works.
+- An object or archive carrying a section or relocation the linker does not
+  model. It is refused by name rather than placed at a guessed address.
+  `-external-linker=NAME` is the way through.
+- Speed. vcc is behind tcc, and the numbers are under Performance.
+- A complete V self-build. vcc does compile the C that V generates from vcc's
+  own source, and the compiler it produces runs. V itself built by vcc and
+  passing V's own suite is still open.
 
 ## Flags
 
