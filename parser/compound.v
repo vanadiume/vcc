@@ -215,8 +215,14 @@ fn (mut p Parser) compound_literal_object(name string, spec DeclSpec, d Declarat
 	element := if array { target.element() or { target } } else { target }
 	element_width := p.representation.size_of(element) or { 0 }
 	mut writes := []BraceWrite{}
+	defer {
+		unsafe { writes.free() }
+	}
 	p.fill_brace(target, list.elements, 0, 0, mut writes)
 	mut leaves := []BraceWrite{}
+	defer {
+		unsafe { leaves.free() }
+	}
 	p.collect_leaves(target, 0, mut leaves)
 	for leaf in leaves {
 		stmts << p.store_a_leaf(name, at, leaf, zero_initializer(at), array, bytes, element_width,

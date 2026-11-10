@@ -51,6 +51,12 @@ fn (mut p Parser) parse_statement() ![]ast.Stmt {
 	fresh := p.compound_pending.pop()
 	mut out := fresh.clone()
 	out << stmts
+	// The statement's own list and the list of stores in front of it have been
+	// copied into `out`, and nothing holds either again: the tokens they were
+	// read from are still there, so freeing the two buffers is the whole cost of
+	// returning this statement.
+	unsafe { fresh.free() }
+	unsafe { stmts.free() }
 	return out
 }
 
@@ -2421,6 +2427,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 					stmts << p.store_a_leaf(d.name, d.name_at, leaf, zero_initializer(d.name_at),
 						array, object_bytes, element_width, general_target)
 				}
+				unsafe { leaves.free() }
 				for write in general_writes {
 					// A leaf is an expression when the list wrote one and a
 					// written constant otherwise; the constant is the int

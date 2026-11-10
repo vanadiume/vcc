@@ -481,16 +481,20 @@ fn (mut p Parser) parse_block() ![]ast.Stmt {
 		// been reported where the region opened, and the closing brace this
 		// loop is waiting for is gone with it.
 		fresh := p.parse_statement() or { break }
-		stmts << p.with_declared_types(fresh)
+		p.with_declared_types(fresh, mut stmts)
+		// The list a statement came back as has been copied into this block's
+		// own list, and the block keeps that one.
+		unsafe { fresh.free() }
 	}
 	return stmts
 }
 
 // with_declared_types gives every declaration among the statements of a block the
 // type its declaration resolved to, taken from the symbol table the declaration
-// was recorded in.
-fn (p Parser) with_declared_types(stmts []ast.Stmt) []ast.Stmt {
-	mut out := []ast.Stmt{cap: stmts.len}
+// was recorded in. The statements go into `out` rather than into a list of the
+// function's own, because a block asks this once per statement and a list per
+// call is a copy of the statement the block already holds.
+fn (p Parser) with_declared_types(stmts []ast.Stmt, mut out []ast.Stmt) {
 	for stmt in stmts {
 		if stmt.kind == .var_decl {
 			if symbol := p.scopes.lookup(stmt.decl_name) {
@@ -517,7 +521,6 @@ fn (p Parser) with_declared_types(stmts []ast.Stmt) []ast.Stmt {
 		}
 		out << stmt
 	}
-	return out
 }
 
 // report_pending_bounds answers each file-scope bound that named something the
