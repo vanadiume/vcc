@@ -17,8 +17,12 @@ pub fn from_specifiers(words []string) ?Kind {
 	mut longs := 0
 	mut ints := 0
 	// seen is the other words, each once: a word written twice is not a type,
-	// except for the two the table allows to repeat.
+	// except for the two the table allows to repeat. The map owns the copies of
+	// the words it holds, and is freed on every way out of this function.
 	mut seen := map[string]bool{}
+	defer {
+		unsafe { seen.free() }
+	}
 	for word in words {
 		if word == 'long' {
 			longs++
