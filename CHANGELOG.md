@@ -1035,3 +1035,5 @@ it owns the change, which is the same vocabulary the commits use.
 ## 2026-11-10
 
 * docs: the readme stops reciting its own size (d4cc861)
+* docs: the changelog records the readme trim (7fe025d)
+* docs: the readme decides before it explains (baea737)
