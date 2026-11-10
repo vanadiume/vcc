@@ -281,6 +281,15 @@ fn (mut l Lexer) run() []Token {
 	// and settling the position here is what makes its first token report that.
 	l.settle()
 	mut tokens := []Token{}
+	// The compiler runs without a collector, and an array that grows tells the
+	// runtime whether a slice of it is alive: without that, the buffer a growth
+	// copies from is left behind (vlib/builtin/array.v, ensure_cap). Nothing
+	// slices this list while it is being built — the preprocessor takes runs of
+	// it after the read is over — so the flag is the right answer and the old
+	// buffers are freed as the list grows.
+	unsafe {
+		tokens.flags.set(.noslices)
+	}
 	// pending_space is whether the text walked over since the last token holds
 	// whitespace or a comment, which is what the next token records as `space`.
 	mut pending_space := false

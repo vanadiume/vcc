@@ -116,6 +116,13 @@ pub fn preprocess(source string, path string, opts Options) Result {
 		p.define_builtins()
 	}
 	p.apply_command_line_defines()
+	// The list every token of the program ends up in. It is grown all through
+	// the read and never sliced, which is what lets the runtime free the buffer
+	// a growth copies from instead of leaving it behind: without a collector,
+	// that buffer is a leak.
+	unsafe {
+		p.out.flags.set(.noslices)
+	}
 	// The -include and -imacros files are read before the source is, which is
 	// what `as if their lines were the first lines of it` means: the source goes
 	// on the stack first so the read comes back to it, and the preludes go on
@@ -634,17 +641,21 @@ fn (mut p Processor) run() {
 				// one of them unchanged; the copy is what a `#line` costs and a
 				// file that wrote none should not pay it.
 				run := p.frames[i].tokens[start..end]
-				for expanded in p.expand_all(run) {
+				expanded_run := p.expand_all(run)
+				for expanded in expanded_run {
 					p.emit(expanded)
 				}
+				unsafe { expanded_run.free() }
 			} else {
 				mut segment := []tokenize.Token{cap: end - start}
 				for k in start .. end {
 					segment << p.mapped(p.frames[i].tokens[k])
 				}
-				for expanded in p.expand_all(segment) {
+				expanded_segment := p.expand_all(segment)
+				for expanded in expanded_segment {
 					p.emit(expanded)
 				}
+				unsafe { expanded_segment.free() }
 			}
 		}
 		if p.frames[i].pos < p.frames[i].tokens.len {
@@ -670,6 +681,11 @@ fn (mut p Processor) pop(index int) {
 			'unterminated #if: ${frame.path} ends inside it')
 		p.conditionals = p.conditionals[..frame.condition_depth]
 	}
+	// The file's tokens have all been read: every one of them that was written
+	// out was copied into p.out, and the text they point at belongs to the
+	// strings those copies share. The list itself is the file's, and the file is
+	// over.
+	unsafe { frame.tokens.free() }
 	p.frames.delete(index)
 }
 
