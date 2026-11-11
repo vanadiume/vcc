@@ -505,22 +505,27 @@ fn (p Parser) with_declared_types(stmts []ast.Stmt, mut out []ast.Stmt) {
 		if stmt.kind == .var_decl {
 			if symbol := p.scopes.lookup(stmt.decl_name) {
 				// What the declaration resolved to is the symbol's type. A
-				// statement that already carried an extra part keeps it, the
-				// stride and the width a compound declaration worked out among
-				// the rest, because this pass is about the type and nothing
-				// else.
-				mut extra := &ast.StmtExtra{
-					resolved: symbol.typ
-				}
+				// statement that already carries an extra part has the type
+				// written into that one, which is the only reader of it: the
+				// node was built by this statement's reader and the block is
+				// the first thing to hold it, so the extra part is nobody
+				// else's to keep. A second one would be the whole of what the
+				// first holds, the stride and the width a compound declaration
+				// worked out among the rest, for one field.
 				if source := stmt.extra {
-					extra = &ast.StmtExtra{
-						...*source
-						resolved: symbol.typ
+					unsafe {
+						source.resolved = symbol.typ
 					}
+					out << ast.Stmt{
+						...stmt
+					}
+					continue
 				}
 				out << ast.Stmt{
 					...stmt
-					extra: extra
+					extra: &ast.StmtExtra{
+						resolved: symbol.typ
+					}
 				}
 				continue
 			}
