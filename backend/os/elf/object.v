@@ -226,6 +226,13 @@ pub fn object(program image.Program, target backend.Target) ![]u8 {
 		symbol_count++
 		name_offset[name] = intern_name(mut strtab, name)
 	}
+	// TODO: the whole of .text is copied below before the jumps are settled, and
+	// that copy is the largest single allocation this writer makes: 67 MB of array
+	// clone over the compiler's own generated C, for a text of 48 MB. The copy is
+	// there because the program is still the caller's. A `-c` run is the one path
+	// that reads the program once and throws it away afterwards, so the patching
+	// could be done in place there; any other caller needs the copy.
+	//
 	// The text, with the jumps inside it settled: both ends of a jump are in
 	// .text, and .text is moved as a unit when it is linked, so the distance
 	// between two places in it is the same afterwards as it is now. Those need

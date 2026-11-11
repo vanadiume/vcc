@@ -273,6 +273,16 @@ pub fn from_specifiers(words []string) ?Kind {
 	return none
 }
 
+// TODO: a caller that holds the spelling of a type has no way to ask this
+// question except by splitting it into words first, and thirteen places in
+// codegen/ do exactly that. Each call allocates the word list, a string per word
+// and the map from_specifiers builds, for an answer nothing keeps: together they
+// were 142 MB of the compiler's peak RSS on its own generated C, read off
+// heaptrack's leaked stacks. A `from_spelling(written string)` that walks the
+// words off the string and shares the table with from_specifiers removes all
+// three, and the words a type spelling has are few enough that the table needs no
+// map at all.
+//
 // from_words is from_specifiers with the kind turned into the type, which is what
 // a declaration needs. A run of words the table does not have is refused here and
 // reported by the reader that wrote them down.

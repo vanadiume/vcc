@@ -5223,6 +5223,10 @@ fn (e Emitter) writes_a_complex(written string) bool {
 // are each 8 and `sizeof(unsigned int)` is 4. Everything else is a type this back
 // end has no instruction for.
 fn (e Emitter) type_width(written string) ?int {
+	// TODO: this is one of the thirteen places in this file that asks what a
+	// spelling names by splitting it first, and the three allocations per call
+	// are the same ones. See the note on types.from_words, which is where the
+	// answer belongs.
 	if written == 'int' || written == 'unsigned' || written == 'unsigned int' || written == 'signed' {
 		return 4
 	}
@@ -13745,6 +13749,13 @@ fn (mut e Emitter) intern_single(value f64) string {
 	return key
 }
 
+// TODO: the text buffer this fills doubles its way to the size of the unit's code,
+// and with no collector every growth leaves the buffer it copied from behind: on
+// the compiler's own generated C that was 134 MB of peak RSS, about half of it the
+// dead buffers and half the live text. Two ways back, neither taken: reserve the
+// capacity from the size of the input, or settle that nothing slices this buffer
+// while it grows and mark it `.noslices` so a growth can free what it copies from.
+//
 // append copies one encoded instruction into the text of the unit. The bytes
 // arrive in an array the target built for this instruction and nothing else
 // holds: every caller hands over what `e.target.*` just answered, which is a
