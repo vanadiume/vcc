@@ -455,7 +455,7 @@ fn (mut p Parser) parse_block() ![]ast.Stmt {
 		p.nested_names = outer_names
 		p.nested_declared = outer_declared
 	}
-	mut stmts := []ast.Stmt{}
+	mut stmts := statements()
 	for {
 		t := p.peek()
 		if t.kind == .eof {

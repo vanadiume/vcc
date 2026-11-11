@@ -60,6 +60,19 @@ fn (mut p Parser) parse_statement() ![]ast.Stmt {
 	return out
 }
 
+// statements answers the list a block is read into. It grows a statement at a
+// time and is never sliced while it grows, which is what lets the runtime free the
+// buffer a growth copies from instead of leaving it behind: a statement is a few
+// hundred bytes and a block doubles its way to its length, so every block in a
+// file leaves about as much behind again as it keeps.
+fn statements() []ast.Stmt {
+	mut stmts := []ast.Stmt{}
+	unsafe {
+		stmts.flags.set(.noslices)
+	}
+	return stmts
+}
+
 fn (mut p Parser) parse_statement_inner() ![]ast.Stmt {
 	t := p.peek()
 	if t.kind == .punct && t.text == '{' {
@@ -1137,7 +1150,7 @@ fn (mut p Parser) parse_if_statement() ![]ast.Stmt {
 		return []ast.Stmt{}
 	}
 	then_body := p.parse_control_body()!
-	mut else_body := []ast.Stmt{}
+	mut else_body := statements()
 	if p.peek().kind == .identifier && p.peek().text == 'else' {
 		p.next()
 		else_body = p.parse_control_body()!
@@ -1641,7 +1654,7 @@ fn (mut p Parser) case_constant(expr ast.Expr) ?i64 {
 // and never through the parenthesized-expression reader that reads a comma as
 // an operator.
 fn (mut p Parser) parse_for_clause_statements() ![]ast.Stmt {
-	mut stmts := []ast.Stmt{}
+	mut stmts := statements()
 	stmts << p.parse_expression_statement()!
 	for p.at_punct(',') {
 		p.next()
@@ -1671,7 +1684,7 @@ fn (mut p Parser) parse_for_statement() ![]ast.Stmt {
 		p.skip_statement()
 		return []ast.Stmt{}
 	}
-	mut head := []ast.Stmt{}
+	mut head := statements()
 	if p.at_punct(';') {
 		p.next()
 	} else if p.starts_declaration(p.peek()) {
@@ -1707,7 +1720,7 @@ fn (mut p Parser) parse_for_statement() ![]ast.Stmt {
 		p.skip_statement()
 		return []ast.Stmt{}
 	}
-	mut step := []ast.Stmt{}
+	mut step := statements()
 	if !p.at_punct(')') {
 		p.compound_unstable++
 		step = p.parse_for_clause_statements() or {
@@ -1755,7 +1768,7 @@ fn (mut p Parser) parse_for_statement() ![]ast.Stmt {
 // initializers — is reported rather than half-read, and the rest of the
 // declaration is skipped so the statements after it still parse.
 fn (mut p Parser) parse_local_declaration() []ast.Stmt {
-	mut stmts := []ast.Stmt{}
+	mut stmts := statements()
 	// A static assertion written in a body is the same declaration the file
 	// scope reads, and it produces no statement: the check it makes is the
 	// whole of it.
@@ -2191,7 +2204,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// call or other effectful operand would then run more than once; an
 		// operand that is not one is left as it stands and refused at the
 		// operator, which is the honest answer rather than a doubled call.
-		mut vector_stores := []ast.Stmt{}
+		mut vector_stores := statements()
 		if declared.is_vector() && !brace {
 			if initializer := init {
 				if p.vector_initializer_stores(declared, d.name, initializer, d.name_at, mut vector_stores) {
