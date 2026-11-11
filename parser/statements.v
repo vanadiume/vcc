@@ -1935,7 +1935,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// layout gave that member.
 		mut union_first := ?types.Member(none)
 		mut struct_brace := ?types.Layout(none)
-		mut struct_values := []BraceElement{}
+		mut struct_values := brace_elements()
 		// general_list is a brace list with a nested list, a designator or an
 		// element that is an expression, which is the shape the flat paths do
 		// not place: `fill_brace` walks it against the object's type and
@@ -1944,7 +1944,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// against, which is the object's own type with the size an array with
 		// empty brackets takes from the list.
 		mut general_list := ?BraceList(none)
-		mut general_writes := []BraceWrite{}
+		mut general_writes := brace_writes()
 		mut general_target := declared
 		has_initializer := p.at_punct('=')
 		if p.at_punct('=') {
@@ -2421,7 +2421,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 				// width that answers: there is nowhere to put the values.
 				p.error_at(d.name_at, 'unsupported: ${d.name} is an array whose element is an object of the type ${element.describe()}, and storage for one in a body is not implemented')
 			} else {
-				mut leaves := []BraceWrite{}
+				mut leaves := brace_writes()
 				p.collect_leaves(general_target, 0, mut leaves)
 				for leaf in leaves {
 					stmts << p.store_a_leaf(d.name, d.name_at, leaf, zero_initializer(d.name_at),

@@ -198,7 +198,24 @@ fn (mut p Parser) compound_literal_object(name string, spec DeclSpec, d Declarat
 	p.declare_name(name, target, at, false)
 	stride := declaration_stride(target, p.representation)
 	bytes := p.aggregate_bytes(declared)
-	mut stmts := []ast.Stmt{}
+	array := target.kind == .array
+	element := if array { target.element() or { target } } else { target }
+	element_width := p.representation.size_of(element) or { 0 }
+	mut writes := brace_writes()
+	defer {
+		unsafe { writes.free() }
+	}
+	p.fill_brace(target, list.elements, 0, 0, mut writes)
+	mut leaves := brace_writes()
+	defer {
+		unsafe { leaves.free() }
+	}
+	p.collect_leaves(target, 0, mut leaves)
+	// The declaration comes first and a store follows for every scalar leaf and
+	// every value the list wrote, so the list is that long: it is sized once,
+	// which is what keeps it from doubling its way there. A growth copies the
+	// stores made so far, and with no collector the copy it grew from stays.
+	mut stmts := []ast.Stmt{cap: leaves.len + writes.len + 1}
 	stmts << ast.Stmt{
 		kind:       .var_decl
 		decl_name:  name
@@ -211,19 +228,6 @@ fn (mut p Parser) compound_literal_object(name string, spec DeclSpec, d Declarat
 		line:       at.line
 		col:        at.col
 	}
-	array := target.kind == .array
-	element := if array { target.element() or { target } } else { target }
-	element_width := p.representation.size_of(element) or { 0 }
-	mut writes := []BraceWrite{}
-	defer {
-		unsafe { writes.free() }
-	}
-	p.fill_brace(target, list.elements, 0, 0, mut writes)
-	mut leaves := []BraceWrite{}
-	defer {
-		unsafe { leaves.free() }
-	}
-	p.collect_leaves(target, 0, mut leaves)
 	for leaf in leaves {
 		stmts << p.store_a_leaf(name, at, leaf, zero_initializer(at), array, bytes, element_width,
 			target)

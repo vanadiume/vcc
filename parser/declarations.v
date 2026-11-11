@@ -2675,7 +2675,7 @@ fn (mut p Parser) parse_brace_initializer(body bool) !BraceList {
 	// the first token covers every bracket the list wrote, so the brace the skip
 	// stops at is the one that ends this list and the reader stays inside the
 	// body it is reading.
-	mut elements := []BraceElement{}
+	mut elements := brace_elements()
 	list_body := p.pos
 	for {
 		mut t := p.peek()
@@ -3360,6 +3360,28 @@ fn (mut p Parser) parse_address_initializer() ![]ast.AddressInit {
 	}
 }
 
+// brace_writes and brace_elements answer a list that is filled and spent in one
+// function: the walk that places a brace list grows it, reads it once, and frees
+// it. Nothing slices it while it grows, so the flag tells the runtime it may free
+// the buffer a growth copies from rather than leave it behind, which is what the
+// compiler is built for (no collector). An element here is a few hundred bytes,
+// so a list that doubles its way to a thousand of them leaves a megabyte behind.
+fn brace_writes() []BraceWrite {
+	mut writes := []BraceWrite{}
+	unsafe {
+		writes.flags.set(.noslices)
+	}
+	return writes
+}
+
+fn brace_elements() []BraceElement {
+	mut elements := []BraceElement{}
+	unsafe {
+		elements.flags.set(.noslices)
+	}
+	return elements
+}
+
 // BraceWrite is one scalar subobject a brace initializer wrote: the byte it
 // starts at inside the object, the width of its type, the type's spelling, and
 // the element that wrote it. A designator and a nested list both arrive here:
@@ -4031,7 +4053,7 @@ fn (mut p Parser) file_scope_general_initializer(spec DeclSpec, d Declarator, li
 		p.error_at(list.at, 'unsupported: the layout of ${target.describe()} is not one this compiler knows')
 		return none
 	}
-	mut writes := []BraceWrite{}
+	mut writes := brace_writes()
 	end := p.fill_brace(target, list.elements, 0, 0, mut writes)
 	if end < list.elements.len {
 		p.error_at(list.at, 'a constraint violation: ${name} is initialized with more elements than its type holds')
