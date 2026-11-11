@@ -2866,6 +2866,7 @@ fn (mut p Parser) parse_nested_function(spec DeclSpec, d Declarator) ?ast.Stmt {
 		// rest of the block and writes no code. gcc reads one whose body never
 		// comes, and a call to a name nothing defines is the symbol the link has
 		// to answer for, so there is nothing here to emit and nothing to report.
+		p.own_nested()
 		p.nested_names[d.name] = p.nested_symbol(parent, d.name)
 		p.nested_declared[d.name] = d.name_at
 		p.skip_declaration()
@@ -2880,6 +2881,7 @@ fn (mut p Parser) parse_nested_function(spec DeclSpec, d Declarator) ?ast.Stmt {
 		p.error_at(d.name_at, 'a nested function named ${d.name} is declared and then defined, and the definition of a nested function is static where its declaration is not')
 	}
 	mangled := p.nested_symbol(parent, d.name)
+	p.own_nested()
 	p.nested_names[d.name] = mangled
 	at := d.name_at
 	p.check_definition(spec, d)

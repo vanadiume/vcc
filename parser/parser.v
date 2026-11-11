@@ -152,6 +152,11 @@ mut:
 	// definition of a declared name as the static one against the declaration's
 	// own linkage and refuses the pair, and so does this reader.
 	nested_declared map[string]tokenize.Token
+	// nested_owned says this block's nested_names is the block's own copy and not
+	// the one it was handed. A block that declares no nested function never
+	// copies them, which is every block but a handful: copying the two maps per
+	// block was 109 MB of the compiler's own generated C that nothing freed.
+	nested_owned bool
 	// nested_used is every nested symbol already handed out, so two nested
 	// functions may share a written name in different blocks without landing on
 	// one symbol: a name the file repeats gets a number appended to it.
@@ -446,18 +451,19 @@ fn (mut p Parser) parse_block() ![]ast.Stmt {
 	// That is also what lets two blocks written one after another each define a
 	// nested function of one name: the second is a name of its own, and the
 	// symbol it is emitted under is numbered.
-	// The names the block starts with are the ones it puts back when it ends, and
-	// the block works on a copy: the map it was handed is kept as it stands and
-	// the copy is what a declaration inside the block adds a name to. Handing the
-	// map back is a copy of the header, so one clone is the whole cost of a block.
+	// The names the block starts with are the ones it puts back when it ends. The
+	// block does not copy them: a block that declares no nested function has
+	// nothing to add, and one that declares one calls own_nested before it writes
+	// the name, so the copy is made by the block that needs it.
 	outer_names := p.nested_names
 	outer_declared := p.nested_declared
-	p.nested_names = outer_names.clone()
-	p.nested_declared = outer_declared.clone()
+	outer_owned := p.nested_owned
+	p.nested_owned = false
 	defer {
 		p.scopes.leave()
 		p.nested_names = outer_names
 		p.nested_declared = outer_declared
+		p.nested_owned = outer_owned
 	}
 	mut runs := [][]ast.Stmt{}
 	mut count := 0
@@ -507,6 +513,18 @@ fn (mut p Parser) parse_block() ![]ast.Stmt {
 	}
 	unsafe { runs.free() }
 	return stmts
+}
+
+// own_nested makes the nested-function names of this block its own copy, before
+// the block writes one. The maps a block was handed belong to the block around
+// it, and a name this block declares must not be visible after it ends.
+fn (mut p Parser) own_nested() {
+	if p.nested_owned {
+		return
+	}
+	p.nested_names = p.nested_names.clone()
+	p.nested_declared = p.nested_declared.clone()
+	p.nested_owned = true
 }
 
 // resolve_declared_types gives every declaration among the statements of a block
