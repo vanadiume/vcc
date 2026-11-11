@@ -1601,7 +1601,7 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 		&& decl.ret != 'void'
 		&& decl.ret != 'double' && decl.ret != 'float'
 		&& !decl.ret_type.kind.is_decimal()
-		&& !e.eight_byte_integer(types.from_words(decl.ret.split(' ')) or { types.Type{} })
+		&& !e.eight_byte_integer(types.from_spelling(decl.ret) or { types.Type{} })
 		&& !e.narrow_integer_spelling(decl.ret) {
 		e.diagnostics << problem(decl.line, decl.col, 'unsupported: ${decl.name} returns ${decl.ret}, and only int, unsigned int, the four 64-bit integers, the narrow integer types, float, double, a pointer and void are implemented')
 		return error('unsupported return type')
@@ -2695,7 +2695,7 @@ fn (mut e Emitter) convert_to_return(expr ast.Expr, line int, col int) !void {
 		// expression returned from a 64-bit integer function converts at that
 		// width: reading it as an int and widening the result answers the wrong
 		// number, which is what lane-uconv64 was there to fix.
-		returning := types.from_words(e.returning.split(' ')) or { types.Type{} }
+		returning := types.from_spelling(e.returning) or { types.Type{} }
 		e.convert_to_int(expr, e.written_is_unsigned(e.returning), e.storage_width(returning) or { 0 },
 			line, col)!
 	} else if e.returns_eight_byte_integer() {
@@ -2731,7 +2731,7 @@ fn (e Emitter) narrow_return_kind() ?types.Kind {
 	if written_names_a_pointer(e.returning) {
 		return none
 	}
-	typ := types.from_words(e.returning.split(' ')) or { return none }
+	typ := types.from_spelling(e.returning) or { return none }
 	return if typ.kind in [.bool_, .char_, .signed_char, .unsigned_char, .short, .unsigned_short] {
 		typ.kind
 	} else {
@@ -2748,7 +2748,7 @@ fn (e Emitter) narrow_integer_spelling(written string) bool {
 	if written_names_a_pointer(written) {
 		return false
 	}
-	typ := types.from_words(written.split(' ')) or { return false }
+	typ := types.from_spelling(written) or { return false }
 	return typ.kind in [.bool_, .char_, .signed_char, .unsigned_char, .short, .unsigned_short]
 }
 
@@ -2782,7 +2782,7 @@ fn (mut e Emitter) narrow_register(kind types.Kind, register backend.Register, w
 // of the four 64-bit integer types, which is asked of the type rather than of the
 // width because a pointer is eight bytes too and is not widened like one.
 fn (e Emitter) returns_eight_byte_integer() bool {
-	typ := types.from_words(e.returning.split(' ')) or { return false }
+	typ := types.from_spelling(e.returning) or { return false }
 	return e.eight_byte_integer(typ)
 }
 
@@ -3842,7 +3842,7 @@ fn (mut e Emitter) assign_member(stmt ast.Stmt, member ast.Field, expr ast.Expr,
 		// written at the member's own address. The object the member lies in
 		// may be a pointer's target or a top-level object, so the store cannot
 		// be an offset from the frame.
-		destination := types.from_words(member.spelling.split(' ')) or {
+		destination := types.from_spelling(member.spelling) or {
 			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the member ${member.name}.${member.member} is declared ${member.spelling}, and this back end has no complex type of that spelling to write')
 			return error('unsupported member type')
 		}
@@ -5207,7 +5207,7 @@ fn (mut e Emitter) load_vla_base(slot Slot, register backend.Register, line int,
 // `long double _Complex` is the extended one, whose components are sixteen bytes
 // each.
 fn (e Emitter) writes_a_complex(written string) bool {
-	typ := types.from_words(written.split(' ')) or { return false }
+	typ := types.from_spelling(written) or { return false }
 	return typ.kind in [types.Kind.complex_float, types.Kind.complex_double,
 		types.Kind.complex_long_double]
 }
@@ -5223,10 +5223,6 @@ fn (e Emitter) writes_a_complex(written string) bool {
 // are each 8 and `sizeof(unsigned int)` is 4. Everything else is a type this back
 // end has no instruction for.
 fn (e Emitter) type_width(written string) ?int {
-	// TODO: this is one of the thirteen places in this file that asks what a
-	// spelling names by splitting it first, and the three allocations per call
-	// are the same ones. See the note on types.from_words, which is where the
-	// answer belongs.
 	if written == 'int' || written == 'unsigned' || written == 'unsigned int' || written == 'signed' {
 		return 4
 	}
@@ -5235,7 +5231,7 @@ fn (e Emitter) type_width(written string) ?int {
 	// sixteen-byte components. The questions above answer the smaller complex
 	// types through the class the aggregate path gives them, but their slot is
 	// still sized here, and this is the width of the largest of the three.
-	if typ := types.from_words(written.split(' ')) {
+	if typ := types.from_spelling(written) {
 		if typ.kind == .complex_long_double {
 			return complex_long_double_bytes
 		}
@@ -5325,7 +5321,7 @@ fn (e Emitter) writes_a_128(written string) bool {
 // so this asks the same question it did and not a second reading of the text:
 // `unsigned` and `unsigned int` are one type, and neither is `unsigned long`.
 fn (e Emitter) written_is_unsigned(written string) bool {
-	typ := types.from_words(written.split(' ')) or { return false }
+	typ := types.from_spelling(written) or { return false }
 	return typ.is_unsigned_type()
 }
 
@@ -5337,7 +5333,7 @@ fn (e Emitter) declares_a_bool(written string) bool {
 	if written_names_a_pointer(written) {
 		return false
 	}
-	typ := types.from_words(written.split(' ')) or { return false }
+	typ := types.from_spelling(written) or { return false }
 	return typ.kind == .bool_
 }
 
@@ -14989,7 +14985,7 @@ fn (mut e Emitter) object_hand_over_address(expr ast.Expr, class abi.Class, dept
 // place a real initializer becomes a complex value with a zero imaginary part.
 fn (mut e Emitter) store_complex_local(slot Slot, written string, init ast.Expr, line int, col int,
 	depth int) !void {
-	destination := types.from_words(written.split(' ')) or {
+	destination := types.from_spelling(written) or {
 		e.diagnostics << problem(line, col, 'unsupported: ${written} is not a type this back end moves a complex value of')
 		return error('unknown complex type')
 	}
