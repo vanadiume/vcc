@@ -2062,16 +2062,20 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 	// are what make these lists reusable within one function, and a function is what
 	// they are sized to.
 	e.frame_used = 0
-	e.values = []Slot{}
-	e.callees = []Slot{}
+	// The lists are emptied rather than replaced: a slot is an offset into the
+	// frame of the function being emitted, so nothing in one survives into the
+	// next, and the buffer a function grew is the next one's to fill. A fresh list
+	// per function left the buffer of the one before it behind, 17,232 of them.
+	e.values.clear()
+	e.callees.clear()
 	e.slot_base = 0
 	e.argument_credit = 0
-	e.vla_saves = []int{}
-	e.cleanups = [][]Cleanup{}
-	e.wide_left = []Slot{}
-	e.wide_right = []Slot{}
-	e.wide_scratch = []Slot{}
-	e.wide_arguments = []Slot{}
+	e.vla_saves.clear()
+	e.cleanups.clear()
+	e.wide_left.clear()
+	e.wide_right.clear()
+	e.wide_scratch.clear()
+	e.wide_arguments.clear()
 	// The named labels of a function are that function's, and the maps that
 	// hold them start empty for each one: a label is a name for a place inside
 	// one function, and a goto cannot reach out of the function it is written
