@@ -762,7 +762,7 @@ fn test_a_local_typedef_of_a_struct_read_before_its_body_sees_the_definition() {
 	assert body[0].decl_name() == 'u'
 	assert body[0].decl_type() == 'struct U'
 	assert body[0].resolved().is_complete()
-	assert body[0].resolved().members.len == 2
+	assert body[0].resolved().members().len == 2
 	assert body[1].kind == .assign
 	assert body[3].kind == .return_stmt
 }

@@ -139,10 +139,12 @@ fn call_expression(name string, args []ast.Expr) ast.Expr {
 
 fn declaration(name string, typ string, init ?ast.Expr) ast.Stmt {
 	return ast.Stmt{
-		kind:      .var_decl
-		decl_name: name
-		decl_type: typ
-		init:      init
+		kind:  .var_decl
+		extra: &ast.StmtExtra{
+			decl_name: name
+			decl_type: typ
+			init:      init
+		}
 	}
 }
 
@@ -163,10 +165,12 @@ fn return_expression(expr ast.Expr) ast.Stmt {
 
 fn if_statement(cond ast.Expr, then_body []ast.Stmt, else_body []ast.Stmt) ast.Stmt {
 	return ast.Stmt{
-		kind:      .if_stmt
-		cond:      cond
-		then_body: then_body
-		else_body: else_body
+		kind:  .if_stmt
+		cond:  cond
+		extra: &ast.StmtExtra{
+			then_body: then_body
+			else_body: else_body
+		}
 	}
 }
 
@@ -3026,10 +3030,12 @@ fn test_a_char_parameter_keeps_its_value_and_its_sign() {
 fn test_a_char_array_written_one_byte_at_a_time_is_a_string() {
 	body := [
 		ast.Stmt{
-			kind:       .var_decl
-			decl_name:  'buf'
-			decl_type:  'char'
-			decl_count: 8
+			kind:  .var_decl
+			extra: &ast.StmtExtra{
+				decl_name:  'buf'
+				decl_type:  'char'
+				decl_count: 8
+			}
 		},
 		ast.Stmt{
 			kind:   .assign
@@ -3065,10 +3071,12 @@ fn test_a_char_array_written_one_byte_at_a_time_is_a_string() {
 fn test_an_element_with_a_variable_index_is_the_element_it_reads() {
 	body := [
 		ast.Stmt{
-			kind:       .var_decl
-			decl_name:  'a'
-			decl_type:  'int'
-			decl_count: 4
+			kind:  .var_decl
+			extra: &ast.StmtExtra{
+				decl_name:  'a'
+				decl_type:  'int'
+				decl_count: 4
+			}
 		},
 		declaration('i', 'int', int_argument(2)),
 		ast.Stmt{

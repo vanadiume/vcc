@@ -149,7 +149,7 @@ fn test_an_enum_typed_object_is_the_integer_type_its_enumerators_require() {
 	assert small.decl_name() == 'e'
 	assert small.decl_type() == 'unsigned int'
 	assert small.resolved().kind == types.Kind.enum_
-	assert small.resolved().tag == 'c99_small'
+	assert small.resolved().tag() == 'c99_small'
 	assert small.resolved().enum_underlying() == types.Kind.unsigned_int
 	neg := enum_object_declaration('enum c99_neg { NEG_MIN = -3, NEG_ZERO = 0, NEG_POS = 3 };',
 		'c99_neg')
