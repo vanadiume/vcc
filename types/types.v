@@ -655,6 +655,11 @@ pub fn (t Type) describe() string {
 // describe_unqualified is describe without the qualifiers on the type itself,
 // which is what a derived description needs: the qualifiers of the pointee are
 // part of the pointee's description.
+// TODO: the composite kinds build their spelling per call and the caller drops
+// it: 7.7 MB of `string__plus` on the compiler's own generated C, on top of the
+// describe of the base for every level of a pointer or an array. A pool would
+// dedupe them, but this is a method on Type and has no pool to ask; the caller
+// that wants the spelling of a type repeatedly is the one that could keep it.
 fn (t Type) describe_unqualified() string {
 	match t.kind {
 		.unknown { return 'unresolved' }

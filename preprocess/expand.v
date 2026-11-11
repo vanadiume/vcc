@@ -214,6 +214,13 @@ fn (p Processor) may_expand(tokens []tokenize.Token) bool {
 
 // expand_pieces is expand_all over tokens that carry what they are hidden from,
 // which is the form the rules inside an expansion need.
+//
+// TODO: `out << piece` clones the piece, which is a copy of the hiding list and of
+// every name in it, and the names are already one buffer each from the intern pool:
+// this plus the clones expand_all makes came to 15 MB on the compiler's own generated
+// C. The append that copies instead of cloning is the fix, and it shares the hiding
+// list between the two pieces, so it waits for a caller that frees one. None does
+// today, which is what makes it a change to a contract rather than a line.
 fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 	// Expansion is recursive, and the guard that stops a macro naming itself
 	// stops the shapes a person writes. This limit is for the shapes nobody

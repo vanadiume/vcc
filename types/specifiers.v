@@ -365,6 +365,13 @@ pub fn from_words(words []string) ?Type {
 // out of the string as it is read, so the run costs no allocation, and every piece
 // between two spaces is a word, an empty piece included, because splitting the same
 // string would produce one and the two answers have to be the same.
+//
+// TODO: it says `no allocation` and does not: every word is cut out with
+// `written[start..i]`, which allocates a copy to compare against a table of fifteen
+// names, which came to 20 MB of substr and 4 MB of the copy SpecifierRun keeps,
+// measured on the compiler's own generated C with the intern pool in place. A word
+// does not need to leave the spelling to be read: a byte-span entry point on the
+// table, compared where the bytes lie, is the fix the split already took.
 fn spelling_kind(written string) ?Kind {
 	mut run := SpecifierRun{}
 	mut start := 0
