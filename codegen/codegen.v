@@ -864,6 +864,21 @@ fn entry_definition(unit ast.TranslationUnit, entry string) ?ast.FnDecl {
 // asked for, so no declaration is walked, no library is resolved and no
 // container is written.
 fn (mut e Emitter) build() ![]u8 {
+	// The text is appended to an instruction at a time and nothing slices it
+	// while it grows: the emitter reads its length, writes a recorded instruction
+	// back through an index and hands the whole buffer to the container once.
+	// Saying so lets a growth free the buffer it copied from, which is half of
+	// what the growth chain of the compiler's own generated C used to leave
+	// behind: 134 MB of peak RSS for 48 MB of text.
+	unsafe {
+		e.program.text.flags.set(.noslices)
+		// The references are appended to the same way and nothing slices them
+		// either: the layout reads each one and the merged list is built from
+		// them once. What the flag saves here is the copy each growth of the
+		// list leaves behind, 18.9 MB of the compiler's own generated C.
+		e.program.fixups.flags.set(.noslices)
+		e.program.data_fixups.flags.set(.noslices)
+	}
 	if e.start_only {
 		e.emit_start()!
 		return []u8{}
@@ -1204,7 +1219,9 @@ fn (mut e Emitter) build() ![]u8 {
 	// makes and the only one that depends on the mode.
 	mut bytes := []u8{}
 	if e.compile_only {
-		bytes = elf.object(e.program, e.target) or {
+		// The object is the whole answer to a -c run, so the writer settles the
+		// jumps in the program's own text rather than over a copy of it.
+		bytes = elf.object_in_place(mut e.program, e.target) or {
 			e.diagnostics << problem(1, 1, 'internal: the object could not be laid out: ${err.msg()}')
 			return error('cannot lay out the object')
 		}
@@ -1253,7 +1270,7 @@ fn (mut e Emitter) check_statements(stmts []ast.Stmt, depth int) !void {
 		if expr := stmt.expr {
 			e.check_expression(expr, depth)!
 		}
-		if init := stmt.init {
+		if init := stmt.initializer() {
 			e.check_expression(init, depth)!
 		}
 		if index := stmt.index {
@@ -1263,9 +1280,9 @@ fn (mut e Emitter) check_statements(stmts []ast.Stmt, depth int) !void {
 			e.check_expression(cond, depth)!
 		}
 		e.check_statements(stmt.body, depth)!
-		e.check_statements(stmt.then_body, depth)!
-		e.check_statements(stmt.else_body, depth)!
-		e.check_statements(stmt.step, depth)!
+		e.check_statements(stmt.then_body(), depth)!
+		e.check_statements(stmt.else_body(), depth)!
+		e.check_statements(stmt.step(), depth)!
 		// A nested function is a body of its own, and a constant in it is the
 		// emitter's to write just as one in the enclosing body is, so the walk
 		// reaches into it. Nothing else of the nested definition is checked
@@ -1357,13 +1374,13 @@ fn collect_nested(stmts []ast.Stmt) []ast.FnDecl {
 	mut out := []ast.FnDecl{}
 	for stmt in stmts {
 		if decl := stmt.nested_fn() {
-			out << decl
+			out << *decl
 			out << collect_nested(decl.body)
 		}
 		out << collect_nested(stmt.body)
-		out << collect_nested(stmt.then_body)
-		out << collect_nested(stmt.else_body)
-		out << collect_nested(stmt.step)
+		out << collect_nested(stmt.then_body())
+		out << collect_nested(stmt.else_body())
+		out << collect_nested(stmt.step())
 	}
 	return out
 }
@@ -1601,7 +1618,7 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 		&& decl.ret != 'void'
 		&& decl.ret != 'double' && decl.ret != 'float'
 		&& !decl.ret_type.kind.is_decimal()
-		&& !e.eight_byte_integer(types.from_words(decl.ret.split(' ')) or { types.Type{} })
+		&& !e.eight_byte_integer(types.from_spelling(decl.ret) or { types.Type{} })
 		&& !e.narrow_integer_spelling(decl.ret) {
 		e.diagnostics << problem(decl.line, decl.col, 'unsupported: ${decl.name} returns ${decl.ret}, and only int, unsigned int, the four 64-bit integers, the narrow integer types, float, double, a pointer and void are implemented')
 		return error('unsupported return type')
@@ -2045,16 +2062,20 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 	// are what make these lists reusable within one function, and a function is what
 	// they are sized to.
 	e.frame_used = 0
-	e.values = []Slot{}
-	e.callees = []Slot{}
+	// The lists are emptied rather than replaced: a slot is an offset into the
+	// frame of the function being emitted, so nothing in one survives into the
+	// next, and the buffer a function grew is the next one's to fill. A fresh list
+	// per function left the buffer of the one before it behind, 17,232 of them.
+	e.values.clear()
+	e.callees.clear()
 	e.slot_base = 0
 	e.argument_credit = 0
-	e.vla_saves = []int{}
-	e.cleanups = [][]Cleanup{}
-	e.wide_left = []Slot{}
-	e.wide_right = []Slot{}
-	e.wide_scratch = []Slot{}
-	e.wide_arguments = []Slot{}
+	e.vla_saves.clear()
+	e.cleanups.clear()
+	e.wide_left.clear()
+	e.wide_right.clear()
+	e.wide_scratch.clear()
+	e.wide_arguments.clear()
 	// The named labels of a function are that function's, and the maps that
 	// hold them start empty for each one: a label is a name for a place inside
 	// one function, and a goto cannot reach out of the function it is written
@@ -2147,7 +2168,7 @@ fn (mut e Emitter) emit_statements(stmts []ast.Stmt) !bool {
 				// after the function that writes it, and what this place does is
 				// remember the definition with the scopes it was written in.
 				if decl := stmt.nested_fn() {
-					e.record_nested(decl)
+					e.record_nested(*decl)
 				}
 			}
 		}
@@ -2695,7 +2716,7 @@ fn (mut e Emitter) convert_to_return(expr ast.Expr, line int, col int) !void {
 		// expression returned from a 64-bit integer function converts at that
 		// width: reading it as an int and widening the result answers the wrong
 		// number, which is what lane-uconv64 was there to fix.
-		returning := types.from_words(e.returning.split(' ')) or { types.Type{} }
+		returning := types.from_spelling(e.returning) or { types.Type{} }
 		e.convert_to_int(expr, e.written_is_unsigned(e.returning), e.storage_width(returning) or { 0 },
 			line, col)!
 	} else if e.returns_eight_byte_integer() {
@@ -2731,7 +2752,7 @@ fn (e Emitter) narrow_return_kind() ?types.Kind {
 	if written_names_a_pointer(e.returning) {
 		return none
 	}
-	typ := types.from_words(e.returning.split(' ')) or { return none }
+	typ := types.from_spelling(e.returning) or { return none }
 	return if typ.kind in [.bool_, .char_, .signed_char, .unsigned_char, .short, .unsigned_short] {
 		typ.kind
 	} else {
@@ -2748,7 +2769,7 @@ fn (e Emitter) narrow_integer_spelling(written string) bool {
 	if written_names_a_pointer(written) {
 		return false
 	}
-	typ := types.from_words(written.split(' ')) or { return false }
+	typ := types.from_spelling(written) or { return false }
 	return typ.kind in [.bool_, .char_, .signed_char, .unsigned_char, .short, .unsigned_short]
 }
 
@@ -2782,7 +2803,7 @@ fn (mut e Emitter) narrow_register(kind types.Kind, register backend.Register, w
 // of the four 64-bit integer types, which is asked of the type rather than of the
 // width because a pointer is eight bytes too and is not widened like one.
 fn (e Emitter) returns_eight_byte_integer() bool {
-	typ := types.from_words(e.returning.split(' ')) or { return false }
+	typ := types.from_spelling(e.returning) or { return false }
 	return e.eight_byte_integer(typ)
 }
 
@@ -2806,12 +2827,12 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 	// declaration it leaves empty, as `(os__Eof){E_STRUCT}` is, and the reader's
 	// layout of an empty structure is a size the spelling has no width for.
 	measured := e.known_aggregate_bytes(stmt.resolved()) != none || e.storage_of_no_bytes(stmt.resolved())
-	slot := e.declare(stmt.decl_name, stmt.decl_type, stmt.decl_count, stmt.bytes(), stmt.decl_stride(),
+	slot := e.declare(stmt.decl_name(), stmt.decl_type(), stmt.decl_count(), stmt.bytes(), stmt.decl_stride(),
 		stmt.line, stmt.col, measured)!
 	// What makes an object an argument list is the type it was declared with,
 	// because that is what says how the four operations over a list may treat it.
 	if abi.is_argument_list(stmt.resolved()) {
-		e.argument_lists << stmt.decl_name
+		e.argument_lists << stmt.decl_name()
 	}
 	if stmt.cleanup() != '' && e.cleanups.len > 0 {
 		// The object is in the block this declaration sits in, and the function
@@ -2820,14 +2841,14 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 		// block is emitted as it is read, and the slot the object got is what
 		// the call needs the address of, not the name alone.
 		e.cleanups[e.cleanups.len - 1] << Cleanup{
-			name:     stmt.decl_name
+			name:     stmt.decl_name()
 			typ:      stmt.resolved()
 			function: stmt.cleanup()
 			line:     stmt.line
 			col:      stmt.col
 		}
 	}
-	init := stmt.init or { return }
+	init := stmt.initializer() or { return }
 	if slot.long_double && slot.count == 0 {
 		// An object of the extended type declared with a value: the value is
 		// copied if it is a long double, and converted by the machine's x87 moves
@@ -2848,7 +2869,7 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 		// A complex object is written by the conversion its type names rather
 		// than by a copy: a real initializer is a complex value with a zero
 		// imaginary part, which is 6.3.2.2 and not a byte copy.
-		return e.store_complex_local(slot, stmt.decl_type, init, stmt.line, stmt.col, 0)
+		return e.store_complex_local(slot, stmt.decl_type(), init, stmt.line, stmt.col, 0)
 	}
 	if slot.wide {
 		// A 128-bit object declared with a value takes one of three things: a copy
@@ -2865,18 +2886,18 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 		// just claimed.
 		declared := ast.Stmt{
 			kind:   .assign
-			target: stmt.decl_name
+			target: stmt.decl_name()
 			expr:   init
 			line:   stmt.line
 			col:    stmt.col
 		}
 		return e.assign_object_local(declared, slot, 0)
 	}
-	if stmt.decl_count > 0 {
+	if stmt.decl_count() > 0 {
 		// An array is storage, and the elements of it are whatever the frame
 		// held: an initializer for one is a shape this back end does not copy
 		// yet, and writing one element of it would be a wrong program.
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.decl_name} is an array declared with an initializer, and an array of elements is not initialized here')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.decl_name()} is an array declared with an initializer, and an array of elements is not initialized here')
 		return error('array initializer')
 	}
 	if e.wide_value(init) {
@@ -2890,7 +2911,7 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 			// though the top of the value were zero. Measured on gcc 16.2.1:
 			// `double d = (__int128)5` is 5.0, and the low word read as an integer
 			// into a double slot is a different number entirely.
-			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a conversion from a 128-bit object to ${stmt.decl_type} is not one this back end makes, and a value that wide does not convert to a floating type here')
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a conversion from a 128-bit object to ${stmt.decl_type()} is not one this back end makes, and a value that wide does not convert to a floating type here')
 			return error('128-bit to a double')
 		}
 		e.low_word_of_object(init, slot.width, stmt.line, stmt.col, 1)!
@@ -2911,11 +2932,11 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 // function, so a loop body that declares an array does not grow the stack every
 // time round.
 fn (mut e Emitter) emit_vla_decl(stmt ast.Stmt, size_expr ast.Expr) !void {
-	if stmt.init != none {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.decl_name} is a variable-length array, and a variable-length array may not be initialized')
+	if stmt.initializer() != none {
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.decl_name()} is a variable-length array, and a variable-length array may not be initialized')
 		return error('VLA initializer')
 	}
-	slot := e.declare_vla(stmt.decl_name, stmt.decl_stride(), stmt.line, stmt.col)!
+	slot := e.declare_vla(stmt.decl_name(), stmt.decl_stride(), stmt.line, stmt.col)!
 	// The size the object is, before the frame rounds it up: sizeof answers with
 	// this and not with the padded size, because padding is a fact about the
 	// stack and not about the object.
@@ -2964,7 +2985,7 @@ fn (mut e Emitter) emit_assign(stmt ast.Stmt, depth int) !void {
 	// written by the path that computes that address once and reads and writes
 	// through it. A name target is not one of those: reading a name has no side
 	// effect to repeat, and the expansion in expr is emitted directly below.
-	if stmt.compound != '' && (stmt.field != none || stmt.deref() != none || stmt.subscript() != none || stmt.index != none) {
+	if stmt.compound() != '' && (stmt.field != none || stmt.deref() != none || stmt.subscript() != none || stmt.index != none) {
 		return e.assign_compound(stmt, depth)
 	}
 	if deref := stmt.deref() {
@@ -3160,36 +3181,36 @@ fn (mut e Emitter) assign_deref(stmt ast.Stmt, target ast.Expr, expr ast.Expr, d
 // for.
 fn (mut e Emitter) assign_compound(stmt ast.Stmt, depth int) !void {
 	value := stmt.expr or {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= has no value')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= has no value')
 		return error('compound assignment without a value')
 	}
 	binary := value as ast.Binary
 	destination := binary.left
 	written := destination.typ.describe()
 	if destination.typ.kind == .unknown {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= writes an object whose type this compiler cannot resolve')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= writes an object whose type this compiler cannot resolve')
 		return error('unknown compound target type')
 	}
 	if destination is ast.Field {
 		if destination.bitfield {
-			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= to the bitfield ${destination.name}.${destination.member} is not implemented, and this back end does not step a bitfield in place')
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to the bitfield ${destination.name}.${destination.member} is not implemented, and this back end does not step a bitfield in place')
 			return error('bitfield compound assignment')
 		}
 	}
 	if destination.typ.kind.is_complex() {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= to an object of ${written} is not implemented, and this back end keeps one value of a complex type in a register')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to an object of ${written} is not implemented, and this back end keeps one value of a complex type in a register')
 		return error('complex compound assignment')
 	}
 	if destination.typ.kind.is_extended() {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= to an object of ${written} is not one this back end makes at the width of the type')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to an object of ${written} is not one this back end makes at the width of the type')
 		return error('long double compound assignment')
 	}
 	if destination.typ.kind in [.int128, .unsigned_int128] {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= to an object of ${written} is not implemented')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to an object of ${written} is not implemented')
 		return error('wide compound assignment')
 	}
 	if destination.typ.is_pointer() {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= to an object of ${written} is not implemented, and an integer added to a pointer is scaled by the size of what it points at')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to an object of ${written} is not implemented, and an integer added to a pointer is scaled by the size of what it points at')
 		return error('pointer compound assignment')
 	}
 	// The address of the target, computed once and parked while the value is
@@ -3208,7 +3229,7 @@ fn (mut e Emitter) assign_compound(stmt ast.Stmt, depth int) !void {
 		return e.assign_compound_float(stmt, binary, address, single, depth)
 	}
 	width := e.storage_width(destination.typ) or {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= writes an object of ${written}, and this back end stores ints, chars, floats, doubles and pointers only')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= writes an object of ${written}, and this back end stores ints, chars, floats, doubles and pointers only')
 		return error('unsupported compound width')
 	}
 	// The old value is read through the parked address, at the width and
@@ -3842,7 +3863,7 @@ fn (mut e Emitter) assign_member(stmt ast.Stmt, member ast.Field, expr ast.Expr,
 		// written at the member's own address. The object the member lies in
 		// may be a pointer's target or a top-level object, so the store cannot
 		// be an offset from the frame.
-		destination := types.from_words(member.spelling.split(' ')) or {
+		destination := types.from_spelling(member.spelling) or {
 			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the member ${member.name}.${member.member} is declared ${member.spelling}, and this back end has no complex type of that spelling to write')
 			return error('unsupported member type')
 		}
@@ -3908,14 +3929,12 @@ fn (mut e Emitter) assign_member(stmt ast.Stmt, member ast.Field, expr ast.Expr,
 	e.store_accumulator(address, stmt.line, stmt.col)!
 	e.emit_expr_at(expr, depth + 1)!
 	address_register := e.scratch(stmt.line, stmt.col)!
-	member_name := '${member.name}.${member.member}'
 	if member.bitfield {
-		return e.assign_member_bits(stmt, member, expr, address, address_register, width,
-			member_name)
+		return e.assign_member_bits(stmt, member, expr, address, address_register, width)
 	}
 	if e.writes_a_float(member.spelling) {
 		if !e.floating_of(expr) && e.is_a_pointer(expr) {
-			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored in the member ${member_name}, which holds a float, and there is no conversion between them')
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored in the member ${member.name}.${member.member}, which holds a float, and there is no conversion between them')
 			return error('pointer into a float')
 		}
 		e.convert_to_single(expr, stmt.line, stmt.col)!
@@ -3926,7 +3945,7 @@ fn (mut e Emitter) assign_member(stmt ast.Stmt, member ast.Field, expr ast.Expr,
 	}
 	if e.writes_a_double(member.spelling) {
 		if !e.floating_of(expr) && e.is_a_pointer(expr) {
-			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored in the member ${member_name}, which holds a double, and there is no conversion between them')
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored in the member ${member.name}.${member.member}, which holds a double, and there is no conversion between them')
 			return error('pointer into a double')
 		}
 		e.convert_to_double(expr, stmt.line, stmt.col)!
@@ -3953,7 +3972,7 @@ fn (mut e Emitter) assign_member(stmt ast.Stmt, member ast.Field, expr ast.Expr,
 	// one is refused - except into a member narrower than four bytes, where the
 	// language converts an int by taking the low byte or the low two of it.
 	if e.constant(expr) == none && value_width > width && !(width < 4 && value_width == 4) {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${value_width} bytes is stored into the member ${member_name}, which holds ${width}')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${value_width} bytes is stored into the member ${member.name}.${member.member}, which holds ${width}')
 		return error('width mismatch')
 	}
 	if width == 8 && value_width != 8 {
@@ -3987,9 +4006,9 @@ fn (mut e Emitter) assign_member(stmt ast.Stmt, member ast.Field, expr ast.Expr,
 // the field's clear mask is written as a four-byte immediate, and the eight-byte
 // case would need a width this instruction does not carry, so it is named rather
 // than written wrong.
-fn (mut e Emitter) assign_member_bits(stmt ast.Stmt, member ast.Field, expr ast.Expr, address Slot, address_register backend.Register, width int, member_name string) !void {
+fn (mut e Emitter) assign_member_bits(stmt ast.Stmt, member ast.Field, expr ast.Expr, address Slot, address_register backend.Register, width int) !void {
 	if member.unit_width <= 0 || member.unit_width > 4 {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the bitfield ${member_name} lies in a ${member.unit_width}-byte storage unit, and this back end writes a bitfield only in a unit of four bytes or fewer')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the bitfield ${member.name}.${member.member} lies in a ${member.unit_width}-byte storage unit, and this back end writes a bitfield only in a unit of four bytes or fewer')
 		return error('unsupported bitfield unit')
 	}
 	if e.floating_of(expr) {
@@ -4000,7 +4019,7 @@ fn (mut e Emitter) assign_member_bits(stmt ast.Stmt, member ast.Field, expr ast.
 			return error('unknown width')
 		}
 		if e.constant(expr) == none && value_width > width && !(width < 4 && value_width == 4) {
-			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${value_width} bytes is stored into the member ${member_name}, which holds ${width}')
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${value_width} bytes is stored into the member ${member.name}.${member.member}, which holds ${width}')
 			return error('width mismatch')
 		}
 		e.normalize_a_bool_store(e.declares_a_bool(member.spelling), value_width == 8, stmt.line,
@@ -4570,12 +4589,12 @@ fn (mut e Emitter) emit_if(stmt ast.Stmt) !bool {
 	e.emit_condition(cond, 0, stmt.line, stmt.col)!
 	else_label := e.label()
 	e.branch(.branch_zero, else_label, stmt.line, stmt.col)!
-	then_returned := e.emit_branch_body(stmt.then_body)!
-	if stmt.else_body.len > 0 {
+	then_returned := e.emit_branch_body(stmt.then_body())!
+	if stmt.else_body().len > 0 {
 		end_label := e.label()
 		e.jump(end_label)!
 		e.place(else_label)
-		else_returned := e.emit_branch_body(stmt.else_body)!
+		else_returned := e.emit_branch_body(stmt.else_body())!
 		e.place(end_label)
 		return then_returned && else_returned
 	}
@@ -4603,7 +4622,7 @@ fn (mut e Emitter) emit_while(stmt ast.Stmt) !void {
 	// body instead would read the same and be wrong — every continue above it
 	// would jump past the statement that advances the loop.
 	step := e.label()
-	continue_to := if stmt.step.len > 0 { step } else { top }
+	continue_to := if stmt.step().len > 0 { step } else { top }
 	e.place(top)
 	e.emit_condition(cond, 0, stmt.line, stmt.col)!
 	e.branch(.branch_zero, end, stmt.line, stmt.col)!
@@ -4616,11 +4635,11 @@ fn (mut e Emitter) emit_while(stmt ast.Stmt) !void {
 	}
 	e.emit_branch_body(stmt.body)!
 	e.loops.pop()
-	if stmt.step.len > 0 {
+	if stmt.step().len > 0 {
 		// The step runs in the loop's own scope, which is where C puts it: the
 		// names a for declares in its head are the names its step writes to.
 		e.place(step)
-		_ := e.emit_statements(stmt.step)!
+		_ := e.emit_statements(stmt.step())!
 	}
 	e.jump(top)!
 	e.place(end)
@@ -4892,21 +4911,21 @@ fn (mut e Emitter) collect_cases(body []ast.Stmt, mut cases []CaseTarget) {
 				}
 			}
 			.if_stmt {
-				if stmt.else_body.len > 0 {
+				if stmt.else_body().len > 0 {
 					stack << CaseWalk{
-						list: stmt.else_body
+						list: stmt.else_body()
 					}
 				}
-				if stmt.then_body.len > 0 {
+				if stmt.then_body().len > 0 {
 					stack << CaseWalk{
-						list: stmt.then_body
+						list: stmt.then_body()
 					}
 				}
 			}
 			.while_stmt {
-				if stmt.step.len > 0 {
+				if stmt.step().len > 0 {
 					stack << CaseWalk{
-						list: stmt.step
+						list: stmt.step()
 					}
 				}
 				if stmt.body.len > 0 {
@@ -5146,15 +5165,6 @@ fn (mut e Emitter) declare(name string, written string, count int, bytes int, st
 		wide:        wide
 		long_double: long_double
 		decimal:     decimal
-		offset:      slot.offset
-		width:       width
-		count:       count
-		floating:    bytes == 0 && e.writes_a_double(written)
-		single:      bytes == 0 && e.writes_a_float(written)
-		unsigned:    e.written_is_unsigned(written)
-		boolean:     written == '_Bool'
-		bytes:       if wide { wide_bytes } else { bytes }
-		wide:        wide
 		complex:     e.writes_a_complex(written)
 	}
 	e.scopes[e.scopes.len - 1][name] = block
@@ -5207,7 +5217,7 @@ fn (mut e Emitter) load_vla_base(slot Slot, register backend.Register, line int,
 // `long double _Complex` is the extended one, whose components are sixteen bytes
 // each.
 fn (e Emitter) writes_a_complex(written string) bool {
-	typ := types.from_words(written.split(' ')) or { return false }
+	typ := types.from_spelling(written) or { return false }
 	return typ.kind in [types.Kind.complex_float, types.Kind.complex_double,
 		types.Kind.complex_long_double]
 }
@@ -5231,7 +5241,7 @@ fn (e Emitter) type_width(written string) ?int {
 	// sixteen-byte components. The questions above answer the smaller complex
 	// types through the class the aggregate path gives them, but their slot is
 	// still sized here, and this is the width of the largest of the three.
-	if typ := types.from_words(written.split(' ')) {
+	if typ := types.from_spelling(written) {
 		if typ.kind == .complex_long_double {
 			return complex_long_double_bytes
 		}
@@ -5321,7 +5331,7 @@ fn (e Emitter) writes_a_128(written string) bool {
 // so this asks the same question it did and not a second reading of the text:
 // `unsigned` and `unsigned int` are one type, and neither is `unsigned long`.
 fn (e Emitter) written_is_unsigned(written string) bool {
-	typ := types.from_words(written.split(' ')) or { return false }
+	typ := types.from_spelling(written) or { return false }
 	return typ.is_unsigned_type()
 }
 
@@ -5333,7 +5343,7 @@ fn (e Emitter) declares_a_bool(written string) bool {
 	if written_names_a_pointer(written) {
 		return false
 	}
-	typ := types.from_words(written.split(' ')) or { return false }
+	typ := types.from_spelling(written) or { return false }
 	return typ.kind == .bool_
 }
 
@@ -5638,11 +5648,11 @@ fn (mut c VlaCounter) statement(stmt ast.Stmt) {
 			}
 		}
 		.if_stmt {
-			if stmt.then_body.len > 0 {
-				c.scope(stmt.then_body)
+			if stmt.then_body().len > 0 {
+				c.scope(stmt.then_body())
 			}
-			if stmt.else_body.len > 0 {
-				c.scope(stmt.else_body)
+			if stmt.else_body().len > 0 {
+				c.scope(stmt.else_body())
 			}
 		}
 		.while_stmt {
@@ -5651,7 +5661,7 @@ fn (mut c VlaCounter) statement(stmt ast.Stmt) {
 			}
 			// A for loop's step runs in the scope around the loop, which is where
 			// emission writes it, so it is walked without opening a scope.
-			for step in stmt.step {
+			for step in stmt.step() {
 				c.statement(step)
 			}
 		}
@@ -5694,8 +5704,8 @@ fn statement_has_vla(stmt ast.Stmt) bool {
 	match stmt.kind {
 		.block { return function_has_vla(stmt.body) }
 		.var_decl { return stmt.decl_vla_size() != none }
-		.if_stmt { return function_has_vla(stmt.then_body) || function_has_vla(stmt.else_body) }
-		.while_stmt { return function_has_vla(stmt.body) || function_has_vla(stmt.step) }
+		.if_stmt { return function_has_vla(stmt.then_body()) || function_has_vla(stmt.else_body()) }
+		.while_stmt { return function_has_vla(stmt.body) || function_has_vla(stmt.step()) }
 		.do_while_stmt { return function_has_vla(stmt.body) }
 		.switch_stmt { return function_has_vla(stmt.body) }
 		else { return false }
@@ -5738,11 +5748,11 @@ fn (mut c CleanupCounter) statement(stmt ast.Stmt) {
 			}
 		}
 		.if_stmt {
-			if stmt.then_body.len > 0 {
-				c.scope(stmt.then_body)
+			if stmt.then_body().len > 0 {
+				c.scope(stmt.then_body())
 			}
-			if stmt.else_body.len > 0 {
-				c.scope(stmt.else_body)
+			if stmt.else_body().len > 0 {
+				c.scope(stmt.else_body())
 			}
 		}
 		.while_stmt {
@@ -5751,7 +5761,7 @@ fn (mut c CleanupCounter) statement(stmt ast.Stmt) {
 			}
 			// A for loop's step runs in the scope around the loop, which is
 			// where emission writes it, so it is walked without opening a scope.
-			for step in stmt.step {
+			for step in stmt.step() {
 				c.statement(step)
 			}
 		}
@@ -5795,9 +5805,11 @@ fn statement_has_cleanups(stmt ast.Stmt) bool {
 		.block { return function_has_cleanups(stmt.body) }
 		.var_decl { return stmt.cleanup() != '' }
 		.if_stmt {
-			return function_has_cleanups(stmt.then_body) || function_has_cleanups(stmt.else_body)
+			return function_has_cleanups(stmt.then_body()) || function_has_cleanups(stmt.else_body())
 		}
-		.while_stmt { return function_has_cleanups(stmt.body) || function_has_cleanups(stmt.step) }
+		.while_stmt {
+			return function_has_cleanups(stmt.body) || function_has_cleanups(stmt.step())
+		}
 		.do_while_stmt { return function_has_cleanups(stmt.body) }
 		.switch_stmt { return function_has_cleanups(stmt.body) }
 		else { return false }
@@ -12756,10 +12768,10 @@ fn (e Emitter) wide_argument(call ast.Call, position int, arg ast.Expr) bool {
 // pointer is followed to the function it points at.
 fn call_parameter(call ast.Call, position int) ?types.Type {
 	signature := call_signature(call) or { return none }
-	if position >= signature.params.len {
+	if position >= signature.params().len {
 		return none
 	}
-	return signature.params[position].typ
+	return signature.params()[position].typ
 }
 
 // indirect_call_returns is the type a call through an expression is worth, and none
@@ -12826,8 +12838,8 @@ fn (e Emitter) call_widths(call ast.Call) []int {
 		return e.signatures[call.name] or { []int{} }
 	}
 	signature := call_signature(call) or { return []int{} }
-	mut widths := []int{cap: signature.params.len}
-	for parameter in signature.params {
+	mut widths := []int{cap: signature.params().len}
+	for parameter in signature.params() {
 		class := abi.class_of(e.representation, parameter.typ)
 		if class.bytes > 0 {
 			widths << class.bytes
@@ -13295,8 +13307,8 @@ fn (mut e Emitter) global_of(name string) ?image.GlobalSlot {
 		// there at the member's width and the rest of the union stays zero.
 		// An address initializing a pointer first member is written at the
 		// same byte, as a reference the layout resolves.
-		if object.resolved.kind == .union_ && object.resolved.members.len > 0 {
-			first := object.resolved.members[0]
+		if object.resolved.kind == .union_ && object.resolved.members().len > 0 {
+			first := object.resolved.members()[0]
 			member_width := e.type_width(first.typ.describe()) or { object.bytes }
 			if value := object.init_float {
 				if first.typ.kind == .float {
@@ -13745,9 +13757,21 @@ fn (mut e Emitter) intern_single(value f64) string {
 	return key
 }
 
-// append puts finished instruction bytes into the text.
+// append copies one encoded instruction into the text of the unit. The bytes
+// arrive in an array the target built for this instruction and nothing else
+// holds: every caller hands over what `e.target.*` just answered, which is a
+// fresh array of the instruction's own length. The buffer is freed once its bytes
+// are copied, because otherwise the emitter leaves one behind per instruction it
+// writes, and the object this compiler emits is tens of megabytes of them.
+//
+// A caller with an array it means to keep has to hand over a copy.
+//
+// The text itself says `.noslices` where build opens, because nothing slices it
+// while it grows: a growth is then free to release the buffer it copied from,
+// which took 71 MB off the peak of the compiler's own generated C.
 fn (mut e Emitter) append(bytes []u8) {
 	e.program.text << bytes
+	unsafe { bytes.free() }
 }
 
 // reference appends an instruction whose displacement is not known yet and
@@ -13756,10 +13780,12 @@ fn (mut e Emitter) append(bytes []u8) {
 // string is loaded where the value is about to be used from.
 fn (mut e Emitter) reference(bytes []u8, kind image.FixupKind, name string, register string) {
 	start := e.program.text.len
+	length := bytes.len
 	e.program.text << bytes
+	unsafe { bytes.free() }
 	e.program.fixups << image.Fixup{
 		start:    start
-		length:   bytes.len
+		length:   length
 		kind:     kind
 		name:     name
 		register: register
@@ -14968,7 +14994,7 @@ fn (mut e Emitter) object_hand_over_address(expr ast.Expr, class abi.Class, dept
 // place a real initializer becomes a complex value with a zero imaginary part.
 fn (mut e Emitter) store_complex_local(slot Slot, written string, init ast.Expr, line int, col int,
 	depth int) !void {
-	destination := types.from_words(written.split(' ')) or {
+	destination := types.from_spelling(written) or {
 		e.diagnostics << problem(line, col, 'unsupported: ${written} is not a type this back end moves a complex value of')
 		return error('unknown complex type')
 	}

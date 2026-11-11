@@ -309,36 +309,28 @@ pub:
 	// expr is the returned expression of a return statement, none for a bare
 	// `return;` or for a statement that returns nothing.
 	expr ?Expr
-	// init is the initializer of a declaration, and none for `int x;`.
-	init ?Expr
-	// decl_name and decl_type are a declaration's name and the type the back end
-	// reads it as, which is the spelling a typedef name and an enum tag are
-	// spelled out to; decl_count is how many elements an array declaration has:
-	// zero for a declaration of one value. resolved is the type the declaration
-	// resolved to, and it is the zero value for a statement that declares
-	// nothing.
-	decl_name  string
-	decl_type  string
-	decl_count int
 	// extra is what a statement carries only when it is one of the statements
-	// that has one: the type and the byte width a declaration resolved to, the
-	// bound and the stride of a variable-length array, the element an assignment
-	// of an element writes through, the dereference an assignment writes
-	// through, the name a goto jumps to, the value a case names, and the whole
-	// of an asm statement. Every one of them was a field of its own here, which
-	// put all of them in every statement in the tree. A declaration's resolved
-	// type alone is 192 bytes, and the tree holds hundreds of thousands of
-	// assignments and returns that never read it. A statement that has one holds
-	// it by pointer; the rest are nil, and read it through the accessors below.
+	// that has one: everything a declaration carries, the operator of a
+	// compound assignment, the bound and the stride of a variable-length
+	// array, the element an assignment of an element writes through, the
+	// dereference an assignment writes through, the name a goto jumps to, the
+	// value a case names, the branches and the step of a structured statement,
+	// and the whole of an asm statement. Every one of them was a field of its
+	// own here, which put all of them in every statement in the tree. The
+	// tree holds hundreds of thousands of assignments and returns, and a
+	// declaration's resolved type alone is 200 bytes. A statement that has an
+	// extra part holds it by pointer; the rest are nil, and read it through
+	// the accessors below.
 	extra ?&StmtExtra
 	// target is the name an assignment writes to, index is the subscript of
 	// an array element: `a[i] = v` writes to an element, and a plain `x = v`
 	// has none. field is the member of an aggregate the assignment writes to,
 	// `x.a = v`, which is an offset into the object rather than a name of its
-	// own.
+	// own. These three are what most statements in a C file are: an
+	// assignment to a name, or to a member of one.
 	//
 	// field is held by pointer because an Option holds its value inline and a
-	// Field is 376 bytes: written as `?Field` it made every statement in the
+	// Field is 384 bytes: written as `?Field` it made every statement in the
 	// tree 1224 bytes, a third of the node spent on the member of an
 	// assignment that is a member almost never. The pointer costs eight bytes
 	// and the value lives in the heap, which is where it was going to end up
@@ -346,35 +338,14 @@ pub:
 	target string
 	index  ?Expr
 	field  ?&Field
-	// compound is the arithmetic operator of a compound assignment: `+` for
-	// `+=`, `-` for `-=`, and the empty string for a plain `=`. The reader
-	// expands the spelling into the assignment it means in `expr` as well, and
-	// a name target is emitted from that expansion because reading a name has
-	// no side effect to repeat. A target reached through an address is
-	// emitted from this operator and the value instead: the address is
-	// computed once and used for both the read and the write, so that an
-	// index like `a[i++]` is stepped once rather than once per use. The empty
-	// string means the value in `expr` is written as it stands, which is what
-	// every plain assignment does.
-	compound string
-	// cond is the controlling expression of an if or a while: what has to be
-	// true for the branch to be taken, or for the loop to go round again.
+	// cond is the controlling expression of an if, a while or a switch: what
+	// has to be true for the branch to be taken, or for the loop to go round
+	// again.
 	cond ?Expr
 	// body is the contents of a block, or the body of a loop.
 	body []Stmt
-	// step is what a loop runs at the end of every turn before going round
-	// again: the third part of a `for`, and empty for a `while`. It belongs to
-	// the loop and not to the body, because a continue has to reach it — as the
-	// body's last statement it would be jumped over by every continue above it,
-	// and a loop whose counter only advances in its last statement would never
-	// end.
-	step []Stmt
-	// then_body and else_body are the two branches of an if. The else is empty
-	// when it was not written.
-	then_body []Stmt
-	else_body []Stmt
-	line      int
-	col       int
+	line int
+	col  int
 }
 
 // StmtExtra is the part of a statement only some statements carry, held by
@@ -388,6 +359,37 @@ pub:
 	// resolved is the type a declaration resolved to, and the zero value for
 	// one that declares nothing.
 	resolved types.Type
+	// decl_name and decl_type are a declaration's name and the type the back end
+	// reads it as, which is the spelling a typedef name and an enum tag are
+	// spelled out to; decl_count is how many elements an array declaration has:
+	// zero for a declaration of one value.
+	decl_name  string
+	decl_type  string
+	decl_count int
+	// init is the initializer of a declaration, and none for `int x;`.
+	init ?Expr
+	// compound is the arithmetic operator of a compound assignment: `+` for
+	// `+=`, `-` for `-=`, and the empty string for a plain `=`. The reader
+	// expands the spelling into the assignment it means in `expr` as well, and
+	// a name target is emitted from that expansion because reading a name has
+	// no side effect to repeat. A target reached through an address is
+	// emitted from this operator and the value instead: the address is
+	// computed once and used for both the read and the write, so that an
+	// index like `a[i++]` is stepped once rather than once per use. The empty
+	// string means the value in `expr` is written as it stands, which is what
+	// every plain assignment does.
+	compound string
+	// step is what a loop runs at the end of every turn before going round
+	// again: the third part of a `for`, and empty for a `while`. It belongs to
+	// the loop and not to the body, because a continue has to reach it — as the
+	// body's last statement it would be jumped over by every continue above it,
+	// and a loop whose counter only advances in its last statement would never
+	// end.
+	step []Stmt
+	// then_body and else_body are the two branches of an if. The else is empty
+	// when it was not written.
+	then_body []Stmt
+	else_body []Stmt
 	// bytes is how many bytes of storage the object is when its type is an
 	// aggregate, and zero for an object the back end sizes from its spelling.
 	// A struct is not the address of anything and has no spelling the back end
@@ -441,53 +443,66 @@ pub:
 	// goto jumps to the address the expression is worth, so no label name is
 	// involved and label is empty for it.
 	goto_expr ?Expr
-	// asm_text is the instruction text of a statement-level GNU asm, with the
-	// escapes of its adjacent string literals resolved and the literals joined.
-	// It is empty both for the barrier and for a statement whose only string
-	// literal was `""`; empty with no operands below is the barrier shape.
-	asm_text string
-	// asm_spelling is that same text as the file wrote it, quotes and escapes
-	// included, which is what a diagnostic names: the resolved text can hold
-	// the newline and tab an instruction is written with, and a message with a
-	// newline in it is two lines.
-	asm_spelling string
-	// asm_outputs and asm_inputs are how many operands each of the statement's
-	// output and input lists wrote. Zero for both, with empty text, is the
-	// barrier: a constraint and nothing to constrain.
-	asm_outputs int
-	asm_inputs  int
-	// asm_output_operands and asm_input_operands are those two lists as the file
-	// wrote them: the name an operand was given with `[name]`, empty when it was
-	// given none, the constraint string, and the expression whose value the
-	// operand is. The counts above are what the lists hold, and the emitter
-	// needs the lists: a register to place a value in comes from the constraint,
-	// and the value comes from the expression.
-	asm_output_operands []AsmOperand
-	asm_input_operands  []AsmOperand
-	// asm_clobbers is the clobber list, each entry as the file wrote it with
-	// its escapes resolved: `memory`, `cc`, or a register name. It says what a
-	// later pass may not keep across the statement, which is the whole of what
-	// an accepted barrier tells the optimizer.
-	asm_clobbers []string
-	// asm_is_goto says the statement was written `asm goto`, whose fifth list
-	// names the C labels the template may jump to, and asm_goto_labels is that
-	// list, each a label name as the file wrote it. A `%lN` in the template
-	// refers to the Nth of them, counting from zero. This is the shape glibc
-	// uses to reach a label from inside an instruction, which an ordinary goto
-	// cannot do because it is not an instruction.
-	asm_is_goto     bool
-	asm_goto_labels []string
+	// assembly is the whole of a statement-level GNU asm, held by pointer from
+	// the statements that are one. It is 257 bytes of the extra part for a
+	// construct that most translation units do not write at all, and a
+	// statement that is one allocates it.
+	assembly ?&StmtAsm
 	// cleanup is the name of the function a declaration asked for with
 	// `__attribute__((cleanup(name)))`, which runs on the object when the
 	// block it was declared in ends. It is empty for a declaration that asked
 	// for none, which is every declaration but the one GNU attribute's.
 	cleanup string
 	// nested_fn is the function a nested_function statement defines, held by
-	// value because there is nothing else in the extra part for such a
-	// statement and it is one of the few statements that carries a whole
-	// function. It is none for every other statement, which is all of them but
-	// a `nested_function`.
-	nested_fn ?FnDecl
+	// pointer because a FnDecl is 600 bytes and every other statement that
+	// carries an extra part has none of it. It is nil for every other
+	// statement, which is all of them but a `nested_function`.
+	nested_fn ?&FnDecl
+}
+
+// StmtAsm is the content of a statement-level GNU asm: the instruction text
+// with its escapes resolved, the same text as the file spelled it, the operand
+// lists, the clobber list, and, for `asm goto`, the labels its template may
+// jump to. It sits behind a pointer in the statement's extra part because a
+// statement that is not an asm has no use for any of it.
+pub struct StmtAsm {
+pub:
+	// text is the instruction text, with the escapes of its adjacent string
+	// literals resolved and the literals joined. It is empty both for the
+	// barrier and for a statement whose only string literal was `""`; empty
+	// with no operands is the barrier shape.
+	text string
+	// spelling is that same text as the file wrote it, quotes and escapes
+	// included, which is what a diagnostic names: the resolved text can hold
+	// the newline and tab an instruction is written with, and a message with a
+	// newline in it is two lines.
+	spelling string
+	// outputs and inputs are how many operands each of the statement's output
+	// and input lists wrote. Zero for both, with empty text, is the barrier: a
+	// constraint and nothing to constrain.
+	outputs int
+	inputs  int
+	// output_operands and input_operands are those two lists as the file wrote
+	// them: the name an operand was given with `[name]`, empty when it was
+	// given none, the constraint string, and the expression whose value the
+	// operand is. The counts above are what the lists hold, and the emitter
+	// needs the lists: a register to place a value in comes from the
+	// constraint, and the value comes from the expression.
+	output_operands []AsmOperand
+	input_operands  []AsmOperand
+	// clobbers is the clobber list, each entry as the file wrote it with its
+	// escapes resolved: `memory`, `cc`, or a register name. It says what a
+	// later pass may not keep across the statement, which is the whole of what
+	// an accepted barrier tells the optimizer.
+	clobbers []string
+	// is_goto says the statement was written `asm goto`, whose fifth list
+	// names the C labels the template may jump to, and goto_labels is that
+	// list, each a label name as the file wrote it. A `%lN` in the template
+	// refers to the Nth of them, counting from zero. This is the shape glibc
+	// uses to reach a label from inside an instruction, which an ordinary goto
+	// cannot do because it is not an instruction.
+	is_goto     bool
+	goto_labels []string
 }
 
 // The rest of this file is how a statement answers for what is in its extra
@@ -511,6 +526,88 @@ pub fn (stmt Stmt) bytes() int {
 		return extra.bytes
 	}
 	return 0
+}
+
+// decl_name is the name a declaration declares, or the empty string for a
+// statement that declares nothing.
+@[inline]
+pub fn (stmt Stmt) decl_name() string {
+	if extra := stmt.extra {
+		return extra.decl_name
+	}
+	return ''
+}
+
+// decl_type is the type a declaration was written with, spelled out the way
+// the back end reads it: a typedef name and an enum tag are resolved to what
+// they name.
+@[inline]
+pub fn (stmt Stmt) decl_type() string {
+	if extra := stmt.extra {
+		return extra.decl_type
+	}
+	return ''
+}
+
+// decl_count is how many elements a declaration declared, and zero for an
+// object that is one value.
+@[inline]
+pub fn (stmt Stmt) decl_count() int {
+	if extra := stmt.extra {
+		return extra.decl_count
+	}
+	return 0
+}
+
+// initializer is the value a declaration gave the object it declares, or none
+// for a declaration that gave none. It is the field the tree calls `init`,
+// under a name a statement can answer without hiding anything.
+@[inline]
+pub fn (stmt Stmt) initializer() ?Expr {
+	if extra := stmt.extra {
+		return extra.init
+	}
+	return none
+}
+
+// compound is the arithmetic operator a compound assignment was written with,
+// `+` for `+=`, and the empty string for a plain `=`.
+@[inline]
+pub fn (stmt Stmt) compound() string {
+	if extra := stmt.extra {
+		return extra.compound
+	}
+	return ''
+}
+
+// step is what a loop runs at the end of every turn, and empty for a statement
+// that is not a loop.
+@[inline]
+pub fn (stmt Stmt) step() []Stmt {
+	if extra := stmt.extra {
+		return extra.step
+	}
+	return []Stmt{}
+}
+
+// then_body is the branch an if runs when its condition is true, and empty for
+// a statement that is not an if.
+@[inline]
+pub fn (stmt Stmt) then_body() []Stmt {
+	if extra := stmt.extra {
+		return extra.then_body
+	}
+	return []Stmt{}
+}
+
+// else_body is the branch an if runs when its condition is false, and empty
+// when it was not written.
+@[inline]
+pub fn (stmt Stmt) else_body() []Stmt {
+	if extra := stmt.extra {
+		return extra.else_body
+	}
+	return []Stmt{}
 }
 
 @[inline]
@@ -588,7 +685,9 @@ pub fn (stmt Stmt) goto_expr() ?Expr {
 @[inline]
 pub fn (stmt Stmt) asm_text() string {
 	if extra := stmt.extra {
-		return extra.asm_text
+		if assembly := extra.assembly {
+			return assembly.text
+		}
 	}
 	return ''
 }
@@ -596,7 +695,9 @@ pub fn (stmt Stmt) asm_text() string {
 @[inline]
 pub fn (stmt Stmt) asm_spelling() string {
 	if extra := stmt.extra {
-		return extra.asm_spelling
+		if assembly := extra.assembly {
+			return assembly.spelling
+		}
 	}
 	return ''
 }
@@ -604,7 +705,9 @@ pub fn (stmt Stmt) asm_spelling() string {
 @[inline]
 pub fn (stmt Stmt) asm_outputs() int {
 	if extra := stmt.extra {
-		return extra.asm_outputs
+		if assembly := extra.assembly {
+			return assembly.outputs
+		}
 	}
 	return 0
 }
@@ -612,7 +715,9 @@ pub fn (stmt Stmt) asm_outputs() int {
 @[inline]
 pub fn (stmt Stmt) asm_inputs() int {
 	if extra := stmt.extra {
-		return extra.asm_inputs
+		if assembly := extra.assembly {
+			return assembly.inputs
+		}
 	}
 	return 0
 }
@@ -630,25 +735,31 @@ pub:
 @[inline]
 pub fn (stmt Stmt) asm_output_operands() []AsmOperand {
 	if extra := stmt.extra {
-		return extra.asm_output_operands
+		if assembly := extra.assembly {
+			return assembly.output_operands
+		}
 	}
-	return []
+	return []AsmOperand{}
 }
 
 @[inline]
 pub fn (stmt Stmt) asm_input_operands() []AsmOperand {
 	if extra := stmt.extra {
-		return extra.asm_input_operands
+		if assembly := extra.assembly {
+			return assembly.input_operands
+		}
 	}
-	return []
+	return []AsmOperand{}
 }
 
 @[inline]
 pub fn (stmt Stmt) asm_clobbers() []string {
 	if extra := stmt.extra {
-		return extra.asm_clobbers
+		if assembly := extra.assembly {
+			return assembly.clobbers
+		}
 	}
-	return []
+	return []string{}
 }
 
 // cleanup is the function a declaration asked to run on the object when the
@@ -665,7 +776,9 @@ pub fn (stmt Stmt) cleanup() string {
 @[inline]
 pub fn (stmt Stmt) asm_is_goto() bool {
 	if extra := stmt.extra {
-		return extra.asm_is_goto
+		if assembly := extra.assembly {
+			return assembly.is_goto
+		}
 	}
 	return false
 }
@@ -673,16 +786,19 @@ pub fn (stmt Stmt) asm_is_goto() bool {
 @[inline]
 pub fn (stmt Stmt) asm_goto_labels() []string {
 	if extra := stmt.extra {
-		return extra.asm_goto_labels
+		if assembly := extra.assembly {
+			return assembly.goto_labels
+		}
 	}
-	return []
+	return []string{}
 }
 
 // nested_fn is the function a nested_function statement defines, or none for
 // every other statement. It is how a reader gets the definition out without
-// reaching through the extra pointer itself.
+// reaching through the extra pointer itself, and it is the definition the tree
+// holds rather than a copy of it.
 @[inline]
-pub fn (stmt Stmt) nested_fn() ?FnDecl {
+pub fn (stmt Stmt) nested_fn() ?&FnDecl {
 	if extra := stmt.extra {
 		return extra.nested_fn
 	}

@@ -1736,15 +1736,21 @@ fn put_u16(mut output []u8, offset int, value u16) {
 }
 
 fn put_u32(mut output []u8, offset int, value u32) {
-	for shift in [0, 8, 16, 24] {
-		output[offset + shift / 8] = u8((value >> shift) & 0xff)
-	}
+	output[offset] = u8(value & 0xff)
+	output[offset + 1] = u8((value >> 8) & 0xff)
+	output[offset + 2] = u8((value >> 16) & 0xff)
+	output[offset + 3] = u8((value >> 24) & 0xff)
 }
 
 fn put_u64(mut output []u8, offset int, value u64) {
-	for shift in [0, 8, 16, 24, 32, 40, 48, 56] {
-		output[offset + shift / 8] = u8((value >> shift) & 0xff)
-	}
+	output[offset] = u8(value & 0xff)
+	output[offset + 1] = u8((value >> 8) & 0xff)
+	output[offset + 2] = u8((value >> 16) & 0xff)
+	output[offset + 3] = u8((value >> 24) & 0xff)
+	output[offset + 4] = u8((value >> 32) & 0xff)
+	output[offset + 5] = u8((value >> 40) & 0xff)
+	output[offset + 6] = u8((value >> 48) & 0xff)
+	output[offset + 7] = u8((value >> 56) & 0xff)
 }
 
 // align rounds a size up to the next multiple of the alignment.

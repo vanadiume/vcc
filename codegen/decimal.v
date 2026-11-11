@@ -53,7 +53,7 @@ fn (e Emitter) decimal_of(expr ast.Expr) bool {
 // that is not one. A spelling carries its qualifiers, so it is read the way the
 // rest of this back end reads a written type.
 fn (e Emitter) decimal_format_of(written string) ?decimal.Format {
-	typ := types.from_words(written.split(' ')) or { return none }
+	typ := types.from_spelling(written) or { return none }
 	if !typ.kind.is_decimal() {
 		return none
 	}

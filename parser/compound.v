@@ -79,6 +79,15 @@ fn (mut p Parser) build_compound_literal(spec DeclSpec, d Declarator, at tokeniz
 	}
 	name := p.compound_name()
 	target, stmts := p.compound_literal_object(name, spec, d, at, list)
+	// The stores the object is initialized with are copied into the list of the
+	// statement the literal is written in, and the list they were built in is
+	// this reader's own: nothing else keeps it, so the buffer it holds is freed
+	// here. It is the whole of what the literals in a program allocated, 70 MB
+	// of the compiler's own generated C, and with no collector a list nobody
+	// frees stays.
+	defer {
+		unsafe { stmts.free() }
+	}
 	if p.compound_unstable > 0 && !brace_list_is_constant(list.elements) {
 		// The literal is written where the statement may evaluate it more than
 		// once and the initializer is not constant, so 6.5.2.5p7's "the object
@@ -133,7 +142,7 @@ fn (mut p Parser) cast_to_union(at tokenize.Token, spec DeclSpec, d Declarator, 
 	union_type := p.tagged_type(destination)
 	source := types.unqualified(p.value_type(operand))
 	mut member := ''
-	for candidate in union_type.members {
+	for candidate in union_type.members() {
 		if types.unqualified(candidate.typ).compatible(source) {
 			member = candidate.name
 			break
@@ -198,26 +207,36 @@ fn (mut p Parser) compound_literal_object(name string, spec DeclSpec, d Declarat
 	p.declare_name(name, target, at, false)
 	stride := declaration_stride(target, p.representation)
 	bytes := p.aggregate_bytes(declared)
-	mut stmts := []ast.Stmt{}
-	stmts << ast.Stmt{
-		kind:       .var_decl
-		decl_name:  name
-		decl_type:  p.spelling_of(spec, d.pointer_count())
-		decl_count: count
-		extra:      &ast.StmtExtra{
-			decl_stride: stride
-			bytes:       bytes
-		}
-		line:       at.line
-		col:        at.col
-	}
 	array := target.kind == .array
 	element := if array { target.element() or { target } } else { target }
 	element_width := p.representation.size_of(element) or { 0 }
-	mut writes := []BraceWrite{}
+	mut writes := brace_writes()
+	defer {
+		unsafe { writes.free() }
+	}
 	p.fill_brace(target, list.elements, 0, 0, mut writes)
-	mut leaves := []BraceWrite{}
+	mut leaves := brace_writes()
+	defer {
+		unsafe { leaves.free() }
+	}
 	p.collect_leaves(target, 0, mut leaves)
+	// The declaration comes first and a store follows for every scalar leaf and
+	// every value the list wrote, so the list is that long: it is sized once,
+	// which is what keeps it from doubling its way there. A growth copies the
+	// stores made so far, and with no collector the copy it grew from stays.
+	mut stmts := []ast.Stmt{cap: leaves.len + writes.len + 1}
+	stmts << ast.Stmt{
+		kind:  .var_decl
+		extra: &ast.StmtExtra{
+			decl_name:   name
+			decl_type:   p.spelling_of(spec, d.pointer_count())
+			decl_count:  count
+			decl_stride: stride
+			bytes:       bytes
+		}
+		line:  at.line
+		col:   at.col
+	}
 	for leaf in leaves {
 		stmts << p.store_a_leaf(name, at, leaf, zero_initializer(at), array, bytes, element_width,
 			target)

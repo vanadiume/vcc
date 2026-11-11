@@ -63,7 +63,7 @@ ENV PATH=/opt/v:$PATH
 WORKDIR /src
 COPY . /src
 
-RUN v -prod -o /vcc . \
+RUN v run tools/build.vsh build --prod -o /vcc \
  && objcopy --remove-section=.stab --remove-section=.stabstr /vcc
 
 # The artifact is the compiler: one file in the image, with no build tooling

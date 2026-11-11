@@ -169,7 +169,7 @@ fn test_a_cleanup_attribute_names_the_function_the_block_runs() {
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[1].body
 	assert body[0].kind == .var_decl
-	assert body[0].decl_name == 'x'
+	assert body[0].decl_name() == 'x'
 	assert body[0].cleanup() == 'mark'
 }
 

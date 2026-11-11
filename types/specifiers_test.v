@@ -146,6 +146,78 @@ fn test_from_words_answers_the_type_and_not_only_the_kind() {
 	assert from_words([]) == none
 }
 
+// from_spelling answers what from_words answers for the same words, because the two
+// read one table: codegen asks about a spelling and the parser about a run of words,
+// and a type has to be the same type whichever way the question arrives. The empty
+// pieces a split produces are part of the table too, so a spelling with two spaces in
+// it is refused by both.
+fn test_from_spelling_answers_what_the_word_list_answers() {
+	for written in [
+		'void',
+		'_Bool',
+		'char',
+		'signed char',
+		'unsigned char',
+		'short',
+		'short int',
+		'unsigned short',
+		'unsigned short int',
+		'int',
+		'signed',
+		'unsigned',
+		'unsigned int',
+		'long',
+		'long int',
+		'long long',
+		'unsigned long',
+		'unsigned long long',
+		'float',
+		'double',
+		'long double',
+		'float _Complex',
+		'double _Complex',
+		'_Complex',
+		'long double _Complex',
+		'__int128',
+		'signed __int128',
+		'unsigned __int128',
+		'__float128',
+		'_Decimal32',
+		'_Decimal64',
+		'_Decimal128',
+		'_BitInt(128)',
+		'signed _BitInt(128)',
+		'unsigned _BitInt(128)',
+		'_BitInt(65)',
+		'_Imaginary',
+		'nonsense',
+		'const int',
+		'char *',
+		'long float',
+		'unsigned void',
+		'long long long',
+		'int int',
+		'double double',
+		'signed signed',
+		'unsigned long _Complex',
+		'',
+		' int',
+		'int ',
+		'int  int',
+		'int   ',
+	] {
+		from_list := from_words(written.split(' ')) or {
+			assert from_spelling(written) == none, written
+			continue
+		}
+		from_string := from_spelling(written) or {
+			assert false, 'from_spelling refused `${written}`, which from_words read as ${from_list.describe()}'
+			continue
+		}
+		assert from_string.describe() == from_list.describe(), written
+	}
+}
+
 // The width of a _BitInt is the type, so the reader answers the 128-bit type for
 // the one width this compiler has a value of that size for, and none for every
 // other width. Measured on gcc 16.2.1: `_BitInt(65)` occupies sixteen bytes and

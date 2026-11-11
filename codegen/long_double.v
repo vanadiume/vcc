@@ -43,7 +43,7 @@ fn (e Emitter) writes_a_long_double(written string) bool {
 	if written == 'long double' {
 		return true
 	}
-	typ := types.from_words(written.split(' ')) or { return false }
+	typ := types.from_spelling(written) or { return false }
 	return typ.kind == .float128
 }
 

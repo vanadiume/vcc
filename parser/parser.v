@@ -152,6 +152,11 @@ mut:
 	// definition of a declared name as the static one against the declaration's
 	// own linkage and refuses the pair, and so does this reader.
 	nested_declared map[string]tokenize.Token
+	// nested_owned says this block's nested_names is the block's own copy and not
+	// the one it was handed. A block that declares no nested function never
+	// copies them, which is every block but a handful: copying the two maps per
+	// block was 109 MB of the compiler's own generated C that nothing freed.
+	nested_owned bool
 	// nested_used is every nested symbol already handed out, so two nested
 	// functions may share a written name in different blocks without landing on
 	// one symbol: a name the file repeats gets a number appended to it.
@@ -446,16 +451,22 @@ fn (mut p Parser) parse_block() ![]ast.Stmt {
 	// That is also what lets two blocks written one after another each define a
 	// nested function of one name: the second is a name of its own, and the
 	// symbol it is emitted under is numbered.
-	outer_names := p.nested_names.clone()
-	outer_declared := p.nested_declared.clone()
-	p.nested_names = outer_names.clone()
-	p.nested_declared = outer_declared.clone()
+	// The names the block starts with are the ones it puts back when it ends. The
+	// block does not copy them: a block that declares no nested function has
+	// nothing to add, and one that declares one calls own_nested before it writes
+	// the name, so the copy is made by the block that needs it.
+	outer_names := p.nested_names
+	outer_declared := p.nested_declared
+	outer_owned := p.nested_owned
+	p.nested_owned = false
 	defer {
 		p.scopes.leave()
 		p.nested_names = outer_names
 		p.nested_declared = outer_declared
+		p.nested_owned = outer_owned
 	}
-	mut stmts := []ast.Stmt{}
+	mut runs := [][]ast.Stmt{}
+	mut count := 0
 	for {
 		t := p.peek()
 		if t.kind == .eof {
@@ -480,44 +491,79 @@ fn (mut p Parser) parse_block() ![]ast.Stmt {
 		// A statement that stopped on a region which never closed has already
 		// been reported where the region opened, and the closing brace this
 		// loop is waiting for is gone with it.
-		fresh := p.parse_statement() or { break }
-		stmts << p.with_declared_types(fresh)
+		mut fresh := p.parse_statement() or { break }
+		p.resolve_declared_types(mut fresh)
+		// The list the statement came back in is kept until the block ends,
+		// because the block's own list is built then: a list grown one
+		// statement at a time doubles its way to the count, and the buffer it
+		// never uses is about what it holds. The header is copied where it
+		// stands: appending the value as it is would clone the list and every
+		// statement in it.
+		unsafe {
+			runs.push_many(&fresh, 1)
+		}
+		count += fresh.len
 	}
+	// The block's list, sized to the statements it turned out to hold. Every
+	// statement is copied into it once, and the list it was read into is freed.
+	mut stmts := []ast.Stmt{cap: count}
+	for run in runs {
+		stmts << run
+		unsafe { run.free() }
+	}
+	unsafe { runs.free() }
 	return stmts
 }
 
-// with_declared_types gives every declaration among the statements of a block the
-// type its declaration resolved to, taken from the symbol table the declaration
-// was recorded in.
-fn (p Parser) with_declared_types(stmts []ast.Stmt) []ast.Stmt {
-	mut out := []ast.Stmt{cap: stmts.len}
-	for stmt in stmts {
-		if stmt.kind == .var_decl {
-			if symbol := p.scopes.lookup(stmt.decl_name) {
-				// What the declaration resolved to is the symbol's type. A
-				// statement that already carried an extra part keeps it, the
-				// stride and the width a compound declaration worked out among
-				// the rest, because this pass is about the type and nothing
-				// else.
-				mut extra := &ast.StmtExtra{
-					resolved: symbol.typ
-				}
-				if source := stmt.extra {
-					extra = &ast.StmtExtra{
-						...*source
-						resolved: symbol.typ
-					}
-				}
-				out << ast.Stmt{
-					...stmt
-					extra: extra
-				}
-				continue
+// own_nested makes the nested-function names of this block its own copy, before
+// the block writes one. The maps a block was handed belong to the block around
+// it, and a name this block declares must not be visible after it ends.
+fn (mut p Parser) own_nested() {
+	if p.nested_owned {
+		return
+	}
+	p.nested_names = p.nested_names.clone()
+	p.nested_declared = p.nested_declared.clone()
+	p.nested_owned = true
+}
+
+// resolve_declared_types gives every declaration among the statements of a block
+// the type its declaration resolved to, taken from the symbol table the
+// declaration was recorded in.
+//
+// The statements are written back where they stand. A statement list handed to
+// this reader is a block's own and the block is the first thing to hold it, so
+// the element is nobody else's to keep; writing it in place is what keeps a
+// statement from being copied once into a list of the block's own. That list is
+// built once, at the closing brace, from the lists the statements came back in:
+// see parse_block.
+fn (p Parser) resolve_declared_types(mut stmts []ast.Stmt) {
+	for i in 0 .. stmts.len {
+		stmt := stmts[i]
+		if stmt.kind != .var_decl {
+			continue
+		}
+		symbol := p.scopes.lookup(stmt.decl_name()) or { continue }
+		// What the declaration resolved to is the symbol's type. A statement
+		// that already carries an extra part has the type written into that
+		// one, which is the only reader of it: the node was built by this
+		// statement's reader and the block is the first thing to hold it, so
+		// the extra part is nobody else's to keep. A second one would be the
+		// whole of what the first holds, the stride and the width a compound
+		// declaration worked out among the rest, for one field.
+		if source := stmt.extra {
+			unsafe {
+				source.resolved = symbol.typ
+			}
+			continue
+		}
+		stmts[i] = ast.Stmt{
+			...stmt
+			extra: &ast.StmtExtra{
+				resolved: symbol.typ
 			}
 		}
-		out << stmt
 	}
-	return out
 }
 
 // report_pending_bounds answers each file-scope bound that named something the
@@ -584,7 +630,7 @@ fn (mut p Parser) check_undeclared_statements(stmts []ast.Stmt, mut reported map
 		if expr := stmt.expr {
 			p.check_undeclared_expression(expr, mut reported)
 		}
-		if init := stmt.init {
+		if init := stmt.initializer() {
 			p.check_undeclared_expression(init, mut reported)
 		}
 		// A variable-length array's size expression carries the names its
@@ -607,9 +653,9 @@ fn (mut p Parser) check_undeclared_statements(stmts []ast.Stmt, mut reported map
 			p.check_undeclared_expression(target, mut reported)
 		}
 		p.check_undeclared_statements(stmt.body, mut reported)
-		p.check_undeclared_statements(stmt.then_body, mut reported)
-		p.check_undeclared_statements(stmt.else_body, mut reported)
-		p.check_undeclared_statements(stmt.step, mut reported)
+		p.check_undeclared_statements(stmt.then_body(), mut reported)
+		p.check_undeclared_statements(stmt.else_body(), mut reported)
+		p.check_undeclared_statements(stmt.step(), mut reported)
 	}
 }
 
@@ -1421,7 +1467,7 @@ fn (mut p Parser) parse_member(base string, object ?ast.Expr, aggregate types.Ty
 		return error('not an aggregate')
 	}
 	mut at := -1
-	for i, member in tagged.members {
+	for i, member in tagged.members() {
 		if member.name == name.text {
 			at = i
 			break
@@ -1435,7 +1481,7 @@ fn (mut p Parser) parse_member(base string, object ?ast.Expr, aggregate types.Ty
 		p.error_at(name, 'unsupported: the members of ${tagged.describe()} are not a layout this compiler knows, so the member ${name.text} cannot be read')
 		return error('no layout')
 	}
-	member := tagged.members[at]
+	member := tagged.members()[at]
 	return &ast.Field{
 		name:            base
 		base:            object
@@ -1473,7 +1519,7 @@ fn (mut p Parser) parse_member(base string, object ?ast.Expr, aggregate types.Ty
 fn (p Parser) tagged_type(aggregate types.Type) types.Type {
 	mut answered := aggregate
 	p.complete_parts(mut answered)
-	if answered.kind !in [types.Kind.struct_, .union_] || answered.tag == ''
+	if answered.kind !in [types.Kind.struct_, .union_] || answered.tag() == ''
 		|| answered.is_complete() {
 		return answered
 	}
@@ -1507,12 +1553,18 @@ fn (p Parser) complete_parts(mut t types.Type) {
 			if t.base != unsafe { nil } {
 				p.complete_parts(mut *t.base)
 			}
-			for i in 0 .. t.params.len {
-				p.complete_parts(mut t.params[i].typ)
+			// The list is the type's own and every copy of the type reads it,
+			// so an element completed here is completed for all of them. It
+			// has to be reached through a variable: an element of a list a
+			// call answered with is not a place a reference can be taken to,
+			// and what is written through it is a copy nobody keeps.
+			mut params := t.params()
+			for i in 0 .. params.len {
+				p.complete_parts(mut params[i].typ)
 			}
 		}
 		.struct_, .union_ {
-			if t.tag == '' || t.is_complete() {
+			if t.tag() == '' || t.is_complete() {
 				return
 			}
 			found := p.scopes.lookup_tag(types.unqualified(t).describe()) or { return }
@@ -3355,7 +3407,7 @@ fn (mut p Parser) checked_arguments(signature types.Type, mut args []ast.Expr, a
 	if !answered.prototyped {
 		return answered.returns() or { types.Type{} }
 	}
-	parameters := answered.params
+	parameters := answered.params()
 	if !answered.variadic && parameters.len != args.len {
 		p.error_at(at, 'the call to ${what} passes ${args.len} argument(s), and the declaration of ${what} names ${parameters.len} argument(s)')
 	}

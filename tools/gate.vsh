@@ -26,6 +26,11 @@ import os
 
 const c_source_extensions = ['.c', '.h', '.cc', '.cpp', '.hpp', '.S', '.s']
 
+// Both builds make the same compiler the tree builds anywhere else: no garbage
+// collector, because every stage frees what it allocated. The production build
+// takes it too, which is what the image ships.
+const gc_flag = '-gc none'
+
 // The directories that may hold C, as input to the compiler rather than as part
 // of it: the corpus under compliance/, one program per fixed bug under
 // regression/, and the recorded-output programs under goldens/.
@@ -315,7 +320,7 @@ fn is_c_input_directory(file string, root string) bool {
 
 fn check_build(root string, _ Selection) []string {
 	binary := os.join_path(os.temp_dir(), 'vcc-gate-${os.getpid()}')
-	result := run(root, 'v -o ${os.quoted_path(binary)} .')
+	result := run(root, 'v ${gc_flag} -o ${os.quoted_path(binary)} .')
 	os.rm(binary) or {}
 	if result.exit_code != 0 {
 		return ['the compiler did not build: ${result.output.trim_space()}']
@@ -333,7 +338,7 @@ fn check_build(root string, _ Selection) []string {
 // directory and removed here, so a gate run leaves nothing in the tree.
 fn check_prod(root string, _ Selection) []string {
 	binary := os.join_path(os.temp_dir(), 'vcc-gate-prod-${os.getpid()}')
-	result := run(root, 'v -prod -o ${os.quoted_path(binary)} .')
+	result := run(root, 'v -prod ${gc_flag} -o ${os.quoted_path(binary)} .')
 	os.rm(binary) or {}
 	if result.exit_code != 0 {
 		return ['the compiler did not build with -prod: ${result.output.trim_space()}']

@@ -93,8 +93,8 @@ fn dump_statements(body []ast.Stmt, depth int, mut out []string) {
 				out << '${indent}expression statement at ${stmt.line}:${stmt.col}'
 			}
 			.var_decl {
-				elements := if stmt.decl_count > 0 { '[${stmt.decl_count}]' } else { '' }
-				out << '${indent}declaration of ${stmt.decl_type} ${stmt.decl_name}${elements} at ${stmt.line}:${stmt.col}${typed(stmt.resolved())}'
+				elements := if stmt.decl_count() > 0 { '[${stmt.decl_count()}]' } else { '' }
+				out << '${indent}declaration of ${stmt.decl_type()} ${stmt.decl_name()}${elements} at ${stmt.line}:${stmt.col}${typed(stmt.resolved())}'
 			}
 			.assign {
 				if stmt.deref() != none {
@@ -168,7 +168,7 @@ fn dump_statements(body []ast.Stmt, depth int, mut out []string) {
 			out << '${indent}through'
 			dump_expression(deref, depth + 1, mut out)
 		}
-		if init := stmt.init {
+		if init := stmt.initializer() {
 			out << '${indent}initializer'
 			dump_expression(init, depth + 1, mut out)
 		}
@@ -177,13 +177,13 @@ fn dump_statements(body []ast.Stmt, depth int, mut out []string) {
 			dump_expression(cond, depth + 1, mut out)
 		}
 		dump_statements(stmt.body, depth + 1, mut out)
-		dump_statements(stmt.then_body, depth + 1, mut out)
-		dump_statements(stmt.else_body, depth + 1, mut out)
-		if stmt.step.len > 0 {
+		dump_statements(stmt.then_body(), depth + 1, mut out)
+		dump_statements(stmt.else_body(), depth + 1, mut out)
+		if stmt.step().len > 0 {
 			// The step of a loop is written under its own heading, because it
 			// is a part of the loop and not a part of the body.
 			out << '${indent}step'
-			dump_statements(stmt.step, depth + 1, mut out)
+			dump_statements(stmt.step(), depth + 1, mut out)
 		}
 	}
 }

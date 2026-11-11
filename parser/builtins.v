@@ -298,7 +298,7 @@ fn (mut p Parser) parse_member_offset(declared types.Type) !int {
 			return error('not an aggregate')
 		}
 		mut at := -1
-		for i, member in aggregate.members {
+		for i, member in aggregate.members() {
 			if member.name == name.text {
 				at = i
 				break
@@ -308,7 +308,7 @@ fn (mut p Parser) parse_member_offset(declared types.Type) !int {
 			p.error_at(name, 'unsupported: ${aggregate.describe()} has no member called ${name.text}')
 			return error('unknown member')
 		}
-		member := aggregate.members[at]
+		member := aggregate.members()[at]
 		if member.bitfield {
 			p.error_at(name, 'unsupported: ${path} is a bitfield, and a bitfield sits in bits inside a unit rather than at a byte offset')
 			return error('bitfield')

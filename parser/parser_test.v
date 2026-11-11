@@ -76,10 +76,10 @@ fn test_an_object_of_the_128_bit_type_is_read_as_storage() {
 	signed_up := parsed('int main(void) { __int128 v = 5; return 0; }')
 	assert signed_up.diagnostics.len == 0
 	body := signed_up.unit.decls[0].body
-	assert body[0].decl_type == '__int128'
+	assert body[0].decl_type() == '__int128'
 	unsigned_one := parsed('int main(void) { unsigned __int128 w = 5; return 0; }')
 	assert unsigned_one.diagnostics.len == 0
-	assert unsigned_one.unit.decls[0].body[0].decl_type == 'unsigned __int128'
+	assert unsigned_one.unit.decls[0].body[0].decl_type() == 'unsigned __int128'
 }
 
 // The four shapes a function can write the type in: a prototype, a definition
@@ -384,9 +384,9 @@ fn test_typeof_names_the_type_of_a_value_and_of_a_type() {
 	result := parsed('int main(void) { int x = 3; typeof(x) y = 4; __typeof__(int) z = 5; return x + y + z; }')
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
-	assert body[1].decl_type == 'int'
+	assert body[1].decl_type() == 'int'
 	assert body[1].resolved().same(types.int_type())
-	assert body[2].decl_type == 'int'
+	assert body[2].decl_type() == 'int'
 	assert body[2].resolved().same(types.int_type())
 }
 
@@ -398,8 +398,8 @@ fn test_typeof_of_a_derived_expression_is_the_type_of_that_expression() {
 	result := parsed('struct S { int a; char b; }; int main(void) { struct S s; int *p = &s.a; typeof(*p) v = 1; typeof(s.b) c = 2; return v + c; }')
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
-	assert body[2].decl_type == 'int'
-	assert body[3].decl_type == 'char'
+	assert body[2].decl_type() == 'int'
+	assert body[3].decl_type() == 'char'
 }
 
 // A pointer written through typeof carries its stars in the type and not in the
@@ -408,7 +408,7 @@ fn test_typeof_carries_the_pointer_the_operand_had() {
 	result := parsed('int main(void) { int x = 3; typeof(&x) p = &x; return *p; }')
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
-	assert body[1].decl_type == 'int *'
+	assert body[1].decl_type() == 'int *'
 	assert body[1].resolved().kind == .pointer
 }
 
@@ -418,7 +418,7 @@ fn test_typeof_over_a_type_name_resolves_through_a_typedef() {
 	result := parsed('typedef int Money; int main(void) { __typeof__(Money) w = 2; return w; }')
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
-	assert body[0].decl_type == 'int'
+	assert body[0].decl_type() == 'int'
 	assert body[0].resolved().same(types.int_type())
 }
 
@@ -431,7 +431,7 @@ fn test_typeof_unqual_drops_the_qualifiers_the_operand_had() {
 	result := parsed('int main(void) { const int x = 3; typeof_unqual(x) y = x; y = 4; return y; }')
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
-	assert body[1].decl_type == 'int'
+	assert body[1].decl_type() == 'int'
 	assert !body[1].resolved().is_const()
 }
 
@@ -651,10 +651,10 @@ fn test_a_declaration_inside_a_body_is_storage_in_the_frame() {
 	body := result.unit.decls[0].body
 	assert body.len == 2
 	assert body[0].kind == .var_decl
-	assert body[0].decl_name == 'x'
-	assert body[0].decl_type == 'int'
+	assert body[0].decl_name() == 'x'
+	assert body[0].decl_type() == 'int'
 	mut initialized := false
-	if _ := body[0].init {
+	if _ := body[0].initializer() {
 		initialized = true
 	}
 	assert !initialized
@@ -665,7 +665,7 @@ fn test_a_declaration_keeps_its_initializer() {
 	result := parsed('int main() { int x = 5; return x; }')
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
-	init := body[0].init or {
+	init := body[0].initializer() or {
 		assert false
 		return
 	}
@@ -684,9 +684,9 @@ fn test_a_pointer_declaration_keeps_the_stars_and_the_literal() {
 	assert result.diagnostics.len == 0
 	decl := result.unit.decls[0].body[0]
 	assert decl.kind == .var_decl
-	assert decl.decl_name == 's'
-	assert decl.decl_type == 'char *'
-	init := decl.init or {
+	assert decl.decl_name() == 's'
+	assert decl.decl_type() == 'char *'
+	init := decl.initializer() or {
 		assert false
 		return
 	}
@@ -702,9 +702,9 @@ fn test_a_declaration_may_name_several_objects() {
 	body := result.unit.decls[0].body
 	assert body.len == 3
 	assert body[0].kind == .var_decl
-	assert body[0].decl_name == 'a'
+	assert body[0].decl_name() == 'a'
 	assert body[1].kind == .var_decl
-	assert body[1].decl_name == 'b'
+	assert body[1].decl_name() == 'b'
 	assert body[2].kind == .return_stmt
 }
 
@@ -731,17 +731,17 @@ fn test_a_local_pointer_to_a_tag_with_no_body_is_accepted() {
 	assert direct.diagnostics.len == 0
 	decl := direct.unit.decls[0].body[0]
 	assert decl.kind == .var_decl
-	assert decl.decl_type == 'struct S *'
+	assert decl.decl_type() == 'struct S *'
 
 	// The typedef spelling resolves to the tag, and a pointer written through it
 	// is accepted for the same reason. A union tag with no body is the same
 	// shape.
 	aliased := parsed('struct S; typedef struct S T; int main() { T *p = 0; return p == 0; }')
 	assert aliased.diagnostics.len == 0
-	assert aliased.unit.decls[0].body[0].decl_type == 'struct S *'
+	assert aliased.unit.decls[0].body[0].decl_type() == 'struct S *'
 	tagged := parsed('union U; int main() { union U *p = 0; return p == 0; }')
 	assert tagged.diagnostics.len == 0
-	assert tagged.unit.decls[0].body[0].decl_type == 'union U *'
+	assert tagged.unit.decls[0].body[0].decl_type() == 'union U *'
 }
 
 // A typedef written inside a body names a type and declares no object, so a tag
@@ -759,10 +759,10 @@ fn test_a_local_typedef_of_a_struct_read_before_its_body_sees_the_definition() {
 	// return comes last.
 	assert body.len == 4
 	assert body[0].kind == .var_decl
-	assert body[0].decl_name == 'u'
-	assert body[0].decl_type == 'struct U'
+	assert body[0].decl_name() == 'u'
+	assert body[0].decl_type() == 'struct U'
 	assert body[0].resolved().is_complete()
-	assert body[0].resolved().members.len == 2
+	assert body[0].resolved().members().len == 2
 	assert body[1].kind == .assign
 	assert body[3].kind == .return_stmt
 }
@@ -905,9 +905,9 @@ fn test_a_for_init_and_update_read_a_comma() {
 	assert head[1].kind == .assign
 	loop := head[2]
 	assert loop.kind == .while_stmt
-	assert loop.step.len == 2
-	assert loop.step[0].kind == .expr_stmt
-	assert loop.step[1].kind == .expr_stmt
+	assert loop.step().len == 2
+	assert loop.step()[0].kind == .expr_stmt
+	assert loop.step()[1].kind == .expr_stmt
 }
 
 // A for's condition is an expression, so a comma there is the comma operator:
@@ -980,7 +980,7 @@ fn test_a_comma_after_an_assignment_is_one_statement() {
 fn test_a_statement_expression_keeps_its_body_and_its_value_apart() {
 	result := parsed('int main() { int x = ({ int a = 4; a * 2; }); return x; }')
 	assert result.diagnostics.len == 0
-	init := result.unit.decls[0].body[0].init or {
+	init := result.unit.decls[0].body[0].initializer() or {
 		assert false
 		return
 	}
@@ -1004,7 +1004,7 @@ fn test_a_statement_expression_keeps_its_body_and_its_value_apart() {
 fn test_a_statement_expression_ending_in_an_assignment_is_worth_its_value() {
 	result := parsed('int main() { int a = 0; int x = ({ a = 5; }); return x; }')
 	assert result.diagnostics.len == 0
-	init := result.unit.decls[0].body[1].init or {
+	init := result.unit.decls[0].body[1].initializer() or {
 		assert false
 		return
 	}
@@ -1196,7 +1196,7 @@ fn test_a_compound_assignment_through_a_dereference_is_the_assignment_it_means()
 	body := result.unit.decls[0].body
 	statement := body[2]
 	assert statement.kind == .assign
-	assert statement.compound == '+'
+	assert statement.compound() == '+'
 	assert statement.deref() != none
 	value := statement.expr or {
 		assert false
@@ -1218,7 +1218,7 @@ fn test_a_compound_assignment_to_a_member_is_the_assignment_it_means() {
 	assert direct.diagnostics.len == 0
 	statement := direct.unit.decls[0].body[1]
 	assert statement.kind == .assign
-	assert statement.compound == '+'
+	assert statement.compound() == '+'
 	assert statement.field != none
 	value := statement.expr or {
 		assert false
@@ -1229,7 +1229,7 @@ fn test_a_compound_assignment_to_a_member_is_the_assignment_it_means() {
 	arrow := parsed('struct S { int a; };\nint main(void) { struct S s; struct S *p = &s; p->a |= 1; return 0; }')
 	assert arrow.diagnostics.len == 0
 	through := arrow.unit.decls[0].body[2]
-	assert through.compound == '|'
+	assert through.compound() == '|'
 	assert through.field != none
 }
 
@@ -1492,7 +1492,7 @@ fn test_a_complement_is_a_unary_operator() {
 	// pointer, and `x & 1` reads as the bitwise and.
 	address := parsed('int main(void) { int x = 1; int *p = &x; return p != 0; }')
 	assert address.diagnostics.len == 0
-	init := address.unit.decls[0].body[1].init or {
+	init := address.unit.decls[0].body[1].initializer() or {
 		assert false
 		return
 	}
@@ -1548,10 +1548,10 @@ fn test_an_if_keeps_its_condition_and_both_branches() {
 	}
 	assert cond is ast.Binary
 	assert (cond as ast.Binary).op == '<'
-	assert body[1].then_body.len == 1
-	assert body[1].then_body[0].kind == .return_stmt
-	assert body[1].else_body.len == 1
-	assert body[1].else_body[0].kind == .return_stmt
+	assert body[1].then_body().len == 1
+	assert body[1].then_body()[0].kind == .return_stmt
+	assert body[1].else_body().len == 1
+	assert body[1].else_body()[0].kind == .return_stmt
 }
 
 fn test_an_if_without_an_else_leaves_the_else_empty() {
@@ -1559,8 +1559,8 @@ fn test_an_if_without_an_else_leaves_the_else_empty() {
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
 	assert body[0].kind == .if_stmt
-	assert body[0].then_body.len == 1
-	assert body[0].else_body.len == 0
+	assert body[0].then_body().len == 1
+	assert body[0].else_body().len == 0
 	assert body[1].kind == .return_stmt
 }
 
@@ -1569,10 +1569,10 @@ fn test_an_else_if_is_an_if_in_the_else() {
 	assert result.diagnostics.len == 0
 	first := result.unit.decls[0].body[0]
 	assert first.kind == .if_stmt
-	assert first.else_body.len == 1
-	assert first.else_body[0].kind == .if_stmt
-	assert first.else_body[0].else_body.len == 1
-	assert first.else_body[0].else_body[0].kind == .return_stmt
+	assert first.else_body().len == 1
+	assert first.else_body()[0].kind == .if_stmt
+	assert first.else_body()[0].else_body().len == 1
+	assert first.else_body()[0].else_body()[0].kind == .return_stmt
 }
 
 // A branch written as a block is a block statement, which is the shape a block
@@ -1581,10 +1581,10 @@ fn test_a_branch_that_is_a_block_is_a_block_statement() {
 	result := parsed('int x;\nint main() { if (x) { return 1; } return 0; }')
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
-	assert body[0].then_body.len == 1
-	assert body[0].then_body[0].kind == .block
-	assert body[0].then_body[0].body.len == 1
-	assert body[0].then_body[0].body[0].kind == .return_stmt
+	assert body[0].then_body().len == 1
+	assert body[0].then_body()[0].kind == .block
+	assert body[0].then_body()[0].body.len == 1
+	assert body[0].then_body()[0].body[0].kind == .return_stmt
 }
 
 fn test_a_condition_may_be_a_call() {
@@ -1632,7 +1632,7 @@ fn test_break_and_continue_are_statements() {
 	inner := loop.body[0]
 	assert inner.kind == .block
 	assert inner.body[0].kind == .if_stmt
-	assert inner.body[0].then_body[0].kind == .break_stmt
+	assert inner.body[0].then_body()[0].kind == .break_stmt
 	assert inner.body[1].kind == .continue_stmt
 }
 
@@ -1699,7 +1699,7 @@ fn test_a_for_is_a_block_holding_a_while() {
 	assert spelled.body.len == 1
 	assert spelled.body[0].kind == .assign
 	assert spelled.body[0].target == 'x'
-	step := spelled.step[0]
+	step := spelled.step()[0]
 	assert step.kind == .assign
 	assert step.target == 'i'
 	value := step.expr or {
@@ -1717,15 +1717,15 @@ fn test_a_for_may_declare_its_counter() {
 	assert loop.kind == .block
 	assert loop.body.len == 2
 	assert loop.body[0].kind == .var_decl
-	assert loop.body[0].decl_name == 'i'
+	assert loop.body[0].decl_name() == 'i'
 	spelled := loop.body[1]
 	assert spelled.kind == .while_stmt
 	// The body was the empty statement, which is not kept, so all the loop runs
 	// is the step.
 	assert spelled.body.len == 0
-	assert spelled.step.len == 1
-	assert spelled.step[0].kind == .assign
-	assert spelled.step[0].target == 'i'
+	assert spelled.step().len == 1
+	assert spelled.step()[0].kind == .assign
+	assert spelled.step()[0].target == 'i'
 }
 
 // A loop with no condition runs until a break. The language says a missing
@@ -1766,10 +1766,10 @@ fn test_a_for_may_be_the_body_of_another_for() {
 	assert inner.body[1].kind == .while_stmt
 	// Each loop keeps its own step: the inner one advances j and the outer one
 	// advances i.
-	assert inner.body[1].step.len == 1
-	assert inner.body[1].step[0].target == 'j'
-	assert spelled.step.len == 1
-	assert spelled.step[0].target == 'i'
+	assert inner.body[1].step().len == 1
+	assert inner.body[1].step()[0].target == 'j'
+	assert spelled.step().len == 1
+	assert spelled.step()[0].target == 'i'
 }
 
 fn test_an_unterminated_block_is_reported_once() {
@@ -1800,8 +1800,8 @@ fn test_a_for_keeps_its_step_out_of_its_body() {
 	assert loop.body.len == 1
 	assert loop.body[0].kind == .block
 	assert loop.body[0].body[0].kind == .assign
-	assert loop.step.len == 1
-	assert loop.step[0].kind == .assign
+	assert loop.step().len == 1
+	assert loop.step()[0].kind == .assign
 }
 
 // An array in a body is storage with a size, and the size is a number by the
@@ -1813,12 +1813,12 @@ fn test_an_array_declaration_keeps_its_size() {
 	body := result.unit.decls[0].body
 	assert body.len == 3
 	assert body[0].kind == .var_decl
-	assert body[0].decl_type == 'char'
-	assert body[0].decl_name == 'buf'
-	assert body[0].decl_count == 16
-	assert body[1].decl_type == 'int'
-	assert body[1].decl_count == 4
-	assert body[2].decl_count == 0
+	assert body[0].decl_type() == 'char'
+	assert body[0].decl_name() == 'buf'
+	assert body[0].decl_count() == 16
+	assert body[1].decl_type() == 'int'
+	assert body[1].decl_count() == 4
+	assert body[2].decl_count() == 0
 }
 
 fn test_an_element_of_an_array_is_read_and_written() {
@@ -1833,7 +1833,7 @@ fn test_an_element_of_an_array_is_read_and_written() {
 	}
 	assert index is ast.IntLit
 	assert (index as ast.IntLit).value == 0
-	init := body[2].init or {
+	init := body[2].initializer() or {
 		assert false
 		return
 	}
@@ -1996,8 +1996,8 @@ fn test_an_increment_is_read_as_the_step_of_a_for() {
 	assert for_block.body.len == 2
 	loop := for_block.body[1]
 	assert loop.kind == .while_stmt
-	assert loop.step.len == 1
-	step := loop.step[0]
+	assert loop.step().len == 1
+	step := loop.step()[0]
 	assert step.kind == .expr_stmt
 	expr := step.expr or {
 		assert false
@@ -2100,7 +2100,7 @@ fn test_an_increment_of_an_undeclared_name_is_reported_as_a_missing_declaration(
 fn test_a_conditional_carries_the_type_its_two_arms_share() {
 	ints := parsed('int main(void) { int x = 1 ? 2 : 3; return 0; }')
 	assert ints.diagnostics.len == 0
-	init := ints.unit.decls[0].body[0].init or {
+	init := ints.unit.decls[0].body[0].initializer() or {
 		assert false
 		return
 	}
@@ -2532,7 +2532,7 @@ fn test_a_cast_of_a_constant_is_an_integer_constant_expression() {
 fn test_the_real_part_of_a_real_value_is_the_value() {
 	result := parsed('int main(void) { double x = 3.0; double y = __real__ x; return 0; }')
 	assert result.diagnostics.len == 0
-	init := result.unit.decls[0].body[1].init or {
+	init := result.unit.decls[0].body[1].initializer() or {
 		assert false
 		return
 	}
@@ -2570,7 +2570,7 @@ fn test_the_imaginary_part_of_a_real_value_is_a_zero_of_its_type() {
 	for i, source in shapes {
 		result := parsed(source)
 		assert result.diagnostics.len == 0
-		init := result.unit.decls[0].body[1].init or {
+		init := result.unit.decls[0].body[1].initializer() or {
 			assert false
 			return
 		}
@@ -2591,7 +2591,7 @@ fn test_the_imaginary_part_of_a_real_value_is_a_zero_of_its_type() {
 fn test_the_imaginary_part_keeps_the_operands_own_type() {
 	result := parsed('int main(void) { int n = sizeof(__imag__ (char) 1); return 0; }')
 	assert result.diagnostics.len == 0
-	init := result.unit.decls[0].body[0].init or {
+	init := result.unit.decls[0].body[0].initializer() or {
 		assert false
 		return
 	}
@@ -2625,7 +2625,7 @@ fn test_a_part_of_a_complex_value_is_the_component_it_names() {
 	for source in shapes {
 		result := parsed(source)
 		assert result.diagnostics.len == 0
-		init := result.unit.decls[0].body[1].init or {
+		init := result.unit.decls[0].body[1].initializer() or {
 			assert false
 			return
 		}
@@ -2638,7 +2638,7 @@ fn test_a_part_of_a_complex_value_is_the_component_it_names() {
 	// A float component is a float, and `sizeof` of the part is four.
 	float_result := parsed('int main(void) { float _Complex f = 0; int n = sizeof(__real__ f); return 0; }')
 	assert float_result.diagnostics.len == 0
-	literal := float_result.unit.decls[0].body[1].init or {
+	literal := float_result.unit.decls[0].body[1].initializer() or {
 		assert false
 		return
 	}
@@ -2797,18 +2797,14 @@ fn test_an_asm_statements_operands_are_kept() {
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
 	assert body[2].kind == .asm_stmt
-	if extra := body[2].extra {
-		assert extra.asm_outputs == 2
-		assert extra.asm_inputs == 2
-		assert extra.asm_output_operands[0].name == 'q'
-		assert extra.asm_output_operands[0].constraint == '=a'
-		assert extra.asm_output_operands[1].constraint == '=d'
-		assert extra.asm_input_operands[0].name == 'a'
-		assert extra.asm_input_operands[0].constraint == 'a'
-		assert extra.asm_input_operands[1].name == 'y'
-		assert extra.asm_input_operands[1].constraint == 'r'
-		assert extra.asm_clobbers == ['cc']
-	} else {
-		assert false
-	}
+	assert body[2].asm_outputs() == 2
+	assert body[2].asm_inputs() == 2
+	assert body[2].asm_output_operands()[0].name == 'q'
+	assert body[2].asm_output_operands()[0].constraint == '=a'
+	assert body[2].asm_output_operands()[1].constraint == '=d'
+	assert body[2].asm_input_operands()[0].name == 'a'
+	assert body[2].asm_input_operands()[0].constraint == 'a'
+	assert body[2].asm_input_operands()[1].name == 'y'
+	assert body[2].asm_input_operands()[1].constraint == 'r'
+	assert body[2].asm_clobbers() == ['cc']
 }

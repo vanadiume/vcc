@@ -48,10 +48,38 @@ fn (mut p Parser) parse_statement() ![]ast.Stmt {
 		p.compound_pending.pop()
 		return error('statement')
 	}
-	fresh := p.compound_pending.pop()
-	mut out := fresh.clone()
-	out << stmts
-	return out
+	mut fresh := p.compound_pending.pop()
+	if fresh.len == 0 {
+		// No compound literal in this statement asked for a store in front of
+		// it, which is nearly every statement there is. The list the statement
+		// was read as is the list the caller gets: copying it first would
+		// allocate a one-element list per statement and free it again a line
+		// later.
+		unsafe { fresh.free() }
+		return stmts
+	}
+	// The stores a compound literal asked for go in front of the statement. The
+	// list opened for them is this call's own and nothing holds it again, so
+	// the statement is appended to it rather than to a copy of it.
+	fresh << stmts
+	// Nothing holds the statement's own list again: the tokens it was read
+	// from are still there, so freeing the buffer is the whole cost of
+	// returning this statement.
+	unsafe { stmts.free() }
+	return fresh
+}
+
+// statements answers the list a block is read into. It grows a statement at a
+// time and is never sliced while it grows, which is what lets the runtime free the
+// buffer a growth copies from instead of leaving it behind: a statement is a few
+// hundred bytes and a block doubles its way to its length, so every block in a
+// file leaves about as much behind again as it keeps.
+fn statements() []ast.Stmt {
+	mut stmts := []ast.Stmt{}
+	unsafe {
+		stmts.flags.set(.noslices)
+	}
+	return stmts
 }
 
 fn (mut p Parser) parse_statement_inner() ![]ast.Stmt {
@@ -181,7 +209,7 @@ fn (mut p Parser) comma_continuation(stmt ast.Stmt) !ast.Stmt {
 	if !p.at_punct(',') {
 		return stmt
 	}
-	if stmt.kind == .assign && stmt.compound.len > 0 {
+	if stmt.kind == .assign && stmt.compound().len > 0 {
 		return stmt
 	}
 	mut expr := p.trailing_value(stmt) or {
@@ -323,15 +351,17 @@ fn (mut p Parser) parse_asm_statement() []ast.Stmt {
 	return [ast.Stmt{
 		kind:  .asm_stmt
 		extra: &ast.StmtExtra{
-			asm_text:            text
-			asm_spelling:        spelling
-			asm_outputs:         output_operands.len
-			asm_inputs:          input_operands.len
-			asm_output_operands: output_operands
-			asm_input_operands:  input_operands
-			asm_clobbers:        clobbers
-			asm_is_goto:         is_goto
-			asm_goto_labels:     goto_labels
+			assembly: &ast.StmtAsm{
+				text:            text
+				spelling:        spelling
+				outputs:         output_operands.len
+				inputs:          input_operands.len
+				output_operands: output_operands
+				input_operands:  input_operands
+				clobbers:        clobbers
+				is_goto:         is_goto
+				goto_labels:     goto_labels
+			}
 		}
 		line:  start.line
 		col:   start.col
@@ -614,14 +644,14 @@ fn (mut p Parser) parse_deref_assignment(start tokenize.Token, target ast.Expr, 
 				arithmetic := p.compound_operator(op)!
 				deref := ast.Expr(target)
 				return ast.Stmt{
-					kind:     .assign
-					expr:     p.compound_expansion(op, arithmetic, deref, value)
-					compound: arithmetic
-					extra:    &ast.StmtExtra{
-						deref: deref
+					kind:  .assign
+					expr:  p.compound_expansion(op, arithmetic, deref, value)
+					extra: &ast.StmtExtra{
+						compound: arithmetic
+						deref:    deref
 					}
-					line:     start.line
-					col:      start.col
+					line:  start.line
+					col:   start.col
 				}
 			}
 			// The object written to is the one the pointer points at, so the
@@ -871,12 +901,14 @@ fn (mut p Parser) parse_member_compound_assignment(op tokenize.Token, member &as
 	right := p.parse_assignment_expression()!
 	left := ast.Expr(*member)
 	return ast.Stmt{
-		kind:     .assign
-		field:    member
-		expr:     p.compound_expansion(op, arithmetic, left, right)
-		compound: arithmetic
-		line:     member.line
-		col:      member.col
+		kind:  .assign
+		field: member
+		expr:  p.compound_expansion(op, arithmetic, left, right)
+		extra: &ast.StmtExtra{
+			compound: arithmetic
+		}
+		line:  member.line
+		col:   member.col
 	}
 }
 
@@ -958,12 +990,14 @@ fn (mut p Parser) parse_member_assignment(member ast.Field) !ast.Stmt {
 		right := p.parse_assignment_expression()!
 		left := ast.Expr(member)
 		return ast.Stmt{
-			kind:     .assign
-			field:    member.boxed()
-			expr:     p.compound_expansion(op, arithmetic, left, right)
-			compound: arithmetic
-			line:     member.line
-			col:      member.col
+			kind:  .assign
+			field: member.boxed()
+			expr:  p.compound_expansion(op, arithmetic, left, right)
+			extra: &ast.StmtExtra{
+				compound: arithmetic
+			}
+			line:  member.line
+			col:   member.col
 		}
 	}
 	value := p.converted_into(member.typ, p.parse_assignment_expression()!)
@@ -1088,13 +1122,15 @@ fn (mut p Parser) parse_compound_assignment(target tokenize.Token, op tokenize.T
 	}
 	value := p.compound_expansion(op, arithmetic, left, right)
 	return ast.Stmt{
-		kind:     .assign
-		target:   target.text
-		index:    index
-		expr:     value
-		compound: arithmetic
-		line:     target.line
-		col:      target.col
+		kind:   .assign
+		target: target.text
+		index:  index
+		expr:   value
+		extra:  &ast.StmtExtra{
+			compound: arithmetic
+		}
+		line:   target.line
+		col:    target.col
 	}
 }
 
@@ -1131,18 +1167,20 @@ fn (mut p Parser) parse_if_statement() ![]ast.Stmt {
 		return []ast.Stmt{}
 	}
 	then_body := p.parse_control_body()!
-	mut else_body := []ast.Stmt{}
+	mut else_body := statements()
 	if p.peek().kind == .identifier && p.peek().text == 'else' {
 		p.next()
 		else_body = p.parse_control_body()!
 	}
 	return [ast.Stmt{
-		kind:      .if_stmt
-		cond:      cond
-		then_body: then_body
-		else_body: else_body
-		line:      t.line
-		col:       t.col
+		kind:  .if_stmt
+		cond:  cond
+		extra: &ast.StmtExtra{
+			then_body: then_body
+			else_body: else_body
+		}
+		line:  t.line
+		col:   t.col
 	}]
 }
 
@@ -1635,7 +1673,7 @@ fn (mut p Parser) case_constant(expr ast.Expr) ?i64 {
 // and never through the parenthesized-expression reader that reads a comma as
 // an operator.
 fn (mut p Parser) parse_for_clause_statements() ![]ast.Stmt {
-	mut stmts := []ast.Stmt{}
+	mut stmts := statements()
 	stmts << p.parse_expression_statement()!
 	for p.at_punct(',') {
 		p.next()
@@ -1665,7 +1703,7 @@ fn (mut p Parser) parse_for_statement() ![]ast.Stmt {
 		p.skip_statement()
 		return []ast.Stmt{}
 	}
-	mut head := []ast.Stmt{}
+	mut head := statements()
 	if p.at_punct(';') {
 		p.next()
 	} else if p.starts_declaration(p.peek()) {
@@ -1701,7 +1739,7 @@ fn (mut p Parser) parse_for_statement() ![]ast.Stmt {
 		p.skip_statement()
 		return []ast.Stmt{}
 	}
-	mut step := []ast.Stmt{}
+	mut step := statements()
 	if !p.at_punct(')') {
 		p.compound_unstable++
 		step = p.parse_for_clause_statements() or {
@@ -1719,13 +1757,19 @@ fn (mut p Parser) parse_for_statement() ![]ast.Stmt {
 	// The step is the loop's own third part rather than the body's last
 	// statement: a continue has to reach it, and a continue at the end of the
 	// body would jump over a statement written inside the body.
+	mut extra := ?&ast.StmtExtra(none)
+	if step.len > 0 {
+		extra = &ast.StmtExtra{
+			step: step
+		}
+	}
 	loop := ast.Stmt{
-		kind: .while_stmt
-		cond: cond
-		body: body
-		step: step
-		line: t.line
-		col:  t.col
+		kind:  .while_stmt
+		cond:  cond
+		body:  body
+		extra: extra
+		line:  t.line
+		col:   t.col
 	}
 	mut block := head.clone()
 	block << loop
@@ -1749,7 +1793,7 @@ fn (mut p Parser) parse_for_statement() ![]ast.Stmt {
 // initializers — is reported rather than half-read, and the rest of the
 // declaration is skipped so the statements after it still parse.
 fn (mut p Parser) parse_local_declaration() []ast.Stmt {
-	mut stmts := []ast.Stmt{}
+	mut stmts := statements()
 	// A static assertion written in a body is the same declaration the file
 	// scope reads, and it produces no statement: the check it makes is the
 	// whole of it.
@@ -1929,7 +1973,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// layout gave that member.
 		mut union_first := ?types.Member(none)
 		mut struct_brace := ?types.Layout(none)
-		mut struct_values := []BraceElement{}
+		mut struct_values := brace_elements()
 		// general_list is a brace list with a nested list, a designator or an
 		// element that is an expression, which is the shape the flat paths do
 		// not place: `fill_brace` walks it against the object's type and
@@ -1938,7 +1982,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// against, which is the object's own type with the size an array with
 		// empty brackets takes from the list.
 		mut general_list := ?BraceList(none)
-		mut general_writes := []BraceWrite{}
+		mut general_writes := brace_writes()
 		mut general_target := declared
 		has_initializer := p.at_punct('=')
 		if p.at_punct('=') {
@@ -1988,12 +2032,12 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 								// which sits at the beginning of the object. A first
 								// member that is itself an aggregate takes a list of
 								// its own, which is not a shape this reader has.
-								if spec.clause.members.len == 0 {
+								if spec.clause.members().len == 0 {
 									p.error_at(p.peek(), 'unsupported: ${spec.clause.describe()} has no first member to initialize')
 									p.skip_declaration()
 									return stmts
 								}
-								first := spec.clause.members[0]
+								first := spec.clause.members()[0]
 								if first.typ.kind in [types.Kind.struct_, .union_, .array] {
 									p.error_at(p.peek(), 'unsupported: the first member of ${spec.clause.describe()} is an object of the type ${first.typ.describe()}, and a brace initializer for one is not implemented')
 									p.skip_declaration()
@@ -2185,7 +2229,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// call or other effectful operand would then run more than once; an
 		// operand that is not one is left as it stands and refused at the
 		// operator, which is the honest answer rather than a doubled call.
-		mut vector_stores := []ast.Stmt{}
+		mut vector_stores := statements()
 		if declared.is_vector() && !brace {
 			if initializer := init {
 				if p.vector_initializer_stores(declared, d.name, initializer, d.name_at, mut vector_stores) {
@@ -2231,16 +2275,16 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// writes an initializer defines the object and is emitted below.
 		if !spec.is_typedef && !(spec.is_extern && !has_initializer) {
 			stmts << ast.Stmt{
-				kind:       .var_decl
-				init:       decl_init
-				decl_name:  d.name
-				decl_type:  if spec.auto_deduced {
-					declared.describe()
-				} else {
-					p.spelling_of(spec, d.pointer_count())
-				}
-				decl_count: count
-				extra:      &ast.StmtExtra{
+				kind:  .var_decl
+				extra: &ast.StmtExtra{
+					init:          decl_init
+					decl_name:     d.name
+					decl_type:     if spec.auto_deduced {
+						declared.describe()
+					} else {
+						p.spelling_of(spec, d.pointer_count())
+					}
+					decl_count:    count
 					decl_stride:   vla_stride
 					decl_vla_size: vla_size
 					// The declarator decides whether the object is the aggregate or
@@ -2256,8 +2300,8 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 					// empty for a declaration that asked for none.
 					cleanup:       cleanup
 				}
-				line:       d.name_at.line
-				col:        d.name_at.col
+				line:  d.name_at.line
+				col:   d.name_at.col
 			}
 		}
 		// A union's brace initializer is the one member it names, written at the
@@ -2306,7 +2350,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 			targets := members_taking_values(spec.clause)
 			for i in 0 .. struct_values.len {
 				at := targets[i]
-				member := spec.clause.members[at]
+				member := spec.clause.members()[at]
 				stmts << ast.Stmt{
 					kind:   .assign
 					target: d.name
@@ -2334,7 +2378,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 			}
 			for i in struct_values.len .. targets.len {
 				at := targets[i]
-				member := spec.clause.members[at]
+				member := spec.clause.members()[at]
 				stmts << ast.Stmt{
 					kind:   .assign
 					target: d.name
@@ -2415,12 +2459,13 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 				// width that answers: there is nowhere to put the values.
 				p.error_at(d.name_at, 'unsupported: ${d.name} is an array whose element is an object of the type ${element.describe()}, and storage for one in a body is not implemented')
 			} else {
-				mut leaves := []BraceWrite{}
+				mut leaves := brace_writes()
 				p.collect_leaves(general_target, 0, mut leaves)
 				for leaf in leaves {
 					stmts << p.store_a_leaf(d.name, d.name_at, leaf, zero_initializer(d.name_at),
 						array, object_bytes, element_width, general_target)
 				}
+				unsafe { leaves.free() }
 				for write in general_writes {
 					// A leaf is an expression when the list wrote one and a
 					// written constant otherwise; the constant is the int
@@ -2507,7 +2552,18 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 // zero_initializer is the constant zero a body's initializer stores into a
 // subobject the list did not reach. Its type is int, which every member wider
 // than an int extends and every narrower one takes the low bytes of.
+//
+// The node is 92 MB of the compiler's peak RSS on its own generated C, and it is
+// live rather than leaked: V lays an ast.Expr out as a pointer to a heap variant,
+// so every expression is one allocation and the tree holds all of them. The
+// number moves with the node's size and not with a missing free.
 fn zero_initializer(at tokenize.Token) ast.Expr {
+	// TODO: this builds one IntLit box per zeroed subobject, 41.6 MB of the
+	// compiler's own generated C at the peak: a brace list that writes one of a
+	// struct's four members zeroes the other three, and each zero is its own
+	// node. One node shared by every zero store is the change, and it is a
+	// contract one: the node carries the line and column of its own use, so the
+	// shared node reports the first zero it was built for.
 	return ast.Expr(ast.IntLit{
 		value: 0
 		text:  '0'
@@ -2744,6 +2800,10 @@ fn store_a_brace_write(name string, at tokenize.Token, write BraceWrite, value a
 			col:    at.col
 		}
 	}
+	// The member is a Field held by pointer, 376 bytes and one allocation per
+	// store: 153 MB of the compiler's peak RSS on its own generated C, and the
+	// largest live allocation this reader makes. It is data the emitter reads,
+	// not a leak, so the number is here to keep it from being chased as one.
 	return ast.Stmt{
 		kind:   .assign
 		target: name
@@ -2812,6 +2872,7 @@ fn (mut p Parser) parse_nested_function(spec DeclSpec, d Declarator) ?ast.Stmt {
 		// rest of the block and writes no code. gcc reads one whose body never
 		// comes, and a call to a name nothing defines is the symbol the link has
 		// to answer for, so there is nothing here to emit and nothing to report.
+		p.own_nested()
 		p.nested_names[d.name] = p.nested_symbol(parent, d.name)
 		p.nested_declared[d.name] = d.name_at
 		p.skip_declaration()
@@ -2826,6 +2887,7 @@ fn (mut p Parser) parse_nested_function(spec DeclSpec, d Declarator) ?ast.Stmt {
 		p.error_at(d.name_at, 'a nested function named ${d.name} is declared and then defined, and the definition of a nested function is static where its declaration is not')
 	}
 	mangled := p.nested_symbol(parent, d.name)
+	p.own_nested()
 	p.nested_names[d.name] = mangled
 	at := d.name_at
 	p.check_definition(spec, d)
@@ -2864,10 +2926,14 @@ fn (mut p Parser) parse_nested_function(spec DeclSpec, d Declarator) ?ast.Stmt {
 		line:     at.line
 		col:      at.col
 	}
+	mut held := &ast.FnDecl{}
+	unsafe {
+		*held = decl
+	}
 	return ast.Stmt{
 		kind:  .nested_function
 		extra: &ast.StmtExtra{
-			nested_fn: decl
+			nested_fn: held
 		}
 		line:  at.line
 		col:   at.col

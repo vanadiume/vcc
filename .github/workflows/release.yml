@@ -95,7 +95,7 @@ jobs:
 
       - name: the binary agrees with v.mod
         run: |
-          v -o vcc .
+          v -gc none -o vcc .
           built="$(./vcc --version | awk '{print $2}')"
           if [ "$built" != "${{ needs.version.outputs.version }}" ]; then
             echo "v.mod names ${{ needs.version.outputs.version }} and the binary answered ${built}" >&2

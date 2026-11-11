@@ -308,10 +308,6 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 		if value := stmt.expr {
 			expr = rewrite(value, opts, 0)
 		}
-		mut init := ?ast.Expr(none)
-		if value := stmt.init {
-			init = rewrite(value, opts, 0)
-		}
 		mut cond := ?ast.Expr(none)
 		if value := stmt.cond {
 			cond = rewrite(value, opts, 0)
@@ -325,16 +321,22 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 		// The expression an assignment writes through is a place as well as a
 		// value: `*p = v` reads the pointer, so a builtin call inside it is
 		// folded the same way. It lives in the extra part along with what this
-		// pass does not change, and the part is rebuilt only when there is one
-		// of those two to rewrite: the type and byte width a declaration
+		// pass does not change, and the part is rebuilt only when it holds an
+		// expression to rewrite: the type and byte width a declaration
 		// resolved to, the size and stride of an array, the element an
 		// assignment writes, the cleanup a declaration names and the function
 		// a nested_function statement defines are all read by the emitter, and
 		// a statement rebuilt without them is refused or given the wrong
-		// symbol at -O1 and up while it compiles at -O0.
+		// symbol at -O1 and up while it compiles at -O0. A part with no
+		// expression in it is shared with the statement that arrived.
 		mut extra := stmt.extra
 		if present := stmt.extra {
-			if present.deref != none || present.goto_expr != none {
+			if present.init != none || present.deref != none || present.goto_expr != none
+				|| present.step.len > 0 || present.then_body.len > 0 || present.else_body.len > 0 {
+				mut init := present.init
+				if value := present.init {
+					init = rewrite(value, opts, 0)
+				}
 				mut deref := present.deref
 				if value := present.deref {
 					deref = rewrite(value, opts, 0)
@@ -344,50 +346,42 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 					goto_expr = rewrite(value, opts, 0)
 				}
 				extra = &ast.StmtExtra{
-					resolved:            present.resolved
-					bytes:               present.bytes
-					decl_vla_size:       present.decl_vla_size
-					decl_stride:         present.decl_stride
-					deref:               deref
-					subscript:           present.subscript
-					case_value:          present.case_value
-					case_value_high:     present.case_value_high
-					case_is_range:       present.case_is_range
-					label:               present.label
-					goto_expr:           goto_expr
-					asm_text:            present.asm_text
-					asm_spelling:        present.asm_spelling
-					asm_outputs:         present.asm_outputs
-					asm_inputs:          present.asm_inputs
-					asm_output_operands: present.asm_output_operands
-					asm_input_operands:  present.asm_input_operands
-					asm_clobbers:        present.asm_clobbers
-					asm_is_goto:         present.asm_is_goto
-					asm_goto_labels:     present.asm_goto_labels
-					cleanup:             present.cleanup
-					nested_fn:           present.nested_fn
+					resolved:        present.resolved
+					decl_name:       present.decl_name
+					decl_type:       present.decl_type
+					decl_count:      present.decl_count
+					init:            init
+					compound:        present.compound
+					step:            rewrite_body(present.step, opts)
+					then_body:       rewrite_body(present.then_body, opts)
+					else_body:       rewrite_body(present.else_body, opts)
+					bytes:           present.bytes
+					decl_vla_size:   present.decl_vla_size
+					decl_stride:     present.decl_stride
+					deref:           deref
+					subscript:       present.subscript
+					case_value:      present.case_value
+					case_value_high: present.case_value_high
+					case_is_range:   present.case_is_range
+					label:           present.label
+					goto_expr:       goto_expr
+					assembly:        present.assembly
+					cleanup:         present.cleanup
+					nested_fn:       present.nested_fn
 				}
 			}
 		}
 		out << ast.Stmt{
-			kind:       stmt.kind
-			expr:       expr
-			init:       init
-			decl_name:  stmt.decl_name
-			decl_type:  stmt.decl_type
-			decl_count: stmt.decl_count
-			target:     stmt.target
-			index:      index
-			field:      stmt.field
-			compound:   stmt.compound
-			extra:      extra
-			cond:       cond
-			body:       rewrite_body(stmt.body, opts)
-			step:       rewrite_body(stmt.step, opts)
-			then_body:  rewrite_body(stmt.then_body, opts)
-			else_body:  rewrite_body(stmt.else_body, opts)
-			line:       stmt.line
-			col:        stmt.col
+			kind:   stmt.kind
+			expr:   expr
+			target: stmt.target
+			index:  index
+			field:  stmt.field
+			extra:  extra
+			cond:   cond
+			body:   rewrite_body(stmt.body, opts)
+			line:   stmt.line
+			col:    stmt.col
 		}
 	}
 	return out

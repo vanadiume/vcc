@@ -45,7 +45,7 @@ fn builtin_nth_value(source string, index int) i64 {
 fn builtin_float(source string) ast.FloatLit {
 	result := builtin_read(source)
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].init or {
+	expr := result.unit.decls[0].body[0].initializer() or {
 		assert false
 		return ast.FloatLit{}
 	}
@@ -424,7 +424,7 @@ fn test_isinf_sign_of_a_value_is_an_expression() {
 fn test_the_atomic_builtins_carry_the_type_they_operate_on() {
 	fetch := builtin_read('int main(void) { unsigned long long w = 0; unsigned long long o = __atomic_fetch_add(&w, 1, 5); return 0; }')
 	assert fetch.diagnostics.len == 0
-	fetch_value := fetch.unit.decls[0].body[1].init or {
+	fetch_value := fetch.unit.decls[0].body[1].initializer() or {
 		assert false
 		return
 	}
@@ -434,7 +434,7 @@ fn test_the_atomic_builtins_carry_the_type_they_operate_on() {
 	assert fetch_call.args.len == 3
 	swap := builtin_read('int main(void) { unsigned long long w = 0; unsigned long long o = __atomic_exchange_n(&w, 1, 5); return 0; }')
 	assert swap.diagnostics.len == 0
-	swap_value := swap.unit.decls[0].body[1].init or {
+	swap_value := swap.unit.decls[0].body[1].initializer() or {
 		assert false
 		return
 	}
@@ -448,7 +448,7 @@ fn test_the_atomic_builtins_carry_the_type_they_operate_on() {
 	assert (store_value as ast.Call).typ.kind == .void_
 	cas := builtin_read('int main(void) { unsigned long long w = 0; unsigned long long e = 0; int r = __atomic_compare_exchange_n(&w, &e, 1, 0, 5, 5); return 0; }')
 	assert cas.diagnostics.len == 0
-	cas_value := cas.unit.decls[0].body[2].init or {
+	cas_value := cas.unit.decls[0].body[2].initializer() or {
 		assert false
 		return
 	}
@@ -472,7 +472,7 @@ fn test_the_atomic_builtins_carry_the_type_they_operate_on() {
 fn test_an_atomic_memory_order_is_folded_into_the_call() {
 	result := builtin_read('int main(void) { unsigned long long w = 0; unsigned long long o = __atomic_load_n(&w, 5); return 0; }')
 	assert result.diagnostics.len == 0
-	value := result.unit.decls[0].body[1].init or {
+	value := result.unit.decls[0].body[1].initializer() or {
 		assert false
 		return
 	}

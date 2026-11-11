@@ -1,5 +1,6 @@
 module preprocess
 
+import interning
 import os
 import standard
 import tokenize
@@ -111,11 +112,19 @@ pub fn preprocess(source string, path string, opts Options) Result {
 		once_files: map[string]bool{}
 		main_path:  path
 		opts:       opts
+		pool:       interning.new()
 	}
 	if !opts.undef_builtins {
 		p.define_builtins()
 	}
 	p.apply_command_line_defines()
+	// The list every token of the program ends up in. It is grown all through
+	// the read and never sliced, which is what lets the runtime free the buffer
+	// a growth copies from instead of leaving it behind: without a collector,
+	// that buffer is a leak.
+	unsafe {
+		p.out.flags.set(.noslices)
+	}
 	// The -include and -imacros files are read before the source is, which is
 	// what `as if their lines were the first lines of it` means: the source goes
 	// on the stack first so the read comes back to it, and the preludes go on
@@ -254,6 +263,11 @@ mut:
 	out                []tokenize.Token
 	diagnostics        []tokenize.Diagnostic
 	opts               Options
+	// pool is where the text of every token is kept. One pool for the whole
+	// translation unit is what makes a name the file spells a hundred thousand
+	// times, or a header and the file after it both spell, one buffer instead of
+	// one buffer each. It is made here and lives as long as the read does.
+	pool &interning.Pool
 }
 
 // apply_command_line_defines puts the -D and -U arguments into the macro table
@@ -575,10 +589,10 @@ fn (mut p Processor) push(path string, source string, found_index int, silent bo
 	// C17 replace a trigraph, and a GNU dialect, C23 and a spelling this compiler
 	// does not implement leave the bytes alone. The digraph spellings are the
 	// other dialect answer the read needs, and the same mode gives it.
-	lexed := tokenize.lex_with(source, tokenize.Options{
+	lexed := tokenize.lex_shared(source, tokenize.Options{
 		trigraphs: standard.replaces_trigraphs(p.opts.dialect)
 		digraphs:  standard.has_digraphs(p.opts.dialect)
-	})
+	}, p.pool)
 	for diagnostic in lexed.diagnostics {
 		p.diagnostics << tokenize.Diagnostic{
 			line: diagnostic.line
@@ -634,17 +648,21 @@ fn (mut p Processor) run() {
 				// one of them unchanged; the copy is what a `#line` costs and a
 				// file that wrote none should not pay it.
 				run := p.frames[i].tokens[start..end]
-				for expanded in p.expand_all(run) {
+				expanded_run := p.expand_all(run)
+				for expanded in expanded_run {
 					p.emit(expanded)
 				}
+				unsafe { expanded_run.free() }
 			} else {
 				mut segment := []tokenize.Token{cap: end - start}
 				for k in start .. end {
 					segment << p.mapped(p.frames[i].tokens[k])
 				}
-				for expanded in p.expand_all(segment) {
+				expanded_segment := p.expand_all(segment)
+				for expanded in expanded_segment {
 					p.emit(expanded)
 				}
+				unsafe { expanded_segment.free() }
 			}
 		}
 		if p.frames[i].pos < p.frames[i].tokens.len {
@@ -670,6 +688,11 @@ fn (mut p Processor) pop(index int) {
 			'unterminated #if: ${frame.path} ends inside it')
 		p.conditionals = p.conditionals[..frame.condition_depth]
 	}
+	// The file's tokens have all been read: every one of them that was written
+	// out was copied into p.out, and the text they point at belongs to the
+	// strings those copies share. The list itself is the file's, and the file is
+	// over.
+	unsafe { frame.tokens.free() }
 	p.frames.delete(index)
 }
 
@@ -1020,6 +1043,13 @@ fn (mut p Processor) emit(tok tokenize.Token) {
 // append is the plain end of the token stream: what emit does when there is
 // nothing to join.
 fn (mut p Processor) append(tok tokenize.Token, where string) {
+	// TODO: the stream of the whole program is built here, and it is 167.8 MB of
+	// the compiler's own generated C of which about 70 MB is the stream itself:
+	// the list doubles its way to a length nothing counts before the first token
+	// is made, and the buffers each growth copies from are 97 MB of that. A
+	// capacity reserved from the size of the input, or a pass that counts the
+	// tokens before any is built, is what would take the slack. The stream
+	// itself stays: the parser reads it and the tree names its text.
 	p.out << tokenize.Token{
 		kind: tok.kind
 		text: tok.text

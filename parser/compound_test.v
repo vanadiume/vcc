@@ -32,22 +32,22 @@ fn test_a_compound_literal_declares_an_unnamed_object() {
 	assert body.len == 9
 	object := body[0]
 	assert object.kind == .var_decl
-	assert object.decl_name.starts_with('__vcc_compound_')
-	assert object.decl_count == 3
+	assert object.decl_name().starts_with('__vcc_compound_')
+	assert object.decl_count() == 3
 	assert object.decl_stride() == 4
 	assert object.resolved().same(types.array_of(types.int_type(), 3))
 	for i in 1 .. 7 {
 		assert body[i].kind == .assign
-		assert body[i].target == object.decl_name
+		assert body[i].target == object.decl_name()
 	}
 	arr := body[7]
 	assert arr.kind == .var_decl
-	init := arr.init or {
+	init := arr.initializer() or {
 		assert false
 		return
 	}
 	assert init is ast.Ident
-	assert (init as ast.Ident).name == object.decl_name
+	assert (init as ast.Ident).name == object.decl_name()
 	assert (init as ast.Ident).typ.same(types.array_of(types.int_type(), 3))
 }
 
@@ -56,7 +56,7 @@ fn test_a_compound_literal_is_an_lvalue() {
 	body := decl.body
 	assert body.len == 7
 	assert body[0].kind == .var_decl
-	assert body[0].decl_name.starts_with('__vcc_compound_')
+	assert body[0].decl_name().starts_with('__vcc_compound_')
 	assert body[5].kind == .assign
 	assert body[5].subscript() != none
 }
@@ -85,8 +85,8 @@ fn test_a_nonconstant_literal_in_a_reevaluated_place_is_initialized_at_the_liter
 	mut object := ''
 	mut loop := ast.Stmt{}
 	for stmt in body {
-		if stmt.kind == .var_decl && stmt.decl_name.starts_with('__vcc_compound_') {
-			object = stmt.decl_name
+		if stmt.kind == .var_decl && stmt.decl_name().starts_with('__vcc_compound_') {
+			object = stmt.decl_name()
 		}
 		if stmt.kind == .while_stmt {
 			loop = stmt
@@ -165,8 +165,8 @@ fn test_a_designated_aggregate_member_takes_the_element_as_its_value() {
 	assert body.len > 0
 	mut object := ''
 	for stmt in body {
-		if stmt.kind == .var_decl && stmt.decl_name.starts_with('__vcc_compound_') {
-			object = stmt.decl_name
+		if stmt.kind == .var_decl && stmt.decl_name().starts_with('__vcc_compound_') {
+			object = stmt.decl_name()
 		}
 	}
 	assert object.len > 0
@@ -215,8 +215,8 @@ fn test_a_positional_element_of_the_members_own_type_is_the_member() {
 	assert body.len > 0
 	mut object := ''
 	for stmt in body {
-		if stmt.kind == .var_decl && stmt.decl_name.starts_with('__vcc_compound_') {
-			object = stmt.decl_name
+		if stmt.kind == .var_decl && stmt.decl_name().starts_with('__vcc_compound_') {
+			object = stmt.decl_name()
 		}
 	}
 	assert object.len > 0
@@ -303,7 +303,7 @@ fn test_a_cast_to_a_union_type_initializes_the_member_whose_type_matches() {
 	body := decl.body
 	object := body[0]
 	assert object.kind == .var_decl
-	assert object.decl_name.starts_with('__vcc_compound_')
+	assert object.decl_name().starts_with('__vcc_compound_')
 	assert object.resolved().kind == .union_
 	// Each store the initializer makes names the member it writes as the
 	// member's own type. The zero stores come first and the value the operand
@@ -356,8 +356,8 @@ fn test_a_positional_flat_list_of_values_still_elides_into_an_aggregate_member()
 	assert body.len > 0
 	mut object := ''
 	for stmt in body {
-		if stmt.kind == .var_decl && stmt.decl_name.starts_with('__vcc_compound_') {
-			object = stmt.decl_name
+		if stmt.kind == .var_decl && stmt.decl_name().starts_with('__vcc_compound_') {
+			object = stmt.decl_name()
 		}
 	}
 	assert object.len > 0

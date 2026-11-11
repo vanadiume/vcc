@@ -174,8 +174,25 @@ struct ObjectRelocation {
 }
 
 // object wraps a program in an ELF64 relocatable object that a linker can take
-// as input.
+// as input. The jumps inside the text are settled here, so the writer works over
+// a copy: the caller keeps the program it handed over.
 pub fn object(program image.Program, target backend.Target) ![]u8 {
+	return object_over(program, target, mut program.text.clone())
+}
+
+// object_in_place wraps the same object over the program's own text, for a caller
+// that is done with the program once the object is out. What the program's text
+// holds afterwards is the object's .text, with the jumps settled, and not the code
+// the emitter wrote: the caller must not read it again.
+//
+// A `-c` run reads one program once and writes one file, and the copy the entry
+// point above makes is 67 MB on the compiler's own generated C, for a text of
+// 48 MB. Every other caller keeps the program, so the copy stays theirs.
+pub fn object_in_place(mut program image.Program, target backend.Target) ![]u8 {
+	return object_over(program, target, mut program.text)
+}
+
+fn object_over(program image.Program, target backend.Target, mut text []u8) ![]u8 {
 	// The symbols, in the order the table needs them. The format wants every
 	// local before every global, so a definition with internal linkage comes
 	// first, beside the section symbols, and only the external definitions and
@@ -230,7 +247,6 @@ pub fn object(program image.Program, target backend.Target) ![]u8 {
 	// .text, and .text is moved as a unit when it is linked, so the distance
 	// between two places in it is the same afterwards as it is now. Those need
 	// no relocation. Everything else does.
-	mut text := program.text.clone()
 	mut relocations := []ObjectRelocation{}
 	for fixup in program.fixups {
 		instruction := fixup.start

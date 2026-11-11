@@ -31,6 +31,19 @@ struct Piece {
 	hide []string
 }
 
+// expansion_pieces answers a list a run of pieces is expanded into. It is filled
+// here, read once by the caller and freed there; nothing slices it while it grows,
+// which is what lets the runtime free the buffer a growth copies from rather than
+// leave it behind. A piece is a token with the list of names it is hidden from, so
+// a run that doubles its way to a thousand of them leaves two hundred kilobytes.
+fn expansion_pieces() []Piece {
+	mut pieces := []Piece{}
+	unsafe {
+		pieces.flags.set(.noslices)
+	}
+	return pieces
+}
+
 // produced_from turns a token of a replacement into the text of the expansion
 // that happened at `site`: moved there for a diagnostic, and hidden from the
 // macro being expanded and from everything that hid the use itself. The second
@@ -145,6 +158,12 @@ fn (mut p Processor) collect_arguments(tokens []Piece, from int, tok tokenize.To
 // are read from the tokens after it in the same list — which is what a call in
 // a file looks like, what a call inside a replacement looks like, and what a
 // call in the controlling expression of an #if looks like.
+//
+// The list that comes out is the caller's: the expansion arrays this function
+// and the ones under it build are freed here, so the tokens are copied into one
+// list and that list is the whole cost of a run. The list it is given is spent:
+// a run that expands is freed on the way out, and a run that cannot expand is
+// handed back as it stands, without a copy, because it is the list it was given.
 fn (mut p Processor) expand_all(tokens []tokenize.Token) []tokenize.Token {
 	// A run with no name that could expand is handed back as it stands. Every
 	// token of straight-line code would otherwise be copied into a Piece, read
@@ -155,15 +174,29 @@ fn (mut p Processor) expand_all(tokens []tokenize.Token) []tokenize.Token {
 		return tokens
 	}
 	mut pieces := []Piece{cap: tokens.len}
+	defer {
+		unsafe { pieces.free() }
+	}
 	for t in tokens {
 		pieces << Piece{
 			tok: t
 		}
 	}
+	// A run that holds a name which expands into more tokens grows this list, and
+	// the buffer a growth copies from is freed here: nothing slices it before it
+	// is done, and the caller frees the one that comes back. Without the flag
+	// each of those copies stayed, at 102.8 MB of the compiler's own generated C
+	// over the headers it reads.
 	mut out := []tokenize.Token{cap: pieces.len}
-	for piece in p.expand_pieces(pieces) {
+	unsafe {
+		out.flags.set(.noslices)
+	}
+	expanded := p.expand_pieces(pieces)
+	for piece in expanded {
 		out << piece.tok
 	}
+	unsafe { expanded.free() }
+	unsafe { tokens.free() }
 	return out
 }
 
@@ -189,23 +222,31 @@ fn (p Processor) may_expand(tokens []tokenize.Token) bool {
 
 // expand_pieces is expand_all over tokens that carry what they are hidden from,
 // which is the form the rules inside an expansion need.
+//
+// TODO: `out << piece` clones the piece, which is a copy of the hiding list and of
+// every name in it, and the names are already one buffer each from the intern pool:
+// this plus the clones expand_all makes came to 15 MB on the compiler's own generated
+// C. The append that copies instead of cloning is the fix, and it shares the hiding
+// list between the two pieces, so it waits for a caller that frees one. None does
+// today, which is what makes it a change to a contract rather than a line.
 fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 	// Expansion is recursive, and the guard that stops a macro naming itself
 	// stops the shapes a person writes. This limit is for the shapes nobody
 	// writes: without it, one that slipped past the guard would be a crash
-	// instead of a diagnostic.
+	// instead of a diagnostic. The list that comes back is the caller's to free
+	// either way, so this way out answers a copy of the list it was given.
 	if p.expansion_depth >= max_expansion_depth {
 		if !p.expansion_reported && tokens.len > 0 {
 			p.expansion_reported = true
 			p.problem(tokens[0].tok, 'the expansion here is ${max_expansion_depth} levels deep and still going')
 		}
-		return tokens
+		return tokens.clone()
 	}
 	p.expansion_depth++
 	defer {
 		p.expansion_depth--
 	}
-	mut out := []Piece{}
+	mut out := expansion_pieces()
 	mut i := 0
 	for i < tokens.len {
 		piece := tokens[i]
@@ -236,6 +277,7 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 						tok: t
 					}
 				}
+				unsafe { builtin.free() }
 				i++
 				continue
 			}
@@ -263,7 +305,9 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 				i++
 				continue
 			}
-			out << p.expand_call(macro, use_args, piece)
+			call := p.expand_call(macro, use_args, piece)
+			out << call
+			unsafe { call.free() }
 			i = use_args.next
 			continue
 		}
@@ -282,7 +326,10 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 				tok: body_token
 			}, piece)
 		}
-		out << p.expand_pieces(replacement)
+		expanded := p.expand_pieces(replacement)
+		unsafe { replacement.free() }
+		out << expanded
+		unsafe { expanded.free() }
 		i++
 	}
 	return out
@@ -304,7 +351,10 @@ fn (mut p Processor) expand_call(macro Macro, use_args Arguments, site Piece) []
 	for piece in replacement {
 		hidden << produced_from(piece, site)
 	}
-	return p.expand_pieces(hidden)
+	unsafe { replacement.free() }
+	out := p.expand_pieces(hidden)
+	unsafe { hidden.free() }
+	return out
 }
 
 // substitute is the replacement itself: every parameter is replaced by its
@@ -371,7 +421,7 @@ fn (mut p Processor) substitute(macro Macro, arguments Arguments, site Piece) []
 		}
 		args[va_name] = rest
 	}
-	mut out := []Piece{}
+	mut out := expansion_pieces()
 	mut i := 0
 	for i < macro.body.len {
 		t := macro.body[i]
@@ -457,11 +507,19 @@ fn (mut p Processor) substitute(macro Macro, arguments Arguments, site Piece) []
 				}
 			}
 			if !beside_paste {
-				text = p.expand_pieces(text)
+				expanded := p.expand_pieces(text)
+				unsafe { text.free() }
+				for u in expanded {
+					out << u
+				}
+				unsafe { expanded.free() }
+				i++
+				continue
 			}
 			for u in text {
 				out << u
 			}
+			unsafe { text.free() }
 			i++
 			continue
 		}

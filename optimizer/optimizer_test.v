@@ -314,7 +314,7 @@ fn test_a_builtin_call_in_a_condition_is_folded_and_the_branches_survive() {
 	// The statement is carried over whole: the rewrite changes the condition and
 	// not the branches or the kind.
 	assert stmt.kind == .if_stmt
-	assert stmt.then_body.len == 1
+	assert stmt.then_body().len == 1
 }
 
 // The pass rebuilds every node it walks, and a field left out of a rebuild is a
@@ -388,7 +388,7 @@ fn test_a_compound_assignment_keeps_the_operator_it_was_written_with() {
 	// evaluates the index twice.
 	unit := optimize_source('int main(void) { int a[2]; int i = 0; a[i++] += 5; return i; }', options(['-O2']))
 	stmt := unit.decls[0].body[2]
-	assert stmt.compound == '+'
+	assert stmt.compound() == '+'
 }
 
 fn test_a_definition_keeps_its_linkage_and_its_types() {

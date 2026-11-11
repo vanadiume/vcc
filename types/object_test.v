@@ -502,7 +502,7 @@ fn test_the_description_carries_the_pointer_and_the_written_int() {
 // directly into the outer aggregate would print too: the promotion only changes
 // which names reach a member, not where it sits.
 fn member_named(t Type, name string) ?Member {
-	for m in t.members {
+	for m in t.members() {
 		if m.name == name {
 			return m
 		}
@@ -512,7 +512,7 @@ fn member_named(t Type, name string) ?Member {
 
 fn member_offset(t Type, name string) int {
 	layout := layout_of(t)
-	for i, m in t.members {
+	for i, m in t.members() {
 		if m.name == name {
 			return layout.offsets[i]
 		}
@@ -523,7 +523,7 @@ fn member_offset(t Type, name string) int {
 
 fn member_bit(t Type, name string) int {
 	layout := layout_of(t)
-	for i, m in t.members {
+	for i, m in t.members() {
 		if m.name == name {
 			return layout.bits[i]
 		}
@@ -616,12 +616,12 @@ fn test_a_named_union_beside_an_unnamed_one_is_reached_through_its_name() {
 // promoted. This is the named path that must not be narrowed or shifted.
 fn test_an_aggregate_without_an_unnamed_member_is_unchanged() {
 	plain := struct_type('G', [member('a', int_type()), member('b', char_type())])
-	assert plain.members.len == 2
-	assert plain.members[0].name == 'a' && plain.members[0].promoted == false
-	assert plain.members[1].name == 'b' && plain.members[1].promoted == false
+	assert plain.members().len == 2
+	assert plain.members()[0].name == 'a' && plain.members()[0].promoted == false
+	assert plain.members()[1].name == 'b' && plain.members()[1].promoted == false
 	named_union := struct_type('F', [member('n', union_type('U', [member('a', int_type())]))])
-	assert named_union.members.len == 1
-	assert named_union.members[0].name == 'n' && named_union.members[0].promoted == false
+	assert named_union.members().len == 1
+	assert named_union.members()[0].name == 'n' && named_union.members()[0].promoted == false
 }
 
 // 6.7.2.1p13 makes the names an unnamed member contributes distinct from every
@@ -634,7 +634,7 @@ fn test_a_name_two_unnamed_members_would_both_answer_is_not_found() {
 	second := union_type('', [member('x', long_type())])
 	both := struct_type('D', [member('', first), member('', second)])
 	assert member_named(both, 'x') == none
-	assert both.members.any(it.name.contains('ambiguous'))
+	assert both.members().any(it.name.contains('ambiguous'))
 }
 
 // The same collision between a member written in the body and one an unnamed
@@ -643,7 +643,7 @@ fn test_a_name_an_unnamed_member_collides_with_is_not_found() {
 	union_ := union_type('', [member('x', int_type())])
 	s := struct_type('E', [member('x', int_type()), member('', union_)])
 	assert member_named(s, 'x') == none
-	assert s.members.any(it.name.contains('ambiguous'))
+	assert s.members().any(it.name.contains('ambiguous'))
 }
 
 // `layout` answers a scalar or a derived type by asking for its size and its
@@ -674,7 +674,7 @@ fn test_the_layout_of_a_scalar_or_an_array_is_its_size_and_alignment() {
 fn test_a_completed_aggregate_carries_the_layout_it_was_already_given() {
 	cached := Type{
 		kind:     .struct_
-		tag:      'cached'
+		parts:    parts_of([]Member{}, []Param{}, 'cached')
 		complete: true
 		layout:   &Layout{
 			size:  24

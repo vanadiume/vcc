@@ -43,7 +43,9 @@ v test .                             # run the suite
 
 `v run tools/build.vsh build` is the official way to build the compiler. It
 builds vcc with V and reports where the binary landed; `-o PATH` names the
-output. `v -o vcc .` is the same compile called directly. `v run
+output. `v -gc none -o vcc .` is the same compile called directly, and it names
+the memory mode because the compiler frees what it allocates and runs with no
+collector. `v run
 tools/build.vsh` without a step runs the whole front door, which adds the gate,
 the corpora, the benchmark, the image and the version report.
 

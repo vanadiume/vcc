@@ -1,5 +1,7 @@
 module tokenize
 
+import interning
+
 // Longest-match-first tables. C's punctuation is not a prefix code, so `<<=`
 // has to be tried before `<<` before `<`. `#` and `##` are here because a
 // fragment — the text of a directive line — has no line-start rule attached to
@@ -11,6 +13,11 @@ const punct2 = ['->', '++', '--', '<<', '>>', '<=', '>=', '==', '!=', '&&', '||'
 	'/=', '%=', '&=', '|=', '^=', '##']
 
 const punct1 = '+-*/%&|^~!<>=()[]{};,.?:#'
+
+// punct_lengths is the order the table above is tried in. It is a const because
+// an array literal in the loop would allocate a four-element array for every
+// token the lexer reads, which was one allocation per punctuator.
+const punct_lengths = [4, 3, 2, 1]
 
 // The C99 6.4.6 digraphs are alternate spellings of six punctuators. They are
 // tokens and not a replacement, which is what separates them from a trigraph: a
@@ -184,6 +191,14 @@ pub mut:
 	// either — `%:` arrives as `#`, which is what everything downstream reads.
 	// `standard.has_digraphs` is where that answer is written down.
 	digraphs bool
+	// pool is where a token's text comes from. Every spelling the reader meets
+	// gets one copy, so the tokens that spell `int` or `(` a hundred thousand
+	// times share one buffer instead of each allocating its own, which is most
+	// of the text a translation unit allocates. A reader with none, which is a
+	// fragment reading a directive line or a macro body, copies its text as it
+	// always did: those are read once and are not where a file's repeated text
+	// is.
+	pool &interning.Pool = unsafe { nil }
 }
 
 // Options are the answers the translation phases need from the language the
@@ -220,6 +235,14 @@ pub fn lex(src string) Result {
 
 // lex_with reads a whole source file with the phases' dialect answers given.
 pub fn lex_with(src string, opts Options) Result {
+	return lex_shared(src, opts, interning.new())
+}
+
+// lex_shared is lex_with against a pool the caller owns. One pool across a
+// translation unit is what makes the text a header and the text the file after
+// it both spell one buffer instead of one buffer each, which is the shape the
+// preprocessor reads in: it hands the same pool to every file it opens.
+pub fn lex_shared(src string, opts Options, pool &interning.Pool) Result {
 	mut l := Lexer{
 		src:               src
 		line:              1
@@ -228,6 +251,7 @@ pub fn lex_with(src string, opts Options) Result {
 		at_line_start:     true
 		replace_trigraphs: opts.trigraphs
 		digraphs:          opts.digraphs
+		pool:              pool
 	}
 	tokens := l.run()
 	return Result{
@@ -281,6 +305,15 @@ fn (mut l Lexer) run() []Token {
 	// and settling the position here is what makes its first token report that.
 	l.settle()
 	mut tokens := []Token{}
+	// The compiler runs without a collector, and an array that grows tells the
+	// runtime whether a slice of it is alive: without that, the buffer a growth
+	// copies from is left behind (vlib/builtin/array.v, ensure_cap). Nothing
+	// slices this list while it is being built — the preprocessor takes runs of
+	// it after the read is over — so the flag is the right answer and the old
+	// buffers are freed as the list grows.
+	unsafe {
+		tokens.flags.set(.noslices)
+	}
 	// pending_space is whether the text walked over since the last token holds
 	// whitespace or a comment, which is what the next token records as `space`.
 	mut pending_space := false
@@ -431,6 +464,18 @@ fn (mut l Lexer) lex_directive() Token {
 	}
 }
 
+// keep answers the string a token's text is made of. A reader with a pool gets
+// the pool's copy back, so a spelling the file repeats costs one buffer however
+// many times it is spelled; a reader without one gets a copy of its own, because
+// a fragment's text is one directive line or macro body and sharing it would buy
+// nothing.
+fn (mut l Lexer) keep(bytes &u8, len int) string {
+	if isnil(l.pool) {
+		return unsafe { tos(bytes, len) }.clone()
+	}
+	return l.pool.intern_bytes(bytes, len)
+}
+
 fn (mut l Lexer) lex_token() ?Token {
 	start_line := l.line
 	start_col := l.col
@@ -442,6 +487,13 @@ fn (mut l Lexer) lex_token() ?Token {
 		// generated C is millions of allocations that are thrown away as soon as
 		// the token is made (`u8.ascii_str` is one `malloc_noscan` per call).
 		mut text := []u8{}
+		// The buffer doubles as it fills, and without this flag the runtime keeps
+		// every buffer a growth copies from. Nothing slices it while it grows and
+		// the whole thing is freed once the text is kept, so the old buffers can
+		// go as they are replaced.
+		unsafe {
+			text.flags.set(.noslices)
+		}
 		for l.pos < l.src.len {
 			ch := l.at()
 			if is_ident_char(ch) {
@@ -461,7 +513,8 @@ fn (mut l Lexer) lex_token() ?Token {
 				l.advance()
 			}
 		}
-		identifier := text.bytestr()
+		identifier := unsafe { l.keep(&u8(text.data), text.len) }
+		unsafe { text.free() }
 		// L"x", u'x' and u8"x" are one literal, not an identifier and a string.
 		if l.pos < l.src.len && (l.at() == `"` || l.at() == `'`)
 			&& identifier in ['L', 'u', 'U', 'u8'] {
@@ -485,12 +538,21 @@ fn (mut l Lexer) lex_token() ?Token {
 	// `??=??=` is `##` and `??(` is `[`. A digraph is a spelling rather than a
 	// replacement, so it is matched here as well, and the token it makes is
 	// written the way the language names it.
-	ahead := l.ahead(4)
-	for n in [4, 3, 2, 1] {
-		if ahead.len < n {
+	//
+	// The bytes go into a fixed buffer on the stack rather than into a string
+	// per candidate length, and the token keeps the pool's copy of what matched.
+	// Reading them the other way allocated three times per punctuator: an array
+	// in the lookahead, a string for it, and a slice of that string for each
+	// length tried. A punctuator is most of the tokens in a translation unit and
+	// there are forty of them, so the copies were worth removing rather than
+	// sharing.
+	mut ahead := [4]u8{}
+	got := l.ahead_bytes(mut ahead)
+	for n in punct_lengths {
+		if got < n {
 			continue
 		}
-		text := ahead[..n]
+		text := unsafe { tos(&ahead[0], n) }
 		if n == 1 && !punct1.contains_u8(c) {
 			continue
 		}
@@ -499,9 +561,13 @@ fn (mut l Lexer) lex_token() ?Token {
 			for _ in 0 .. n {
 				l.advance()
 			}
+			mut kept := unsafe { l.keep(&ahead[0], n) }
+			if l.digraphs {
+				kept = spelled(kept)
+			}
 			return Token{
 				kind: .punct
-				text: if l.digraphs { spelled(text) } else { text }
+				text: kept
 				line: start_line
 				col:  start_col
 			}
@@ -774,12 +840,15 @@ fn (l Lexer) peek(n int) u8 {
 	return byte
 }
 
-// ahead is the next n characters of the text the phases produced, for the
-// longest-match-first punctuation table.
-fn (l Lexer) ahead(n int) string {
-	mut out := []u8{cap: n}
+// ahead_bytes is the next bytes of the text the phases produced, for the
+// longest-match-first punctuation table. It writes into the caller's buffer and
+// answers how many bytes it wrote, because a punctuator is most of a translation
+// unit's tokens: an array and a string per token is one allocation for each of
+// them, and the text is about to be looked up in a table of forty spellings.
+fn (l Lexer) ahead_bytes(mut buf [4]u8) int {
 	mut at := l.pos
-	for _ in 0 .. n {
+	mut n := 0
+	for n < buf.len {
 		if at >= l.src.len {
 			break
 		}
@@ -787,10 +856,11 @@ fn (l Lexer) ahead(n int) string {
 		if byte == 0 && next >= l.src.len {
 			break
 		}
-		out << byte
+		buf[n] = byte
+		n++
 		at = next
 	}
-	return out.bytestr()
+	return n
 }
 
 fn is_digit(c u8) bool {

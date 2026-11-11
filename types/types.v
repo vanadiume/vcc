@@ -136,6 +136,63 @@ pub fn (q Qualifiers) contains(other Qualifiers) bool {
 	return true
 }
 
+// TypeParts is what a type carries when it is an aggregate, an enum or a
+// function: the members of a struct or union in the order they were written,
+// the parameters of a function in the order they were written, and the tag a
+// named aggregate, enum or opaque type was written with. It sits behind a
+// pointer in Type because most types have none of it and a Type is carried by
+// value in every expression node the tree holds.
+pub struct TypeParts {
+pub mut:
+	members []Member
+	params  []Param
+	// tag is the name an aggregate, an enum or an opaque type was written with,
+	// and empty for one written without a name.
+	tag string
+}
+
+// parts_of builds the parts of a type from what it carries. A caller passes the
+// empty values for what it does not have, and asks for none at all with
+// `none_parts()`, which is the pointer a type with no parts holds.
+pub fn parts_of(members []Member, params []Param, tag string) &TypeParts {
+	return &TypeParts{
+		members: members
+		params:  params
+		tag:     tag
+	}
+}
+
+// members answers the members of a struct or a union, in the order they were
+// written, and the empty list for a type that is not one: a type with no parts
+// has no members, which is what a reader that asks every type gets.
+@[inline]
+pub fn (t Type) members() []Member {
+	if isnil(t.parts) {
+		return []Member{}
+	}
+	return t.parts.members
+}
+
+// params answers the parameters of a function type, in the order they were
+// written, and the empty list for a type that is not a function.
+@[inline]
+pub fn (t Type) params() []Param {
+	if isnil(t.parts) {
+		return []Param{}
+	}
+	return t.parts.params
+}
+
+// tag is the name an aggregate, an enum or an opaque type was written with, and
+// empty for one written without a name.
+@[inline]
+pub fn (t Type) tag() string {
+	if isnil(t.parts) {
+		return ''
+	}
+	return t.parts.tag
+}
+
 // Type is one type. A derived type holds the type it is derived from, and the
 // reference is what lets a type contain itself: `char **` is a pointer to a
 // pointer to a char, and a value cannot hold that chain.
@@ -172,18 +229,24 @@ pub mut:
 	// which the parser and the emitter implement separately. It is false for
 	// every array that is not one and for every other kind.
 	vector bool
-	// members are the members of a struct or a union, in the order they were
-	// written.
-	members []Member
-	// params are the parameters of a function type, in the order they were
-	// written. prototyped says the list was written as a prototype: `int f()`
-	// names no parameters at all and says nothing about the call either.
+	// parts is what an aggregate, an enum and a function type carry and no
+	// other type does: the members of a struct or a union, the parameters of a
+	// function, and the tag an aggregate, an enum or an opaque type was written
+	// with. Those are 120 bytes, and a Type is carried by value in every
+	// expression node in the tree, where most types are none of the three. A
+	// type that is none of them leaves the pointer nil and pays eight bytes for
+	// it; a type that is one of them allocates what it has.
+	//
+	// A Type is copied by value everywhere and the parts are shared by every
+	// copy rather than copied with it. That is what the tree wants: the members
+	// of a struct are read once, before any copy of the type is made, and every
+	// copy is the same aggregate.
+	parts &TypeParts = unsafe { nil }
+	// prototyped says the list a function was written with is a prototype:
+	// `int f()` names no parameters at all and says nothing about the call
+	// either.
 	prototyped bool
 	variadic   bool
-	params     []Param
-	// tag is the name an aggregate, an enum or an opaque type was written with,
-	// and empty for one written without a name.
-	tag string
 	// complete says the size of the type is known: every scalar, an array whose
 	// element type is complete and whose count is written, an aggregate whose
 	// members have been read, an enum whose enumerators have been read. A tag
@@ -499,7 +562,7 @@ pub fn (t Type) has_const_member() bool {
 	if t.kind !in [.struct_, .union_] {
 		return false
 	}
-	for member in t.members {
+	for member in t.members() {
 		if member.typ.is_const() || member.typ.has_const_member() {
 			return true
 		}
@@ -564,7 +627,7 @@ pub fn (t Type) returns() ?Type {
 // without a tag has no name to be identified by, so its members are what tells
 // it from another and they are compared.
 pub fn (t Type) same(other Type) bool {
-	if t.kind != other.kind || t.quals != other.quals || t.tag != other.tag {
+	if t.kind != other.kind || t.quals != other.quals || t.tag() != other.tag() {
 		return false
 	}
 	if t.count != other.count || t.variadic != other.variadic
@@ -572,21 +635,25 @@ pub fn (t Type) same(other Type) bool {
 		|| t.vector != other.vector {
 		return false
 	}
-	if !(t.kind in [.struct_, .union_] && t.tag != '') {
-		if t.members.len != other.members.len {
+	if !(t.kind in [.struct_, .union_] && t.tag() != '') {
+		mine := t.members()
+		theirs := other.members()
+		if mine.len != theirs.len {
 			return false
 		}
-		for i, member in t.members {
-			if member.name != other.members[i].name || member.bits != other.members[i].bits
-				|| !member.typ.same(other.members[i].typ) {
+		for i, member in mine {
+			if member.name != theirs[i].name || member.bits != theirs[i].bits
+				|| !member.typ.same(theirs[i].typ) {
 				return false
 			}
 		}
 	}
-	if t.params.len != other.params.len {
+	mine := t.params()
+	theirs := other.params()
+	if mine.len != theirs.len {
 		return false
 	}
-	for i, param in t.params {
+	for i, param in mine {
 		// 6.7.6.3p15: a parameter declared with a qualified type is taken as
 		// having the unqualified version of its declared type, so qualifiers
 		// on the parameter itself do not tell two parameter types apart. Only
@@ -595,7 +662,7 @@ pub fn (t Type) same(other Type) bool {
 		// points at stay: `const void *` is still a different parameter type
 		// from `void *`, and `void f(void *); void f(const void *);` is still a
 		// constraint violation.
-		if !unqualified(param.typ).same(unqualified(other.params[i].typ)) {
+		if !unqualified(param.typ).same(unqualified(theirs[i].typ)) {
 			return false
 		}
 	}
@@ -655,6 +722,11 @@ pub fn (t Type) describe() string {
 // describe_unqualified is describe without the qualifiers on the type itself,
 // which is what a derived description needs: the qualifiers of the pointee are
 // part of the pointee's description.
+// TODO: the composite kinds build their spelling per call and the caller drops
+// it: 7.7 MB of `string__plus` on the compiler's own generated C, on top of the
+// describe of the base for every level of a pointer or an array. A pool would
+// dedupe them, but this is a method on Type and has no pool to ask; the caller
+// that wants the spelling of a type repeatedly is the one that could keep it.
 fn (t Type) describe_unqualified() string {
 	match t.kind {
 		.unknown { return 'unresolved' }
@@ -683,7 +755,7 @@ fn (t Type) describe_unqualified() string {
 		.complex_float { return 'float _Complex' }
 		.complex_double { return 'double _Complex' }
 		.complex_long_double { return 'long double _Complex' }
-		.opaque { return t.tag }
+		.opaque { return t.tag() }
 		.pointer {
 			if t.base == unsafe { nil } {
 				return 'void *'
@@ -713,7 +785,7 @@ fn (t Type) describe_unqualified() string {
 				return '${out} ()'
 			}
 			mut parts := []string{}
-			for param in t.params {
+			for param in t.params() {
 				parts << param.typ.describe()
 			}
 			if t.variadic {
@@ -727,9 +799,9 @@ fn (t Type) describe_unqualified() string {
 			}
 			return '${out} (${parts.join(', ')})'
 		}
-		.struct_ { return if t.tag == '' { 'struct <anonymous>' } else { 'struct ${t.tag}' } }
-		.union_ { return if t.tag == '' { 'union <anonymous>' } else { 'union ${t.tag}' } }
-		.enum_ { return if t.tag == '' { 'enum <anonymous>' } else { 'enum ${t.tag}' } }
+		.struct_ { return if t.tag() == '' { 'struct <anonymous>' } else { 'struct ${t.tag()}' } }
+		.union_ { return if t.tag() == '' { 'union <anonymous>' } else { 'union ${t.tag()}' } }
+		.enum_ { return if t.tag() == '' { 'enum <anonymous>' } else { 'enum ${t.tag()}' } }
 	}
 }
 
@@ -1010,7 +1082,16 @@ pub fn scalar(kind Kind) ?Type {
 // is not complete, because nothing here knows how much room it takes, and a
 // declaration of an object of it is refused for that reason.
 pub fn opaque_type(name string) Type {
-	return if name == '' { Type{ kind: .opaque } } else { Type{ kind: .opaque, tag: name } }
+	return if name == '' {
+		Type{
+			kind: .opaque
+		}
+	} else {
+		Type{
+			kind:  .opaque
+			parts: parts_of([]Member{}, []Param{}, name)
+		}
+	}
 }
 
 // pointer_to is the type of a pointer to base. The base is copied onto the heap
@@ -1091,7 +1172,7 @@ pub fn function_type(ret Type, params []Param, variadic bool, prototyped bool) T
 	return Type{
 		kind:       .function
 		base:       &Type{ ...ret }
-		params:     adjusted
+		parts:      parts_of([]Member{}, adjusted, '')
 		variadic:   variadic
 		prototyped: prototyped
 		complete:   true
@@ -1128,8 +1209,7 @@ pub fn adjust_parameter(t Type) Type {
 pub fn struct_type(tag string, members []Member) Type {
 	return Type{
 		kind:     .struct_
-		tag:      tag
-		members:  promote_anonymous(members)
+		parts:    parts_of(promote_anonymous(members), []Param{}, tag)
 		complete: true
 	}
 }
@@ -1137,8 +1217,7 @@ pub fn struct_type(tag string, members []Member) Type {
 pub fn union_type(tag string, members []Member) Type {
 	return Type{
 		kind:     .union_
-		tag:      tag
-		members:  promote_anonymous(members)
+		parts:    parts_of(promote_anonymous(members), []Param{}, tag)
 		complete: true
 	}
 }
@@ -1187,7 +1266,7 @@ fn promote_anonymous(members []Member) []Member {
 			continue
 		}
 		owner := promoted.len - 1
-		for i, inner in member.typ.members {
+		for i, inner in member.typ.members() {
 			if inner.name == '' {
 				continue
 			}
@@ -1272,8 +1351,8 @@ fn reject_ambiguous_names(members []Member) []Member {
 // keyword the declaration wrote.
 pub fn incomplete_tag(kind Kind, tag string) Type {
 	return Type{
-		kind: kind
-		tag:  tag
+		kind:  kind
+		parts: parts_of([]Member{}, []Param{}, tag)
 	}
 }
 
@@ -1284,7 +1363,7 @@ pub fn incomplete_tag(kind Kind, tag string) Type {
 pub fn enum_type(tag string, underlying Kind) Type {
 	return Type{
 		kind:       .enum_
-		tag:        tag
+		parts:      parts_of([]Member{}, []Param{}, tag)
 		complete:   true
 		underlying: underlying
 	}

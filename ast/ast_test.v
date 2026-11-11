@@ -82,11 +82,13 @@ fn test_the_asm_accessors_read_the_text_the_counts_and_the_clobbers() {
 	stmt := Stmt{
 		kind:  .asm_stmt
 		extra: &StmtExtra{
-			asm_text:     'nop'
-			asm_spelling: '"nop"'
-			asm_outputs:  1
-			asm_inputs:   2
-			asm_clobbers: ['memory', 'cc']
+			assembly: &StmtAsm{
+				text:     'nop'
+				spelling: '"nop"'
+				outputs:  1
+				inputs:   2
+				clobbers: ['memory', 'cc']
+			}
 		}
 	}
 	assert stmt.asm_text() == 'nop'

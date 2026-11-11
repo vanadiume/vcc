@@ -818,12 +818,14 @@ fn (mut p Parser) parse_declaration() []ast.FnDecl {
 				previous_enclosing := p.enclosing_symbol
 				previous_names := p.nested_names
 				previous_declared := p.nested_declared
+				previous_owned := p.nested_owned
 				previous_returning := p.returning
 				p.current_function = d.name
 				p.function_symbol = d.name
 				p.enclosing_symbol = ''
 				p.nested_names = map[string]string{}
 				p.nested_declared = map[string]tokenize.Token{}
+				p.nested_owned = true
 				p.returning = p.return_type(spec.clause, d)
 				body := p.parse_block()
 				p.returning = previous_returning
@@ -832,6 +834,7 @@ fn (mut p Parser) parse_declaration() []ast.FnDecl {
 				p.enclosing_symbol = previous_enclosing
 				p.nested_names = previous_names
 				p.nested_declared = previous_declared
+				p.nested_owned = previous_owned
 				p.scopes.leave()
 				statements := body or { return decls }
 				// A definition with no name has been reported and has no
@@ -1164,11 +1167,11 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 						if list.elements.len > 1 {
 							p.error_at(list.at, 'a constraint violation: ${data_name} holds one value and its initializer writes ${list.elements.len}')
 							data_problem = true
-						} else if spec.clause.members.len == 0 {
+						} else if spec.clause.members().len == 0 {
 							p.error_at(list.at, 'unsupported: ${spec.clause.describe()} has no first member to initialize')
 							data_problem = true
 						} else {
-							first := spec.clause.members[0]
+							first := spec.clause.members()[0]
 							if first.typ.kind in [types.Kind.struct_, .union_, .array] {
 								p.error_at(list.at, 'unsupported: the first member of ${spec.clause.describe()} is an object of the type ${first.typ.describe()}, and a brace initializer for one is not implemented')
 								data_problem = true
@@ -2381,7 +2384,7 @@ fn (mut p Parser) file_scope_part_offset(name string, at tokenize.Token) ?int {
 			return none
 		}
 		mut member_index := -1
-		for i, member in aggregate.members {
+		for i, member in aggregate.members() {
 			if member.name == member_name.text {
 				member_index = i
 				break
@@ -2391,7 +2394,7 @@ fn (mut p Parser) file_scope_part_offset(name string, at tokenize.Token) ?int {
 			p.error_at(member_name, 'unsupported: ${aggregate.describe()} has no member called ${member_name.text}')
 			return none
 		}
-		member := aggregate.members[member_index]
+		member := aggregate.members()[member_index]
 		if member.bitfield {
 			p.error_at(member_name, 'unsupported: ${member_name.text} is a bitfield, and a bitfield sits in bits inside a unit rather than at a byte offset')
 			return none
@@ -2647,6 +2650,13 @@ struct BraceList {
 // written constant nor an address, and an empty pair of braces, which gives an
 // array no size to be.
 fn (mut p Parser) parse_brace_initializer(body bool) !BraceList {
+	// TODO: the element list this answers is read by the caller's walk and then
+	// dropped, and nothing frees it: `elements` was 31.3 MB of the compiler's own
+	// generated C at the peak, and a nested list is one more. The seven call
+	// sites exit through `fill_brace`/`brace_array_count`, so a free belongs
+	// there, and it has to walk `BraceElement.list` to free the nested lists too.
+	// The expression each element carries is moved into the statement the walk
+	// builds, so the arrays are the whole of what is left to free.
 	open := p.next() // {
 	if p.at_punct('}') {
 		// An empty list writes no values. C23 6.7.9 makes `{}` a list of no
@@ -2675,7 +2685,7 @@ fn (mut p Parser) parse_brace_initializer(body bool) !BraceList {
 	// the first token covers every bracket the list wrote, so the brace the skip
 	// stops at is the one that ends this list and the reader stays inside the
 	// body it is reading.
-	mut elements := []BraceElement{}
+	mut elements := brace_elements()
 	list_body := p.pos
 	for {
 		mut t := p.peek()
@@ -3360,6 +3370,28 @@ fn (mut p Parser) parse_address_initializer() ![]ast.AddressInit {
 	}
 }
 
+// brace_writes and brace_elements answer a list that is filled and spent in one
+// function: the walk that places a brace list grows it, reads it once, and frees
+// it. Nothing slices it while it grows, so the flag tells the runtime it may free
+// the buffer a growth copies from rather than leave it behind, which is what the
+// compiler is built for (no collector). An element here is a few hundred bytes,
+// so a list that doubles its way to a thousand of them leaves a megabyte behind.
+fn brace_writes() []BraceWrite {
+	mut writes := []BraceWrite{}
+	unsafe {
+		writes.flags.set(.noslices)
+	}
+	return writes
+}
+
+fn brace_elements() []BraceElement {
+	mut elements := []BraceElement{}
+	unsafe {
+		elements.flags.set(.noslices)
+	}
+	return elements
+}
+
 // BraceWrite is one scalar subobject a brace initializer wrote: the byte it
 // starts at inside the object, the width of its type, the type's spelling, and
 // the element that wrote it. A designator and a nested list both arrive here:
@@ -3436,7 +3468,7 @@ fn brace_array_count(items []BraceElement) int {
 // member_index is the position of the named member in an aggregate, and none
 // when the aggregate has no member of that name.
 fn member_index(typ types.Type, name string) ?int {
-	for i, member in typ.members {
+	for i, member in typ.members() {
 		if member.name == name {
 			return i
 		}
@@ -3566,26 +3598,26 @@ fn (mut p Parser) fill_brace(typ types.Type, items []BraceElement, start int, ba
 						return items.len
 					}
 					member = found
-					i = p.fill_member(typ.members[member], layout.bits[member], item.designators[1..], items, i, base + layout.offsets[member], mut writes)
+					i = p.fill_member(typ.members()[member], layout.bits[member], item.designators[1..], items, i, base + layout.offsets[member], mut writes)
 					member++
 					continue
 				}
 				// An unnamed bitfield is not a member a positional list writes
 				// (6.7.2.1p12), so the value goes to the next member that takes
 				// one, which is what the flat reader does too.
-				for member < typ.members.len && typ.members[member].name.len == 0 {
+				for member < typ.members().len && typ.members()[member].name.len == 0 {
 					member++
 				}
-				if member >= typ.members.len {
+				if member >= typ.members().len {
 					return i
 				}
-				i = p.fill_member(typ.members[member], layout.bits[member], []BraceDesignator{}, items, i, base + layout.offsets[member], mut writes)
+				i = p.fill_member(typ.members()[member], layout.bits[member], []BraceDesignator{}, items, i, base + layout.offsets[member], mut writes)
 				member++
 			}
 			return i
 		}
 		.union_ {
-			if typ.members.len == 0 || start >= items.len {
+			if typ.members().len == 0 || start >= items.len {
 				return start
 			}
 			layout := p.representation.layout(typ) or { return start }
@@ -3603,7 +3635,7 @@ fn (mut p Parser) fill_brace(typ types.Type, items []BraceElement, start int, ba
 				}
 				rest = item.designators[1..]
 			}
-			return p.fill_member(typ.members[member], layout.bits[member], rest, items, start, base + layout.offsets[member], mut writes)
+			return p.fill_member(typ.members()[member], layout.bits[member], rest, items, start, base + layout.offsets[member], mut writes)
 		}
 		else {
 			if start >= items.len {
@@ -3723,7 +3755,7 @@ fn (mut p Parser) fill_designated(typ types.Type, designators []BraceDesignator,
 				p.error_at(designator.at, 'a constraint violation: ${typ.describe()} has no member named ${named}')
 				return items.len
 			}
-			return p.fill_member(typ.members[member], layout.bits[member], rest, items, start, base + layout.offsets[member], mut writes)
+			return p.fill_member(typ.members()[member], layout.bits[member], rest, items, start, base + layout.offsets[member], mut writes)
 		}
 		.union_ {
 			layout := p.representation.layout(typ) or { return start }
@@ -3735,7 +3767,7 @@ fn (mut p Parser) fill_designated(typ types.Type, designators []BraceDesignator,
 				p.error_at(designator.at, 'a constraint violation: ${typ.describe()} has no member named ${named}')
 				return items.len
 			}
-			return p.fill_member(typ.members[member], layout.bits[member], rest, items, start, base + layout.offsets[member], mut writes)
+			return p.fill_member(typ.members()[member], layout.bits[member], rest, items, start, base + layout.offsets[member], mut writes)
 		}
 		else {
 			p.error_at(designator.at, 'unsupported: a designator names a subobject of an object with members, and ${typ.describe()} has none')
@@ -3971,13 +4003,13 @@ fn (mut p Parser) collect_leaves(typ types.Type, base int, mut leaves []BraceWri
 		}
 		.struct_ {
 			layout := p.representation.layout(typ) or { return }
-			for i, member in typ.members {
+			for i, member in typ.members() {
 				p.collect_leaves(member.typ, base + layout.offsets[i], mut leaves)
 			}
 		}
 		.union_ {
 			layout := p.representation.layout(typ) or { return }
-			for i, member in typ.members {
+			for i, member in typ.members() {
 				p.collect_leaves(member.typ, base + layout.offsets[i], mut leaves)
 			}
 		}
@@ -4031,7 +4063,7 @@ fn (mut p Parser) file_scope_general_initializer(spec DeclSpec, d Declarator, li
 		p.error_at(list.at, 'unsupported: the layout of ${target.describe()} is not one this compiler knows')
 		return none
 	}
-	mut writes := []BraceWrite{}
+	mut writes := brace_writes()
 	end := p.fill_brace(target, list.elements, 0, 0, mut writes)
 	if end < list.elements.len {
 		p.error_at(list.at, 'a constraint violation: ${name} is initialized with more elements than its type holds')
@@ -4281,7 +4313,7 @@ fn (mut p Parser) initializer_list_for(written string, elements []BraceElement, 
 fn (mut p Parser) struct_brace_members(aggregate types.Type, list BraceList, name string) ?types.Layout {
 	targets := members_taking_values(aggregate)
 	for at in targets {
-		member := aggregate.members[at]
+		member := aggregate.members()[at]
 		if member.typ.kind in [types.Kind.struct_, .union_, .array] || member.typ.kind == .unknown {
 			p.error_at(list.at, 'unsupported: ${name} has a member ${member.name} of the type ${member.typ.describe()}, and a value is not written into an object of that type here')
 			return none
@@ -4298,7 +4330,7 @@ fn (mut p Parser) struct_brace_members(aggregate types.Type, list BraceList, nam
 	// one is a wrong value, not a conversion.
 	for i in 0 .. list.elements.len {
 		element := list.elements[i]
-		member := aggregate.members[targets[i]]
+		member := aggregate.members()[targets[i]]
 		pointer := member.typ.kind == .pointer
 		if element.address != none && !pointer {
 			p.error_at(list.at, 'unsupported: ${name} has a member ${member.name} of the type ${member.typ.describe()}, and its initializer writes an address')
@@ -4326,7 +4358,7 @@ fn (mut p Parser) struct_brace_members(aggregate types.Type, list BraceList, nam
 // one, into its own bits.
 fn members_taking_values(aggregate types.Type) []int {
 	mut indices := []int{}
-	for i, member in aggregate.members {
+	for i, member in aggregate.members() {
 		if member.name.len == 0 {
 			continue
 		}
@@ -4344,7 +4376,7 @@ fn members_taking_values(aggregate types.Type) []int {
 // A bitfield is not one of these: its value goes into its own bits, which the
 // member-by-member reader places.
 fn has_aggregate_member(typ types.Type) bool {
-	for member in typ.members {
+	for member in typ.members() {
 		if member.typ.kind in [types.Kind.struct_, .union_, .array] {
 			return true
 		}
@@ -4364,7 +4396,7 @@ fn (mut p Parser) struct_member_inits(aggregate types.Type, list BraceList, layo
 	for i in 0 .. list.elements.len {
 		element := list.elements[i]
 		at := targets[i]
-		member := aggregate.members[at]
+		member := aggregate.members()[at]
 		if address := element.address {
 			members << ast.MemberInit{
 				offset:   layout.offsets[at]
@@ -5322,7 +5354,7 @@ fn (mut p Parser) check_member_names(members []types.Member, keyword tokenize.To
 		if member.typ.kind !in [types.Kind.struct_, .union_] || !member.typ.is_complete() {
 			continue
 		}
-		for inner in member.typ.members {
+		for inner in member.typ.members() {
 			if inner.name == '' {
 				continue
 			}

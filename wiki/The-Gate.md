@@ -37,10 +37,10 @@ interop patterns are skipped under `tools/` and `.omh/`, where the scripts and
 the agent notes name them on purpose. The step cannot prove the compiler is
 written in V, only that it has not started pulling C into the compiler.
 
-The build step runs `v -o <temp> .` into a temporary path. It refuses a tree
-that does not compile.
+The build step runs `v -gc none -o <temp> .` into a temporary path. It refuses a
+tree that does not compile.
 
-The production build step runs `v -prod -o <temp> .`. It is a step of its own
+The production build step runs `v -prod -gc none -o <temp> .`. It is a step of its own
 because `-prod` is not the plain build with optimizations on: it makes V's
 warnings into errors, so a construct the plain build reports and carries on
 past stops this one. That is how the tree stopped building at all once upstream
