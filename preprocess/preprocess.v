@@ -1043,6 +1043,13 @@ fn (mut p Processor) emit(tok tokenize.Token) {
 // append is the plain end of the token stream: what emit does when there is
 // nothing to join.
 fn (mut p Processor) append(tok tokenize.Token, where string) {
+	// TODO: the stream of the whole program is built here, and it is 167.8 MB of
+	// the compiler's own generated C of which about 70 MB is the stream itself:
+	// the list doubles its way to a length nothing counts before the first token
+	// is made, and the buffers each growth copies from are 97 MB of that. A
+	// capacity reserved from the size of the input, or a pass that counts the
+	// tokens before any is built, is what would take the slack. The stream
+	// itself stays: the parser reads it and the tree names its text.
 	p.out << tokenize.Token{
 		kind: tok.kind
 		text: tok.text

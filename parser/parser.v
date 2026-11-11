@@ -501,6 +501,13 @@ fn (mut p Parser) parse_block() ![]ast.Stmt {
 // whose statement is a loop copies the whole loop, once per block that holds it.
 // What is built here is a temporary, and a temporary is copied.
 fn (p Parser) with_declared_types(stmts []ast.Stmt, mut out []ast.Stmt) {
+	// TODO: the list this loop appends to holds every statement of every block,
+	// and it is 145.5 MB of the compiler's own generated C: 74 MB of statements
+	// and 71 MB of the buffer each growth copied from before the statement list
+	// was sized to hold them. The count is not known until the block's closing
+	// brace, so the slack needs a reserve that is estimated rather than counted,
+	// or a list of statement lists that is joined once. What is left after that
+	// is the size of a statement, which is 200 bytes now.
 	for stmt in stmts {
 		if stmt.kind == .var_decl {
 			if symbol := p.scopes.lookup(stmt.decl_name()) {
