@@ -872,6 +872,12 @@ fn (mut e Emitter) build() ![]u8 {
 	// behind: 134 MB of peak RSS for 48 MB of text.
 	unsafe {
 		e.program.text.flags.set(.noslices)
+		// The references are appended to the same way and nothing slices them
+		// either: the layout reads each one and the merged list is built from
+		// them once. What the flag saves here is the copy each growth of the
+		// list leaves behind, 18.9 MB of the compiler's own generated C.
+		e.program.fixups.flags.set(.noslices)
+		e.program.data_fixups.flags.set(.noslices)
 	}
 	if e.start_only {
 		e.emit_start()!
