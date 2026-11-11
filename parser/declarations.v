@@ -2650,6 +2650,13 @@ struct BraceList {
 // written constant nor an address, and an empty pair of braces, which gives an
 // array no size to be.
 fn (mut p Parser) parse_brace_initializer(body bool) !BraceList {
+	// TODO: the element list this answers is read by the caller's walk and then
+	// dropped, and nothing frees it: `elements` was 31.3 MB of the compiler's own
+	// generated C at the peak, and a nested list is one more. The seven call
+	// sites exit through `fill_brace`/`brace_array_count`, so a free belongs
+	// there, and it has to walk `BraceElement.list` to free the nested lists too.
+	// The expression each element carries is moved into the statement the walk
+	// builds, so the arrays are the whole of what is left to free.
 	open := p.next() // {
 	if p.at_punct('}') {
 		// An empty list writes no values. C23 6.7.9 makes `{}` a list of no

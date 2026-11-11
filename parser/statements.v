@@ -2558,6 +2558,12 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 // so every expression is one allocation and the tree holds all of them. The
 // number moves with the node's size and not with a missing free.
 fn zero_initializer(at tokenize.Token) ast.Expr {
+	// TODO: this builds one IntLit box per zeroed subobject, 41.6 MB of the
+	// compiler's own generated C at the peak: a brace list that writes one of a
+	// struct's four members zeroes the other three, and each zero is its own
+	// node. One node shared by every zero store is the change, and it is a
+	// contract one: the node carries the line and column of its own use, so the
+	// shared node reports the first zero it was built for.
 	return ast.Expr(ast.IntLit{
 		value: 0
 		text:  '0'
