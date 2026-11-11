@@ -31,6 +31,19 @@ struct Piece {
 	hide []string
 }
 
+// expansion_pieces answers a list a run of pieces is expanded into. It is filled
+// here, read once by the caller and freed there; nothing slices it while it grows,
+// which is what lets the runtime free the buffer a growth copies from rather than
+// leave it behind. A piece is a token with the list of names it is hidden from, so
+// a run that doubles its way to a thousand of them leaves two hundred kilobytes.
+fn expansion_pieces() []Piece {
+	mut pieces := []Piece{}
+	unsafe {
+		pieces.flags.set(.noslices)
+	}
+	return pieces
+}
+
 // produced_from turns a token of a replacement into the text of the expansion
 // that happened at `site`: moved there for a diagnostic, and hidden from the
 // macro being expanded and from everything that hid the use itself. The second
@@ -218,7 +231,7 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 	defer {
 		p.expansion_depth--
 	}
-	mut out := []Piece{}
+	mut out := expansion_pieces()
 	mut i := 0
 	for i < tokens.len {
 		piece := tokens[i]
@@ -393,7 +406,7 @@ fn (mut p Processor) substitute(macro Macro, arguments Arguments, site Piece) []
 		}
 		args[va_name] = rest
 	}
-	mut out := []Piece{}
+	mut out := expansion_pieces()
 	mut i := 0
 	for i < macro.body.len {
 		t := macro.body[i]
