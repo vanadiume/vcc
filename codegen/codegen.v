@@ -5161,15 +5161,6 @@ fn (mut e Emitter) declare(name string, written string, count int, bytes int, st
 		wide:        wide
 		long_double: long_double
 		decimal:     decimal
-		offset:      slot.offset
-		width:       width
-		count:       count
-		floating:    bytes == 0 && e.writes_a_double(written)
-		single:      bytes == 0 && e.writes_a_float(written)
-		unsigned:    e.written_is_unsigned(written)
-		boolean:     written == '_Bool'
-		bytes:       if wide { wide_bytes } else { bytes }
-		wide:        wide
 		complex:     e.writes_a_complex(written)
 	}
 	e.scopes[e.scopes.len - 1][name] = block
