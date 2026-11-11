@@ -494,6 +494,12 @@ fn (mut p Parser) parse_block() ![]ast.Stmt {
 // was recorded in. The statements go into `out` rather than into a list of the
 // function's own, because a block asks this once per statement and a list per
 // call is a copy of the statement the block already holds.
+//
+// Each statement is written as a struct built from the one read, and not appended
+// as it stands. V clones what it appends when the value being appended can be
+// addressed, and the clone of a statement is every statement under it: a block
+// whose statement is a loop copies the whole loop, once per block that holds it.
+// What is built here is a temporary, and a temporary is copied.
 fn (p Parser) with_declared_types(stmts []ast.Stmt, mut out []ast.Stmt) {
 	for stmt in stmts {
 		if stmt.kind == .var_decl {
@@ -519,7 +525,9 @@ fn (p Parser) with_declared_types(stmts []ast.Stmt, mut out []ast.Stmt) {
 				continue
 			}
 		}
-		out << stmt
+		out << ast.Stmt{
+			...stmt
+		}
 	}
 }
 
