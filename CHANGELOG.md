@@ -1058,3 +1058,4 @@ it owns the change, which is the same vocabulary the commits use.
 * parser: the list a compound literal's stores are built in is freed (53193f9)
 * parser: a block copies the nested-function names only when it declares one (d69bb39)
 * codegen: the reference lists free the buffer each growth copies from (964c71f)
+* docs: the changelog records the memory round (72b6df2)
