@@ -1043,3 +1043,6 @@ it owns the change, which is the same vocabulary the commits use.
 * preprocess: a file's token list is freed when the file ends (d80e607)
 * parser: the statement lists a block does not keep are freed (bbb47e3)
 * docs: the architecture says what the memory mode asks of a stage (f0a193d)
+* interning: a spelling the compiler repeats is kept once (d13d699)
+* tokenize: a token's text is the pool's copy, not a fresh string (1f61c58)
+* codegen: a member store names its member only when it refuses (e64f417)
