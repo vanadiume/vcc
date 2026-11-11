@@ -79,6 +79,15 @@ fn (mut p Parser) build_compound_literal(spec DeclSpec, d Declarator, at tokeniz
 	}
 	name := p.compound_name()
 	target, stmts := p.compound_literal_object(name, spec, d, at, list)
+	// The stores the object is initialized with are copied into the list of the
+	// statement the literal is written in, and the list they were built in is
+	// this reader's own: nothing else keeps it, so the buffer it holds is freed
+	// here. It is the whole of what the literals in a program allocated, 70 MB
+	// of the compiler's own generated C, and with no collector a list nobody
+	// frees stays.
+	defer {
+		unsafe { stmts.free() }
+	}
 	if p.compound_unstable > 0 && !brace_list_is_constant(list.elements) {
 		// The literal is written where the statement may evaluate it more than
 		// once and the initializer is not constant, so 6.5.2.5p7's "the object
