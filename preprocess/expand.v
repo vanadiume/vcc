@@ -182,7 +182,15 @@ fn (mut p Processor) expand_all(tokens []tokenize.Token) []tokenize.Token {
 			tok: t
 		}
 	}
+	// A run that holds a name which expands into more tokens grows this list, and
+	// the buffer a growth copies from is freed here: nothing slices it before it
+	// is done, and the caller frees the one that comes back. Without the flag
+	// each of those copies stayed, at 102.8 MB of the compiler's own generated C
+	// over the headers it reads.
 	mut out := []tokenize.Token{cap: pieces.len}
+	unsafe {
+		out.flags.set(.noslices)
+	}
 	expanded := p.expand_pieces(pieces)
 	for piece in expanded {
 		out << piece.tok
