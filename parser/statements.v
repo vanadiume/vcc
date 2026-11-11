@@ -351,15 +351,17 @@ fn (mut p Parser) parse_asm_statement() []ast.Stmt {
 	return [ast.Stmt{
 		kind:  .asm_stmt
 		extra: &ast.StmtExtra{
-			asm_text:            text
-			asm_spelling:        spelling
-			asm_outputs:         output_operands.len
-			asm_inputs:          input_operands.len
-			asm_output_operands: output_operands
-			asm_input_operands:  input_operands
-			asm_clobbers:        clobbers
-			asm_is_goto:         is_goto
-			asm_goto_labels:     goto_labels
+			assembly: &ast.StmtAsm{
+				text:            text
+				spelling:        spelling
+				outputs:         output_operands.len
+				inputs:          input_operands.len
+				output_operands: output_operands
+				input_operands:  input_operands
+				clobbers:        clobbers
+				is_goto:         is_goto
+				goto_labels:     goto_labels
+			}
 		}
 		line:  start.line
 		col:   start.col
@@ -2902,10 +2904,14 @@ fn (mut p Parser) parse_nested_function(spec DeclSpec, d Declarator) ?ast.Stmt {
 		line:     at.line
 		col:      at.col
 	}
+	mut held := &ast.FnDecl{}
+	unsafe {
+		*held = decl
+	}
 	return ast.Stmt{
 		kind:  .nested_function
 		extra: &ast.StmtExtra{
-			nested_fn: decl
+			nested_fn: held
 		}
 		line:  at.line
 		col:   at.col

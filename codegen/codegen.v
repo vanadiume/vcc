@@ -1368,7 +1368,7 @@ fn collect_nested(stmts []ast.Stmt) []ast.FnDecl {
 	mut out := []ast.FnDecl{}
 	for stmt in stmts {
 		if decl := stmt.nested_fn() {
-			out << decl
+			out << *decl
 			out << collect_nested(decl.body)
 		}
 		out << collect_nested(stmt.body)
@@ -2158,7 +2158,7 @@ fn (mut e Emitter) emit_statements(stmts []ast.Stmt) !bool {
 				// after the function that writes it, and what this place does is
 				// remember the definition with the scopes it was written in.
 				if decl := stmt.nested_fn() {
-					e.record_nested(decl)
+					e.record_nested(*decl)
 				}
 			}
 		}

@@ -441,53 +441,66 @@ pub:
 	// goto jumps to the address the expression is worth, so no label name is
 	// involved and label is empty for it.
 	goto_expr ?Expr
-	// asm_text is the instruction text of a statement-level GNU asm, with the
-	// escapes of its adjacent string literals resolved and the literals joined.
-	// It is empty both for the barrier and for a statement whose only string
-	// literal was `""`; empty with no operands below is the barrier shape.
-	asm_text string
-	// asm_spelling is that same text as the file wrote it, quotes and escapes
-	// included, which is what a diagnostic names: the resolved text can hold
-	// the newline and tab an instruction is written with, and a message with a
-	// newline in it is two lines.
-	asm_spelling string
-	// asm_outputs and asm_inputs are how many operands each of the statement's
-	// output and input lists wrote. Zero for both, with empty text, is the
-	// barrier: a constraint and nothing to constrain.
-	asm_outputs int
-	asm_inputs  int
-	// asm_output_operands and asm_input_operands are those two lists as the file
-	// wrote them: the name an operand was given with `[name]`, empty when it was
-	// given none, the constraint string, and the expression whose value the
-	// operand is. The counts above are what the lists hold, and the emitter
-	// needs the lists: a register to place a value in comes from the constraint,
-	// and the value comes from the expression.
-	asm_output_operands []AsmOperand
-	asm_input_operands  []AsmOperand
-	// asm_clobbers is the clobber list, each entry as the file wrote it with
-	// its escapes resolved: `memory`, `cc`, or a register name. It says what a
-	// later pass may not keep across the statement, which is the whole of what
-	// an accepted barrier tells the optimizer.
-	asm_clobbers []string
-	// asm_is_goto says the statement was written `asm goto`, whose fifth list
-	// names the C labels the template may jump to, and asm_goto_labels is that
-	// list, each a label name as the file wrote it. A `%lN` in the template
-	// refers to the Nth of them, counting from zero. This is the shape glibc
-	// uses to reach a label from inside an instruction, which an ordinary goto
-	// cannot do because it is not an instruction.
-	asm_is_goto     bool
-	asm_goto_labels []string
+	// assembly is the whole of a statement-level GNU asm, held by pointer from
+	// the statements that are one. It is 257 bytes of the extra part for a
+	// construct that most translation units do not write at all, and a
+	// statement that is one allocates it.
+	assembly ?&StmtAsm
 	// cleanup is the name of the function a declaration asked for with
 	// `__attribute__((cleanup(name)))`, which runs on the object when the
 	// block it was declared in ends. It is empty for a declaration that asked
 	// for none, which is every declaration but the one GNU attribute's.
 	cleanup string
 	// nested_fn is the function a nested_function statement defines, held by
-	// value because there is nothing else in the extra part for such a
-	// statement and it is one of the few statements that carries a whole
-	// function. It is none for every other statement, which is all of them but
-	// a `nested_function`.
-	nested_fn ?FnDecl
+	// pointer because a FnDecl is 600 bytes and every other statement that
+	// carries an extra part has none of it. It is nil for every other
+	// statement, which is all of them but a `nested_function`.
+	nested_fn ?&FnDecl
+}
+
+// StmtAsm is the content of a statement-level GNU asm: the instruction text
+// with its escapes resolved, the same text as the file spelled it, the operand
+// lists, the clobber list, and, for `asm goto`, the labels its template may
+// jump to. It sits behind a pointer in the statement's extra part because a
+// statement that is not an asm has no use for any of it.
+pub struct StmtAsm {
+pub:
+	// text is the instruction text, with the escapes of its adjacent string
+	// literals resolved and the literals joined. It is empty both for the
+	// barrier and for a statement whose only string literal was `""`; empty
+	// with no operands is the barrier shape.
+	text string
+	// spelling is that same text as the file wrote it, quotes and escapes
+	// included, which is what a diagnostic names: the resolved text can hold
+	// the newline and tab an instruction is written with, and a message with a
+	// newline in it is two lines.
+	spelling string
+	// outputs and inputs are how many operands each of the statement's output
+	// and input lists wrote. Zero for both, with empty text, is the barrier: a
+	// constraint and nothing to constrain.
+	outputs int
+	inputs  int
+	// output_operands and input_operands are those two lists as the file wrote
+	// them: the name an operand was given with `[name]`, empty when it was
+	// given none, the constraint string, and the expression whose value the
+	// operand is. The counts above are what the lists hold, and the emitter
+	// needs the lists: a register to place a value in comes from the
+	// constraint, and the value comes from the expression.
+	output_operands []AsmOperand
+	input_operands  []AsmOperand
+	// clobbers is the clobber list, each entry as the file wrote it with its
+	// escapes resolved: `memory`, `cc`, or a register name. It says what a
+	// later pass may not keep across the statement, which is the whole of what
+	// an accepted barrier tells the optimizer.
+	clobbers []string
+	// is_goto says the statement was written `asm goto`, whose fifth list
+	// names the C labels the template may jump to, and goto_labels is that
+	// list, each a label name as the file wrote it. A `%lN` in the template
+	// refers to the Nth of them, counting from zero. This is the shape glibc
+	// uses to reach a label from inside an instruction, which an ordinary goto
+	// cannot do because it is not an instruction.
+	is_goto     bool
+	goto_labels []string
 }
 
 // The rest of this file is how a statement answers for what is in its extra
@@ -588,7 +601,9 @@ pub fn (stmt Stmt) goto_expr() ?Expr {
 @[inline]
 pub fn (stmt Stmt) asm_text() string {
 	if extra := stmt.extra {
-		return extra.asm_text
+		if assembly := extra.assembly {
+			return assembly.text
+		}
 	}
 	return ''
 }
@@ -596,7 +611,9 @@ pub fn (stmt Stmt) asm_text() string {
 @[inline]
 pub fn (stmt Stmt) asm_spelling() string {
 	if extra := stmt.extra {
-		return extra.asm_spelling
+		if assembly := extra.assembly {
+			return assembly.spelling
+		}
 	}
 	return ''
 }
@@ -604,7 +621,9 @@ pub fn (stmt Stmt) asm_spelling() string {
 @[inline]
 pub fn (stmt Stmt) asm_outputs() int {
 	if extra := stmt.extra {
-		return extra.asm_outputs
+		if assembly := extra.assembly {
+			return assembly.outputs
+		}
 	}
 	return 0
 }
@@ -612,7 +631,9 @@ pub fn (stmt Stmt) asm_outputs() int {
 @[inline]
 pub fn (stmt Stmt) asm_inputs() int {
 	if extra := stmt.extra {
-		return extra.asm_inputs
+		if assembly := extra.assembly {
+			return assembly.inputs
+		}
 	}
 	return 0
 }
@@ -630,25 +651,31 @@ pub:
 @[inline]
 pub fn (stmt Stmt) asm_output_operands() []AsmOperand {
 	if extra := stmt.extra {
-		return extra.asm_output_operands
+		if assembly := extra.assembly {
+			return assembly.output_operands
+		}
 	}
-	return []
+	return []AsmOperand{}
 }
 
 @[inline]
 pub fn (stmt Stmt) asm_input_operands() []AsmOperand {
 	if extra := stmt.extra {
-		return extra.asm_input_operands
+		if assembly := extra.assembly {
+			return assembly.input_operands
+		}
 	}
-	return []
+	return []AsmOperand{}
 }
 
 @[inline]
 pub fn (stmt Stmt) asm_clobbers() []string {
 	if extra := stmt.extra {
-		return extra.asm_clobbers
+		if assembly := extra.assembly {
+			return assembly.clobbers
+		}
 	}
-	return []
+	return []string{}
 }
 
 // cleanup is the function a declaration asked to run on the object when the
@@ -665,7 +692,9 @@ pub fn (stmt Stmt) cleanup() string {
 @[inline]
 pub fn (stmt Stmt) asm_is_goto() bool {
 	if extra := stmt.extra {
-		return extra.asm_is_goto
+		if assembly := extra.assembly {
+			return assembly.is_goto
+		}
 	}
 	return false
 }
@@ -673,16 +702,19 @@ pub fn (stmt Stmt) asm_is_goto() bool {
 @[inline]
 pub fn (stmt Stmt) asm_goto_labels() []string {
 	if extra := stmt.extra {
-		return extra.asm_goto_labels
+		if assembly := extra.assembly {
+			return assembly.goto_labels
+		}
 	}
-	return []
+	return []string{}
 }
 
 // nested_fn is the function a nested_function statement defines, or none for
 // every other statement. It is how a reader gets the definition out without
-// reaching through the extra pointer itself.
+// reaching through the extra pointer itself, and it is the definition the tree
+// holds rather than a copy of it.
 @[inline]
-pub fn (stmt Stmt) nested_fn() ?FnDecl {
+pub fn (stmt Stmt) nested_fn() ?&FnDecl {
 	if extra := stmt.extra {
 		return extra.nested_fn
 	}

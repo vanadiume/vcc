@@ -344,28 +344,20 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 					goto_expr = rewrite(value, opts, 0)
 				}
 				extra = &ast.StmtExtra{
-					resolved:            present.resolved
-					bytes:               present.bytes
-					decl_vla_size:       present.decl_vla_size
-					decl_stride:         present.decl_stride
-					deref:               deref
-					subscript:           present.subscript
-					case_value:          present.case_value
-					case_value_high:     present.case_value_high
-					case_is_range:       present.case_is_range
-					label:               present.label
-					goto_expr:           goto_expr
-					asm_text:            present.asm_text
-					asm_spelling:        present.asm_spelling
-					asm_outputs:         present.asm_outputs
-					asm_inputs:          present.asm_inputs
-					asm_output_operands: present.asm_output_operands
-					asm_input_operands:  present.asm_input_operands
-					asm_clobbers:        present.asm_clobbers
-					asm_is_goto:         present.asm_is_goto
-					asm_goto_labels:     present.asm_goto_labels
-					cleanup:             present.cleanup
-					nested_fn:           present.nested_fn
+					resolved:        present.resolved
+					bytes:           present.bytes
+					decl_vla_size:   present.decl_vla_size
+					decl_stride:     present.decl_stride
+					deref:           deref
+					subscript:       present.subscript
+					case_value:      present.case_value
+					case_value_high: present.case_value_high
+					case_is_range:   present.case_is_range
+					label:           present.label
+					goto_expr:       goto_expr
+					assembly:        present.assembly
+					cleanup:         present.cleanup
+					nested_fn:       present.nested_fn
 				}
 			}
 		}
