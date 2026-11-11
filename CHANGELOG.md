@@ -1046,3 +1046,4 @@ it owns the change, which is the same vocabulary the commits use.
 * interning: a spelling the compiler repeats is kept once (d13d699)
 * tokenize: a token's text is the pool's copy, not a fresh string (1f61c58)
 * codegen: a member store names its member only when it refuses (e64f417)
+* docs: the changelog records the intern pool (b54e9d3)
