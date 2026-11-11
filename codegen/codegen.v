@@ -3919,14 +3919,12 @@ fn (mut e Emitter) assign_member(stmt ast.Stmt, member ast.Field, expr ast.Expr,
 	e.store_accumulator(address, stmt.line, stmt.col)!
 	e.emit_expr_at(expr, depth + 1)!
 	address_register := e.scratch(stmt.line, stmt.col)!
-	member_name := '${member.name}.${member.member}'
 	if member.bitfield {
-		return e.assign_member_bits(stmt, member, expr, address, address_register, width,
-			member_name)
+		return e.assign_member_bits(stmt, member, expr, address, address_register, width)
 	}
 	if e.writes_a_float(member.spelling) {
 		if !e.floating_of(expr) && e.is_a_pointer(expr) {
-			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored in the member ${member_name}, which holds a float, and there is no conversion between them')
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored in the member ${member.name}.${member.member}, which holds a float, and there is no conversion between them')
 			return error('pointer into a float')
 		}
 		e.convert_to_single(expr, stmt.line, stmt.col)!
@@ -3937,7 +3935,7 @@ fn (mut e Emitter) assign_member(stmt ast.Stmt, member ast.Field, expr ast.Expr,
 	}
 	if e.writes_a_double(member.spelling) {
 		if !e.floating_of(expr) && e.is_a_pointer(expr) {
-			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored in the member ${member_name}, which holds a double, and there is no conversion between them')
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored in the member ${member.name}.${member.member}, which holds a double, and there is no conversion between them')
 			return error('pointer into a double')
 		}
 		e.convert_to_double(expr, stmt.line, stmt.col)!
@@ -3964,7 +3962,7 @@ fn (mut e Emitter) assign_member(stmt ast.Stmt, member ast.Field, expr ast.Expr,
 	// one is refused - except into a member narrower than four bytes, where the
 	// language converts an int by taking the low byte or the low two of it.
 	if e.constant(expr) == none && value_width > width && !(width < 4 && value_width == 4) {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${value_width} bytes is stored into the member ${member_name}, which holds ${width}')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${value_width} bytes is stored into the member ${member.name}.${member.member}, which holds ${width}')
 		return error('width mismatch')
 	}
 	if width == 8 && value_width != 8 {
@@ -3998,9 +3996,9 @@ fn (mut e Emitter) assign_member(stmt ast.Stmt, member ast.Field, expr ast.Expr,
 // the field's clear mask is written as a four-byte immediate, and the eight-byte
 // case would need a width this instruction does not carry, so it is named rather
 // than written wrong.
-fn (mut e Emitter) assign_member_bits(stmt ast.Stmt, member ast.Field, expr ast.Expr, address Slot, address_register backend.Register, width int, member_name string) !void {
+fn (mut e Emitter) assign_member_bits(stmt ast.Stmt, member ast.Field, expr ast.Expr, address Slot, address_register backend.Register, width int) !void {
 	if member.unit_width <= 0 || member.unit_width > 4 {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the bitfield ${member_name} lies in a ${member.unit_width}-byte storage unit, and this back end writes a bitfield only in a unit of four bytes or fewer')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the bitfield ${member.name}.${member.member} lies in a ${member.unit_width}-byte storage unit, and this back end writes a bitfield only in a unit of four bytes or fewer')
 		return error('unsupported bitfield unit')
 	}
 	if e.floating_of(expr) {
@@ -4011,7 +4009,7 @@ fn (mut e Emitter) assign_member_bits(stmt ast.Stmt, member ast.Field, expr ast.
 			return error('unknown width')
 		}
 		if e.constant(expr) == none && value_width > width && !(width < 4 && value_width == 4) {
-			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${value_width} bytes is stored into the member ${member_name}, which holds ${width}')
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${value_width} bytes is stored into the member ${member.name}.${member.member}, which holds ${width}')
 			return error('width mismatch')
 		}
 		e.normalize_a_bool_store(e.declares_a_bool(member.spelling), value_width == 8, stmt.line,
