@@ -12767,10 +12767,10 @@ fn (e Emitter) wide_argument(call ast.Call, position int, arg ast.Expr) bool {
 // pointer is followed to the function it points at.
 fn call_parameter(call ast.Call, position int) ?types.Type {
 	signature := call_signature(call) or { return none }
-	if position >= signature.params.len {
+	if position >= signature.params().len {
 		return none
 	}
-	return signature.params[position].typ
+	return signature.params()[position].typ
 }
 
 // indirect_call_returns is the type a call through an expression is worth, and none
@@ -12837,8 +12837,8 @@ fn (e Emitter) call_widths(call ast.Call) []int {
 		return e.signatures[call.name] or { []int{} }
 	}
 	signature := call_signature(call) or { return []int{} }
-	mut widths := []int{cap: signature.params.len}
-	for parameter in signature.params {
+	mut widths := []int{cap: signature.params().len}
+	for parameter in signature.params() {
 		class := abi.class_of(e.representation, parameter.typ)
 		if class.bytes > 0 {
 			widths << class.bytes
@@ -13306,8 +13306,8 @@ fn (mut e Emitter) global_of(name string) ?image.GlobalSlot {
 		// there at the member's width and the rest of the union stays zero.
 		// An address initializing a pointer first member is written at the
 		// same byte, as a reference the layout resolves.
-		if object.resolved.kind == .union_ && object.resolved.members.len > 0 {
-			first := object.resolved.members[0]
+		if object.resolved.kind == .union_ && object.resolved.members().len > 0 {
+			first := object.resolved.members()[0]
 			member_width := e.type_width(first.typ.describe()) or { object.bytes }
 			if value := object.init_float {
 				if first.typ.kind == .float {

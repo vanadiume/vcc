@@ -289,7 +289,7 @@ fn test_a_function_says_what_it_returns_and_what_it_takes() {
 	// not a prototype and is described as one the way the declaration reads.
 	call := function_type(int_type(), [], false, false)
 	assert call.describe() == 'int ()'
-	assert call.params.len == 0
+	assert call.params().len == 0
 	// A pointer to a function is the type a declared function pointer has.
 	assert pointer_to(f).returns() or {
 		assert false

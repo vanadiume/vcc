@@ -133,7 +133,7 @@ fn (mut p Parser) cast_to_union(at tokenize.Token, spec DeclSpec, d Declarator, 
 	union_type := p.tagged_type(destination)
 	source := types.unqualified(p.value_type(operand))
 	mut member := ''
-	for candidate in union_type.members {
+	for candidate in union_type.members() {
 		if types.unqualified(candidate.typ).compatible(source) {
 			member = candidate.name
 			break

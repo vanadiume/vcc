@@ -1437,7 +1437,7 @@ fn (mut p Parser) parse_member(base string, object ?ast.Expr, aggregate types.Ty
 		return error('not an aggregate')
 	}
 	mut at := -1
-	for i, member in tagged.members {
+	for i, member in tagged.members() {
 		if member.name == name.text {
 			at = i
 			break
@@ -1451,7 +1451,7 @@ fn (mut p Parser) parse_member(base string, object ?ast.Expr, aggregate types.Ty
 		p.error_at(name, 'unsupported: the members of ${tagged.describe()} are not a layout this compiler knows, so the member ${name.text} cannot be read')
 		return error('no layout')
 	}
-	member := tagged.members[at]
+	member := tagged.members()[at]
 	return &ast.Field{
 		name:            base
 		base:            object
@@ -1489,7 +1489,7 @@ fn (mut p Parser) parse_member(base string, object ?ast.Expr, aggregate types.Ty
 fn (p Parser) tagged_type(aggregate types.Type) types.Type {
 	mut answered := aggregate
 	p.complete_parts(mut answered)
-	if answered.kind !in [types.Kind.struct_, .union_] || answered.tag == ''
+	if answered.kind !in [types.Kind.struct_, .union_] || answered.tag() == ''
 		|| answered.is_complete() {
 		return answered
 	}
@@ -1523,12 +1523,18 @@ fn (p Parser) complete_parts(mut t types.Type) {
 			if t.base != unsafe { nil } {
 				p.complete_parts(mut *t.base)
 			}
-			for i in 0 .. t.params.len {
-				p.complete_parts(mut t.params[i].typ)
+			// The list is the type's own and every copy of the type reads it,
+			// so an element completed here is completed for all of them. It
+			// has to be reached through a variable: an element of a list a
+			// call answered with is not a place a reference can be taken to,
+			// and what is written through it is a copy nobody keeps.
+			mut params := t.params()
+			for i in 0 .. params.len {
+				p.complete_parts(mut params[i].typ)
 			}
 		}
 		.struct_, .union_ {
-			if t.tag == '' || t.is_complete() {
+			if t.tag() == '' || t.is_complete() {
 				return
 			}
 			found := p.scopes.lookup_tag(types.unqualified(t).describe()) or { return }
@@ -3371,7 +3377,7 @@ fn (mut p Parser) checked_arguments(signature types.Type, mut args []ast.Expr, a
 	if !answered.prototyped {
 		return answered.returns() or { types.Type{} }
 	}
-	parameters := answered.params
+	parameters := answered.params()
 	if !answered.variadic && parameters.len != args.len {
 		p.error_at(at, 'the call to ${what} passes ${args.len} argument(s), and the declaration of ${what} names ${parameters.len} argument(s)')
 	}

@@ -215,7 +215,7 @@ fn eightbyte_is_floating(r types.Representation, declared types.Type, which int)
 // element of an array likewise, one element at a time.
 fn note_eightbyte(r types.Representation, declared types.Type, base int, low int, high int, mut cover EightbyteCover) {
 	layout := r.layout(declared) or { return }
-	for i, member in declared.members {
+	for i, member in declared.members() {
 		if i >= layout.offsets.len {
 			break
 		}

@@ -48,7 +48,7 @@ fn (e Emitter) type_contains_decimal(typ types.Type) bool {
 		return true
 	}
 	if typ.kind in [types.Kind.struct_, .union_] {
-		for member in typ.members {
+		for member in typ.members() {
 			if e.type_contains_decimal(member.typ) {
 				return true
 			}

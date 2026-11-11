@@ -1164,11 +1164,11 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 						if list.elements.len > 1 {
 							p.error_at(list.at, 'a constraint violation: ${data_name} holds one value and its initializer writes ${list.elements.len}')
 							data_problem = true
-						} else if spec.clause.members.len == 0 {
+						} else if spec.clause.members().len == 0 {
 							p.error_at(list.at, 'unsupported: ${spec.clause.describe()} has no first member to initialize')
 							data_problem = true
 						} else {
-							first := spec.clause.members[0]
+							first := spec.clause.members()[0]
 							if first.typ.kind in [types.Kind.struct_, .union_, .array] {
 								p.error_at(list.at, 'unsupported: the first member of ${spec.clause.describe()} is an object of the type ${first.typ.describe()}, and a brace initializer for one is not implemented')
 								data_problem = true
@@ -2381,7 +2381,7 @@ fn (mut p Parser) file_scope_part_offset(name string, at tokenize.Token) ?int {
 			return none
 		}
 		mut member_index := -1
-		for i, member in aggregate.members {
+		for i, member in aggregate.members() {
 			if member.name == member_name.text {
 				member_index = i
 				break
@@ -2391,7 +2391,7 @@ fn (mut p Parser) file_scope_part_offset(name string, at tokenize.Token) ?int {
 			p.error_at(member_name, 'unsupported: ${aggregate.describe()} has no member called ${member_name.text}')
 			return none
 		}
-		member := aggregate.members[member_index]
+		member := aggregate.members()[member_index]
 		if member.bitfield {
 			p.error_at(member_name, 'unsupported: ${member_name.text} is a bitfield, and a bitfield sits in bits inside a unit rather than at a byte offset')
 			return none
@@ -3458,7 +3458,7 @@ fn brace_array_count(items []BraceElement) int {
 // member_index is the position of the named member in an aggregate, and none
 // when the aggregate has no member of that name.
 fn member_index(typ types.Type, name string) ?int {
-	for i, member in typ.members {
+	for i, member in typ.members() {
 		if member.name == name {
 			return i
 		}
@@ -3588,26 +3588,26 @@ fn (mut p Parser) fill_brace(typ types.Type, items []BraceElement, start int, ba
 						return items.len
 					}
 					member = found
-					i = p.fill_member(typ.members[member], layout.bits[member], item.designators[1..], items, i, base + layout.offsets[member], mut writes)
+					i = p.fill_member(typ.members()[member], layout.bits[member], item.designators[1..], items, i, base + layout.offsets[member], mut writes)
 					member++
 					continue
 				}
 				// An unnamed bitfield is not a member a positional list writes
 				// (6.7.2.1p12), so the value goes to the next member that takes
 				// one, which is what the flat reader does too.
-				for member < typ.members.len && typ.members[member].name.len == 0 {
+				for member < typ.members().len && typ.members()[member].name.len == 0 {
 					member++
 				}
-				if member >= typ.members.len {
+				if member >= typ.members().len {
 					return i
 				}
-				i = p.fill_member(typ.members[member], layout.bits[member], []BraceDesignator{}, items, i, base + layout.offsets[member], mut writes)
+				i = p.fill_member(typ.members()[member], layout.bits[member], []BraceDesignator{}, items, i, base + layout.offsets[member], mut writes)
 				member++
 			}
 			return i
 		}
 		.union_ {
-			if typ.members.len == 0 || start >= items.len {
+			if typ.members().len == 0 || start >= items.len {
 				return start
 			}
 			layout := p.representation.layout(typ) or { return start }
@@ -3625,7 +3625,7 @@ fn (mut p Parser) fill_brace(typ types.Type, items []BraceElement, start int, ba
 				}
 				rest = item.designators[1..]
 			}
-			return p.fill_member(typ.members[member], layout.bits[member], rest, items, start, base + layout.offsets[member], mut writes)
+			return p.fill_member(typ.members()[member], layout.bits[member], rest, items, start, base + layout.offsets[member], mut writes)
 		}
 		else {
 			if start >= items.len {
@@ -3745,7 +3745,7 @@ fn (mut p Parser) fill_designated(typ types.Type, designators []BraceDesignator,
 				p.error_at(designator.at, 'a constraint violation: ${typ.describe()} has no member named ${named}')
 				return items.len
 			}
-			return p.fill_member(typ.members[member], layout.bits[member], rest, items, start, base + layout.offsets[member], mut writes)
+			return p.fill_member(typ.members()[member], layout.bits[member], rest, items, start, base + layout.offsets[member], mut writes)
 		}
 		.union_ {
 			layout := p.representation.layout(typ) or { return start }
@@ -3757,7 +3757,7 @@ fn (mut p Parser) fill_designated(typ types.Type, designators []BraceDesignator,
 				p.error_at(designator.at, 'a constraint violation: ${typ.describe()} has no member named ${named}')
 				return items.len
 			}
-			return p.fill_member(typ.members[member], layout.bits[member], rest, items, start, base + layout.offsets[member], mut writes)
+			return p.fill_member(typ.members()[member], layout.bits[member], rest, items, start, base + layout.offsets[member], mut writes)
 		}
 		else {
 			p.error_at(designator.at, 'unsupported: a designator names a subobject of an object with members, and ${typ.describe()} has none')
@@ -3993,13 +3993,13 @@ fn (mut p Parser) collect_leaves(typ types.Type, base int, mut leaves []BraceWri
 		}
 		.struct_ {
 			layout := p.representation.layout(typ) or { return }
-			for i, member in typ.members {
+			for i, member in typ.members() {
 				p.collect_leaves(member.typ, base + layout.offsets[i], mut leaves)
 			}
 		}
 		.union_ {
 			layout := p.representation.layout(typ) or { return }
-			for i, member in typ.members {
+			for i, member in typ.members() {
 				p.collect_leaves(member.typ, base + layout.offsets[i], mut leaves)
 			}
 		}
@@ -4303,7 +4303,7 @@ fn (mut p Parser) initializer_list_for(written string, elements []BraceElement, 
 fn (mut p Parser) struct_brace_members(aggregate types.Type, list BraceList, name string) ?types.Layout {
 	targets := members_taking_values(aggregate)
 	for at in targets {
-		member := aggregate.members[at]
+		member := aggregate.members()[at]
 		if member.typ.kind in [types.Kind.struct_, .union_, .array] || member.typ.kind == .unknown {
 			p.error_at(list.at, 'unsupported: ${name} has a member ${member.name} of the type ${member.typ.describe()}, and a value is not written into an object of that type here')
 			return none
@@ -4320,7 +4320,7 @@ fn (mut p Parser) struct_brace_members(aggregate types.Type, list BraceList, nam
 	// one is a wrong value, not a conversion.
 	for i in 0 .. list.elements.len {
 		element := list.elements[i]
-		member := aggregate.members[targets[i]]
+		member := aggregate.members()[targets[i]]
 		pointer := member.typ.kind == .pointer
 		if element.address != none && !pointer {
 			p.error_at(list.at, 'unsupported: ${name} has a member ${member.name} of the type ${member.typ.describe()}, and its initializer writes an address')
@@ -4348,7 +4348,7 @@ fn (mut p Parser) struct_brace_members(aggregate types.Type, list BraceList, nam
 // one, into its own bits.
 fn members_taking_values(aggregate types.Type) []int {
 	mut indices := []int{}
-	for i, member in aggregate.members {
+	for i, member in aggregate.members() {
 		if member.name.len == 0 {
 			continue
 		}
@@ -4366,7 +4366,7 @@ fn members_taking_values(aggregate types.Type) []int {
 // A bitfield is not one of these: its value goes into its own bits, which the
 // member-by-member reader places.
 fn has_aggregate_member(typ types.Type) bool {
-	for member in typ.members {
+	for member in typ.members() {
 		if member.typ.kind in [types.Kind.struct_, .union_, .array] {
 			return true
 		}
@@ -4386,7 +4386,7 @@ fn (mut p Parser) struct_member_inits(aggregate types.Type, list BraceList, layo
 	for i in 0 .. list.elements.len {
 		element := list.elements[i]
 		at := targets[i]
-		member := aggregate.members[at]
+		member := aggregate.members()[at]
 		if address := element.address {
 			members << ast.MemberInit{
 				offset:   layout.offsets[at]
@@ -5344,7 +5344,7 @@ fn (mut p Parser) check_member_names(members []types.Member, keyword tokenize.To
 		if member.typ.kind !in [types.Kind.struct_, .union_] || !member.typ.is_complete() {
 			continue
 		}
-		for inner in member.typ.members {
+		for inner in member.typ.members() {
 			if inner.name == '' {
 				continue
 			}

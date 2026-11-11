@@ -2032,12 +2032,12 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 								// which sits at the beginning of the object. A first
 								// member that is itself an aggregate takes a list of
 								// its own, which is not a shape this reader has.
-								if spec.clause.members.len == 0 {
+								if spec.clause.members().len == 0 {
 									p.error_at(p.peek(), 'unsupported: ${spec.clause.describe()} has no first member to initialize')
 									p.skip_declaration()
 									return stmts
 								}
-								first := spec.clause.members[0]
+								first := spec.clause.members()[0]
 								if first.typ.kind in [types.Kind.struct_, .union_, .array] {
 									p.error_at(p.peek(), 'unsupported: the first member of ${spec.clause.describe()} is an object of the type ${first.typ.describe()}, and a brace initializer for one is not implemented')
 									p.skip_declaration()
@@ -2350,7 +2350,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 			targets := members_taking_values(spec.clause)
 			for i in 0 .. struct_values.len {
 				at := targets[i]
-				member := spec.clause.members[at]
+				member := spec.clause.members()[at]
 				stmts << ast.Stmt{
 					kind:   .assign
 					target: d.name
@@ -2378,7 +2378,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 			}
 			for i in struct_values.len .. targets.len {
 				at := targets[i]
-				member := spec.clause.members[at]
+				member := spec.clause.members()[at]
 				stmts << ast.Stmt{
 					kind:   .assign
 					target: d.name
