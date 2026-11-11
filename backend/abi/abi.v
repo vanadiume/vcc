@@ -434,6 +434,18 @@ pub fn argument_list_type() types.Type {
 // any other type is not one: reading a walk out of it would read whatever the
 // object holds as though it were a tag.
 pub fn is_argument_list(typ types.Type) bool {
+	// An argument list is a pointer to the tag __va_list_tag, and that is asked
+	// first: every statement of every function asks this question, and the model
+	// below is four members and the type that holds them, allocated per call.
+	// Building it to compare against a type that cannot be one was 32.9 MB of
+	// the compiler's own generated C that nothing freed.
+	if typ.kind != .pointer {
+		return false
+	}
+	pointee := typ.pointee() or { return false }
+	if pointee.kind != .struct_ || pointee.tag() != '__va_list_tag' {
+		return false
+	}
 	// The question is structural and not an identity: the model holds a type as
 	// a reference to its pointee, so two readings of one argument list are two
 	// values with one shape, and `same` is the model's question for that.
