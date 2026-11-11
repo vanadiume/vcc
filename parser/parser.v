@@ -455,7 +455,8 @@ fn (mut p Parser) parse_block() ![]ast.Stmt {
 		p.nested_names = outer_names
 		p.nested_declared = outer_declared
 	}
-	mut stmts := statements()
+	mut runs := [][]ast.Stmt{}
+	mut count := 0
 	for {
 		t := p.peek()
 		if t.kind == .eof {
@@ -480,65 +481,65 @@ fn (mut p Parser) parse_block() ![]ast.Stmt {
 		// A statement that stopped on a region which never closed has already
 		// been reported where the region opened, and the closing brace this
 		// loop is waiting for is gone with it.
-		fresh := p.parse_statement() or { break }
-		p.with_declared_types(fresh, mut stmts)
-		// The list a statement came back as has been copied into this block's
-		// own list, and the block keeps that one.
-		unsafe { fresh.free() }
+		mut fresh := p.parse_statement() or { break }
+		p.resolve_declared_types(mut fresh)
+		// The list the statement came back in is kept until the block ends,
+		// because the block's own list is built then: a list grown one
+		// statement at a time doubles its way to the count, and the buffer it
+		// never uses is about what it holds. The header is copied where it
+		// stands: appending the value as it is would clone the list and every
+		// statement in it.
+		unsafe {
+			runs.push_many(&fresh, 1)
+		}
+		count += fresh.len
 	}
+	// The block's list, sized to the statements it turned out to hold. Every
+	// statement is copied into it once, and the list it was read into is freed.
+	mut stmts := []ast.Stmt{cap: count}
+	for run in runs {
+		stmts << run
+		unsafe { run.free() }
+	}
+	unsafe { runs.free() }
 	return stmts
 }
 
-// with_declared_types gives every declaration among the statements of a block the
-// type its declaration resolved to, taken from the symbol table the declaration
-// was recorded in. The statements go into `out` rather than into a list of the
-// function's own, because a block asks this once per statement and a list per
-// call is a copy of the statement the block already holds.
+// resolve_declared_types gives every declaration among the statements of a block
+// the type its declaration resolved to, taken from the symbol table the
+// declaration was recorded in.
 //
-// Each statement is written as a struct built from the one read, and not appended
-// as it stands. V clones what it appends when the value being appended can be
-// addressed, and the clone of a statement is every statement under it: a block
-// whose statement is a loop copies the whole loop, once per block that holds it.
-// What is built here is a temporary, and a temporary is copied.
-fn (p Parser) with_declared_types(stmts []ast.Stmt, mut out []ast.Stmt) {
-	// TODO: the list this loop appends to holds every statement of every block,
-	// and it is 145.5 MB of the compiler's own generated C: 74 MB of statements
-	// and 71 MB of the buffer each growth copied from before the statement list
-	// was sized to hold them. The count is not known until the block's closing
-	// brace, so the slack needs a reserve that is estimated rather than counted,
-	// or a list of statement lists that is joined once. What is left after that
-	// is the size of a statement, which is 200 bytes now.
-	for stmt in stmts {
-		if stmt.kind == .var_decl {
-			if symbol := p.scopes.lookup(stmt.decl_name()) {
-				// What the declaration resolved to is the symbol's type. A
-				// statement that already carries an extra part has the type
-				// written into that one, which is the only reader of it: the
-				// node was built by this statement's reader and the block is
-				// the first thing to hold it, so the extra part is nobody
-				// else's to keep. A second one would be the whole of what the
-				// first holds, the stride and the width a compound declaration
-				// worked out among the rest, for one field.
-				if source := stmt.extra {
-					unsafe {
-						source.resolved = symbol.typ
-					}
-					out << ast.Stmt{
-						...stmt
-					}
-					continue
-				}
-				out << ast.Stmt{
-					...stmt
-					extra: &ast.StmtExtra{
-						resolved: symbol.typ
-					}
-				}
-				continue
-			}
+// The statements are written back where they stand. A statement list handed to
+// this reader is a block's own and the block is the first thing to hold it, so
+// the element is nobody else's to keep; writing it in place is what keeps a
+// statement from being copied once into a list of the block's own. That list is
+// built once, at the closing brace, from the lists the statements came back in:
+// see parse_block.
+fn (p Parser) resolve_declared_types(mut stmts []ast.Stmt) {
+	for i in 0 .. stmts.len {
+		stmt := stmts[i]
+		if stmt.kind != .var_decl {
+			continue
 		}
-		out << ast.Stmt{
+		symbol := p.scopes.lookup(stmt.decl_name()) or { continue }
+		// What the declaration resolved to is the symbol's type. A statement
+		// that already carries an extra part has the type written into that
+		// one, which is the only reader of it: the node was built by this
+		// statement's reader and the block is the first thing to hold it, so
+		// the extra part is nobody else's to keep. A second one would be the
+		// whole of what the first holds, the stride and the width a compound
+		// declaration worked out among the rest, for one field.
+		if source := stmt.extra {
+			unsafe {
+				source.resolved = symbol.typ
+			}
+			continue
+		}
+		stmts[i] = ast.Stmt{
 			...stmt
+			extra: &ast.StmtExtra{
+				resolved: symbol.typ
+			}
 		}
 	}
 }
