@@ -1064,4 +1064,4 @@ it owns the change, which is the same vocabulary the commits use.
 * codegen: a function's lists are emptied for the next one, not replaced (532ef0a)
 * tree: the three test files that read a moved statement field compile again (10e2f64)
 * tree: the two remainders this round measured are marked where they land (4074c00)
-* docs: the changelog covers the second half of the memory round (PENDING)
+* docs: the changelog covers the second half of the memory round (5a52eb6)
