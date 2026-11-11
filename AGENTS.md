@@ -83,6 +83,7 @@ so the cap turns a frozen desktop into a clean OOM with the peak reported.
 | `cli/` | flags, usage, version, timings. Knows nothing about C grammar. |
 | `tokenize/` | source text in, tokens out. No parser knowledge. |
 | `diagnostics/` | what a diagnostic is: its class, the severity the command-line flags give that class, and the one place a diagnostic becomes text. The `Diagnostic` struct itself stays in `tokenize/`, where every stage finds it. |
+| `interning/` | the pool a spelling is kept in: text asked for a second time is the buffer already held, so a name or a punctuator a file repeats is copied once instead of once per use. Knows nothing about C. |
 | `standard/` | the dialects: the `-std=` spellings, the mode each one names, and the feature table the dialect check reads. A row is a construct, the standard it is part of, and what this compiler does with it. Knows no grammar. |
 | `ast/` | node types only. No printing, no emission. |
 | `parser/` | tokens in, `ast` out. Never writes files. |

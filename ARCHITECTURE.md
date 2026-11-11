@@ -86,6 +86,7 @@ second with `backend.host()`, and the tests use it; the driver uses the second.
 | `image/` | 459 | the emitted unit: code, data, references |
 | `backend/` | 9,395 (8) | a target in three dimensions |
 | `diagnostics/` | 264 | what a diagnostic is: class, severity, one renderer |
+| `interning/` | 69 | a pool of spellings: text asked for twice is one buffer |
 | `extensions/` | 152 | the `-fvcc-exts=` interface |
 | `linking/` | 3,186 (7) | the in-house linker: units in, one image out |
 
