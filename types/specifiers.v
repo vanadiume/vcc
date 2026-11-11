@@ -33,27 +33,81 @@ enum TypeWord {
 	decimal128
 }
 
+// TypeWordSpelling is one word of the table with its spelling: from_specifiers
+// holds the words and spelling_kind holds only the text they were read from, and
+// both ask the same table. A word is added in one place.
+struct TypeWordSpelling {
+	word     TypeWord
+	spelling string
+}
+
+const type_word_spellings = [
+	TypeWordSpelling{TypeWord.signed_, 'signed'},
+	TypeWordSpelling{TypeWord.unsigned_, 'unsigned'},
+	TypeWordSpelling{TypeWord.short_, 'short'},
+	TypeWordSpelling{TypeWord.void_, 'void'},
+	TypeWordSpelling{TypeWord.bool_, '_Bool'},
+	TypeWordSpelling{TypeWord.imaginary, '_Imaginary'},
+	TypeWordSpelling{TypeWord.complex_, '_Complex'},
+	TypeWordSpelling{TypeWord.float_, 'float'},
+	TypeWordSpelling{TypeWord.double_, 'double'},
+	TypeWordSpelling{TypeWord.char_, 'char'},
+	TypeWordSpelling{TypeWord.int128, '__int128'},
+	TypeWordSpelling{TypeWord.float128, '__float128'},
+	TypeWordSpelling{TypeWord.decimal32, '_Decimal32'},
+	TypeWordSpelling{TypeWord.decimal64, '_Decimal64'},
+	TypeWordSpelling{TypeWord.decimal128, '_Decimal128'},
+]
+
+// span_is says whether the text of written between start and end spells a name.
+// The bytes are compared where they lie: cutting the word out with a slice copies
+// it, and a copy per word of a spelling was 23.5 MB of the compiler's own
+// generated C.
+fn span_is(written string, start int, end int, spelling string) bool {
+	if end - start != spelling.len {
+		return false
+	}
+	mut i := 0
+	for i < spelling.len {
+		if written[start + i] != spelling[i] {
+			return false
+		}
+		i++
+	}
+	return true
+}
+
+// span_has_prefix says whether the text of written from start begins a name,
+// which is how a _BitInt width is told from any other word without a copy.
+fn span_has_prefix(written string, start int, end int, prefix string) bool {
+	if end - start < prefix.len {
+		return false
+	}
+	mut i := 0
+	for i < prefix.len {
+		if written[start + i] != prefix[i] {
+			return false
+		}
+		i++
+	}
+	return true
+}
+
+// type_word_span answers which word of the table the text between start and end
+// is, and none for a word the table does not have.
+fn type_word_span(written string, start int, end int) ?TypeWord {
+	for entry in type_word_spellings {
+		if span_is(written, start, end, entry.spelling) {
+			return entry.word
+		}
+	}
+	return none
+}
+
 // type_word answers which word of the table a spelling word is, and none for a word
 // the table does not have.
 fn type_word(word string) ?TypeWord {
-	match word {
-		'signed' { return .signed_ }
-		'unsigned' { return .unsigned_ }
-		'short' { return .short_ }
-		'void' { return .void_ }
-		'_Bool' { return .bool_ }
-		'_Imaginary' { return .imaginary }
-		'_Complex' { return .complex_ }
-		'float' { return .float_ }
-		'double' { return .double_ }
-		'char' { return .char_ }
-		'__int128' { return .int128 }
-		'__float128' { return .float128 }
-		'_Decimal32' { return .decimal32 }
-		'_Decimal64' { return .decimal64 }
-		'_Decimal128' { return .decimal128 }
-		else { return none }
-	}
+	return type_word_span(word, 0, word.len)
 }
 
 // SpecifierRun is a run of type words as it is read, whether the caller holds the
@@ -72,22 +126,38 @@ mut:
 	// `_BitInt` width is read off the word; a run with more than one is refused
 	// below wherever the count of words is a type's, and the last is the one kept.
 	other string
+	// other_is_bitint says the last word the table had no flag for was a _BitInt
+	// width, which is the only unknown word kind reads. It is a flag of its own
+	// because a caller holding a spelling does not copy the word unless it is one.
+	other_is_bitint bool
 }
 
 // add reads one word of the run and answers whether the run can hold it. A word
 // written twice is not a type, except for `long` and `int`, which are counted
 // because the table allows each of them to be written twice.
 fn (mut r SpecifierRun) add(word string) bool {
-	if word == 'long' {
+	return r.add_span(word, 0, word.len)
+}
+
+// add_span is add for a word that is still in the spelling it was read from,
+// which is the form a caller that holds the text has. The bytes are compared
+// where they lie, so no word is copied out of the spelling to be read.
+fn (mut r SpecifierRun) add_span(written string, start int, end int) bool {
+	if span_is(written, start, end, 'long') {
 		r.longs++
 		return true
 	}
-	if word == 'int' {
+	if span_is(written, start, end, 'int') {
 		r.ints++
 		return true
 	}
-	marker := type_word(word) or {
-		r.other = word
+	marker := type_word_span(written, start, end) or {
+		r.other_is_bitint = span_has_prefix(written, start, end, '_BitInt(')
+		if r.other_is_bitint {
+			r.other = written[start..end]
+		} else {
+			r.other = ''
+		}
 		r.others++
 		return true
 	}
@@ -107,6 +177,7 @@ fn (r &SpecifierRun) kind() ?Kind {
 	others := r.others
 	seen := r.seen
 	other := r.other
+	bitint := r.other_is_bitint
 	if longs > 2 || ints > 1 {
 		return none
 	}
@@ -244,7 +315,7 @@ fn (r &SpecifierRun) kind() ?Kind {
 		}
 		return Kind.decimal128
 	}
-	if other.starts_with('_BitInt(') {
+	if bitint {
 		word := other
 		// A _BitInt specifier wrote its width in parentheses, and the
 		// word arrives here whole: `_BitInt(128)`. The width is the
@@ -361,17 +432,10 @@ pub fn from_words(words []string) ?Type {
 }
 
 // spelling_kind is from_specifiers for a caller that holds the spelling of a type
-// rather than its words: `unsigned long`, `long double _Complex`. The words are cut
-// out of the string as it is read, so the run costs no allocation, and every piece
-// between two spaces is a word, an empty piece included, because splitting the same
-// string would produce one and the two answers have to be the same.
-//
-// TODO: it says `no allocation` and does not: every word is cut out with
-// `written[start..i]`, which allocates a copy to compare against a table of fifteen
-// names, which came to 20 MB of substr and 4 MB of the copy SpecifierRun keeps,
-// measured on the compiler's own generated C with the intern pool in place. A word
-// does not need to leave the spelling to be read: a byte-span entry point on the
-// table, compared where the bytes lie, is the fix the split already took.
+// rather than its words: `unsigned long`, `long double _Complex`. The words are
+// compared where they lie in the string, so the run costs no allocation, and every
+// piece between two spaces is a word, an empty piece included, because splitting
+// the same string would produce one and the two answers have to be the same.
 fn spelling_kind(written string) ?Kind {
 	mut run := SpecifierRun{}
 	mut start := 0
@@ -379,7 +443,7 @@ fn spelling_kind(written string) ?Kind {
 		if i < written.len && written[i] != ` ` {
 			continue
 		}
-		if !run.add(written[start..i]) {
+		if !run.add_span(written, start, i) {
 			return none
 		}
 		start = i + 1
