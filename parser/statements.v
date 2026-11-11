@@ -48,16 +48,25 @@ fn (mut p Parser) parse_statement() ![]ast.Stmt {
 		p.compound_pending.pop()
 		return error('statement')
 	}
-	fresh := p.compound_pending.pop()
-	mut out := fresh.clone()
-	out << stmts
-	// The statement's own list and the list of stores in front of it have been
-	// copied into `out`, and nothing holds either again: the tokens they were
-	// read from are still there, so freeing the two buffers is the whole cost of
+	mut fresh := p.compound_pending.pop()
+	if fresh.len == 0 {
+		// No compound literal in this statement asked for a store in front of
+		// it, which is nearly every statement there is. The list the statement
+		// was read as is the list the caller gets: copying it first would
+		// allocate a one-element list per statement and free it again a line
+		// later.
+		unsafe { fresh.free() }
+		return stmts
+	}
+	// The stores a compound literal asked for go in front of the statement. The
+	// list opened for them is this call's own and nothing holds it again, so
+	// the statement is appended to it rather than to a copy of it.
+	fresh << stmts
+	// Nothing holds the statement's own list again: the tokens it was read
+	// from are still there, so freeing the buffer is the whole cost of
 	// returning this statement.
-	unsafe { fresh.free() }
 	unsafe { stmts.free() }
-	return out
+	return fresh
 }
 
 // statements answers the list a block is read into. It grows a statement at a
