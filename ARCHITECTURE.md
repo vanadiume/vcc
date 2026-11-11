@@ -100,7 +100,10 @@ processor and its file stack, `macro.v` is a remembered `#define`, `expand.v`
 does macro expansion, `expr.v` is the `#if` expression grammar, and `builtin.v`
 holds the predefined macros, including `identity_defines` and `standard_defines`.
 It imports `standard`, because the mode decides whether a trigraph is replaced
-before a token exists.
+before a token exists. The processor makes one intern pool and hands it to every
+file it opens, so a name a header and the file after it both spell is one buffer:
+an identifier or a punctuator a file's read produces is copied into that pool once
+and every token that spells it shares the copy.
 
 `types/` is the type model and the symbol table. `types.v` is the value model,
 `object.v` asks a target description for sizes, alignments and member offsets,

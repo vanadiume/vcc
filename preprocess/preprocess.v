@@ -1,5 +1,6 @@
 module preprocess
 
+import interning
 import os
 import standard
 import tokenize
@@ -111,6 +112,7 @@ pub fn preprocess(source string, path string, opts Options) Result {
 		once_files: map[string]bool{}
 		main_path:  path
 		opts:       opts
+		pool:       interning.new()
 	}
 	if !opts.undef_builtins {
 		p.define_builtins()
@@ -261,6 +263,11 @@ mut:
 	out                []tokenize.Token
 	diagnostics        []tokenize.Diagnostic
 	opts               Options
+	// pool is where the text of every token is kept. One pool for the whole
+	// translation unit is what makes a name the file spells a hundred thousand
+	// times, or a header and the file after it both spell, one buffer instead of
+	// one buffer each. It is made here and lives as long as the read does.
+	pool &interning.Pool
 }
 
 // apply_command_line_defines puts the -D and -U arguments into the macro table
@@ -582,10 +589,10 @@ fn (mut p Processor) push(path string, source string, found_index int, silent bo
 	// C17 replace a trigraph, and a GNU dialect, C23 and a spelling this compiler
 	// does not implement leave the bytes alone. The digraph spellings are the
 	// other dialect answer the read needs, and the same mode gives it.
-	lexed := tokenize.lex_with(source, tokenize.Options{
+	lexed := tokenize.lex_shared(source, tokenize.Options{
 		trigraphs: standard.replaces_trigraphs(p.opts.dialect)
 		digraphs:  standard.has_digraphs(p.opts.dialect)
-	})
+	}, p.pool)
 	for diagnostic in lexed.diagnostics {
 		p.diagnostics << tokenize.Diagnostic{
 			line: diagnostic.line
