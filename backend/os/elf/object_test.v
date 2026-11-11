@@ -902,3 +902,39 @@ fn test_each_unwind_entry_relocates_against_text_at_its_function() {
 	assert eh_frame_relocation_offset(bytes, 1) == 52
 	assert eh_frame_relocation_addend(bytes, 1) == 2
 }
+
+// one_jump is a unit whose only reference is a jump inside its own text: five
+// bytes of jump to a label at the start of it, then a return.
+fn one_jump() image.Program {
+	mut program := image.Program{}
+	program.text = [u8(0xe9), u8(0), u8(0), u8(0), u8(0), u8(0xc3)]
+	program.defined['f'] = true
+	program.labels['target'] = 0
+	program.fixups << image.Fixup{
+		start:  0
+		length: 5
+		kind:   .jump_local
+		name:   'target'
+	}
+	return program
+}
+
+// object settles a jump in the text it writes, and the two entry points differ in
+// whose text that is: object writes over a copy so that the caller keeps the code
+// the emitter handed it, and object_in_place writes over the program it was given
+// because a -c run reads one program once and has nothing left to do with it.
+fn test_object_in_place_settles_the_jump_in_the_program_and_object_does_not() {
+	mut program := one_jump()
+	original := program.text.clone()
+	copied := object(program, x86_64()) or {
+		panic('the object was not written: ${err.msg()}')
+	}
+	assert program.text == original
+	in_place := object_in_place(mut program, x86_64()) or {
+		panic('the object was not written: ${err.msg()}')
+	}
+	// The same object either way, and the jump it settled is the distance from
+	// the end of the instruction back to the label: -5 in four bytes.
+	assert in_place == copied
+	assert program.text[1..5] == [u8(0xfb), u8(0xff), u8(0xff), u8(0xff)]
+}

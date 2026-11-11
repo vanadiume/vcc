@@ -1213,7 +1213,9 @@ fn (mut e Emitter) build() ![]u8 {
 	// makes and the only one that depends on the mode.
 	mut bytes := []u8{}
 	if e.compile_only {
-		bytes = elf.object(e.program, e.target) or {
+		// The object is the whole answer to a -c run, so the writer settles the
+		// jumps in the program's own text rather than over a copy of it.
+		bytes = elf.object_in_place(mut e.program, e.target) or {
 			e.diagnostics << problem(1, 1, 'internal: the object could not be laid out: ${err.msg()}')
 			return error('cannot lay out the object')
 		}

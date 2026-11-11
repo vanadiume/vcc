@@ -174,8 +174,25 @@ struct ObjectRelocation {
 }
 
 // object wraps a program in an ELF64 relocatable object that a linker can take
-// as input.
+// as input. The jumps inside the text are settled here, so the writer works over
+// a copy: the caller keeps the program it handed over.
 pub fn object(program image.Program, target backend.Target) ![]u8 {
+	return object_over(program, target, mut program.text.clone())
+}
+
+// object_in_place wraps the same object over the program's own text, for a caller
+// that is done with the program once the object is out. What the program's text
+// holds afterwards is the object's .text, with the jumps settled, and not the code
+// the emitter wrote: the caller must not read it again.
+//
+// A `-c` run reads one program once and writes one file, and the copy the entry
+// point above makes is 67 MB on the compiler's own generated C, for a text of
+// 48 MB. Every other caller keeps the program, so the copy stays theirs.
+pub fn object_in_place(mut program image.Program, target backend.Target) ![]u8 {
+	return object_over(program, target, mut program.text)
+}
+
+fn object_over(program image.Program, target backend.Target, mut text []u8) ![]u8 {
 	// The symbols, in the order the table needs them. The format wants every
 	// local before every global, so a definition with internal linkage comes
 	// first, beside the section symbols, and only the external definitions and
@@ -226,18 +243,10 @@ pub fn object(program image.Program, target backend.Target) ![]u8 {
 		symbol_count++
 		name_offset[name] = intern_name(mut strtab, name)
 	}
-	// TODO: the whole of .text is copied below before the jumps are settled, and
-	// that copy is the largest single allocation this writer makes: 67 MB of array
-	// clone over the compiler's own generated C, for a text of 48 MB. The copy is
-	// there because the program is still the caller's. A `-c` run is the one path
-	// that reads the program once and throws it away afterwards, so the patching
-	// could be done in place there; any other caller needs the copy.
-	//
 	// The text, with the jumps inside it settled: both ends of a jump are in
 	// .text, and .text is moved as a unit when it is linked, so the distance
 	// between two places in it is the same afterwards as it is now. Those need
 	// no relocation. Everything else does.
-	mut text := program.text.clone()
 	mut relocations := []ObjectRelocation{}
 	for fixup in program.fixups {
 		instruction := fixup.start
