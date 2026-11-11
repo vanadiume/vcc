@@ -446,8 +446,12 @@ fn (mut p Parser) parse_block() ![]ast.Stmt {
 	// That is also what lets two blocks written one after another each define a
 	// nested function of one name: the second is a name of its own, and the
 	// symbol it is emitted under is numbered.
-	outer_names := p.nested_names.clone()
-	outer_declared := p.nested_declared.clone()
+	// The names the block starts with are the ones it puts back when it ends, and
+	// the block works on a copy: the map it was handed is kept as it stands and
+	// the copy is what a declaration inside the block adds a name to. Handing the
+	// map back is a copy of the header, so one clone is the whole cost of a block.
+	outer_names := p.nested_names
+	outer_declared := p.nested_declared
 	p.nested_names = outer_names.clone()
 	p.nested_declared = outer_declared.clone()
 	defer {
