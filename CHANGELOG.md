@@ -1047,3 +1047,14 @@ it owns the change, which is the same vocabulary the commits use.
 * tokenize: a token's text is the pool's copy, not a fresh string (1f61c58)
 * codegen: a member store names its member only when it refuses (e64f417)
 * docs: the changelog records the intern pool (b54e9d3)
+
+## 2026-11-11
+
+* preprocess: the expanded run frees the buffer each growth copies from (7c29b1f)
+* types: a type word is read where its bytes lie, not cut out first (a5788c4)
+* parser: a block's statement list is built once, at its closing brace (4cff157)
+* backend: an argument list is asked for by its tag before the model is built (24ebf3d)
+* parser: a block copies the names it puts back once, not twice (7084b4f)
+* parser: the list a compound literal's stores are built in is freed (53193f9)
+* parser: a block copies the nested-function names only when it declares one (d69bb39)
+* codegen: the reference lists free the buffer each growth copies from (964c71f)
