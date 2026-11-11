@@ -503,7 +503,7 @@ fn (mut p Parser) parse_block() ![]ast.Stmt {
 fn (p Parser) with_declared_types(stmts []ast.Stmt, mut out []ast.Stmt) {
 	for stmt in stmts {
 		if stmt.kind == .var_decl {
-			if symbol := p.scopes.lookup(stmt.decl_name) {
+			if symbol := p.scopes.lookup(stmt.decl_name()) {
 				// What the declaration resolved to is the symbol's type. A
 				// statement that already carries an extra part has the type
 				// written into that one, which is the only reader of it: the
@@ -600,7 +600,7 @@ fn (mut p Parser) check_undeclared_statements(stmts []ast.Stmt, mut reported map
 		if expr := stmt.expr {
 			p.check_undeclared_expression(expr, mut reported)
 		}
-		if init := stmt.init {
+		if init := stmt.initializer() {
 			p.check_undeclared_expression(init, mut reported)
 		}
 		// A variable-length array's size expression carries the names its
@@ -623,9 +623,9 @@ fn (mut p Parser) check_undeclared_statements(stmts []ast.Stmt, mut reported map
 			p.check_undeclared_expression(target, mut reported)
 		}
 		p.check_undeclared_statements(stmt.body, mut reported)
-		p.check_undeclared_statements(stmt.then_body, mut reported)
-		p.check_undeclared_statements(stmt.else_body, mut reported)
-		p.check_undeclared_statements(stmt.step, mut reported)
+		p.check_undeclared_statements(stmt.then_body(), mut reported)
+		p.check_undeclared_statements(stmt.else_body(), mut reported)
+		p.check_undeclared_statements(stmt.step(), mut reported)
 	}
 }
 

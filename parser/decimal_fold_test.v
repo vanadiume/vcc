@@ -32,7 +32,7 @@ fn folded_decimal(type_name string, expr string) string {
 	result := folded_parse(source)
 	assert result.diagnostics.len == 0, '${source} was refused'
 	stmt := result.unit.decls[0].body[0]
-	init := stmt.init or {
+	init := stmt.initializer() or {
 		assert false, '${source} has no initializer'
 		return ''
 	}
@@ -112,7 +112,7 @@ fn folded_comparison(expr string) i64 {
 	result := folded_parse(source)
 	assert result.diagnostics.len == 0, '${source} was refused'
 	stmt := result.unit.decls[0].body[0]
-	init := stmt.init or {
+	init := stmt.initializer() or {
 		assert false, '${source} has no initializer'
 		return 0
 	}
@@ -170,7 +170,7 @@ fn test_an_operation_without_one_decimal_format_is_not_folded() {
 	if result.diagnostics.len > 0 {
 		return
 	}
-	init := result.unit.decls[0].body[0].init or {
+	init := result.unit.decls[0].body[0].initializer() or {
 		assert false, '${source} has no initializer'
 		return
 	}

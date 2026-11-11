@@ -146,22 +146,22 @@ fn enum_object_declaration(definitions string, tag string) ast.Stmt {
 fn test_an_enum_typed_object_is_the_integer_type_its_enumerators_require() {
 	small := enum_object_declaration('enum c99_small { SMALL_ONE = 1, SMALL_TWO, SMALL_THREE, };',
 		'c99_small')
-	assert small.decl_name == 'e'
-	assert small.decl_type == 'unsigned int'
+	assert small.decl_name() == 'e'
+	assert small.decl_type() == 'unsigned int'
 	assert small.resolved().kind == types.Kind.enum_
 	assert small.resolved().tag == 'c99_small'
 	assert small.resolved().enum_underlying() == types.Kind.unsigned_int
 	neg := enum_object_declaration('enum c99_neg { NEG_MIN = -3, NEG_ZERO = 0, NEG_POS = 3 };',
 		'c99_neg')
-	assert neg.decl_type == 'int'
+	assert neg.decl_type() == 'int'
 	assert neg.resolved().enum_underlying() == types.Kind.int_
 	big := enum_object_declaration('enum c99_big { BIG = 65535 };', 'c99_big')
-	assert big.decl_type == 'unsigned int'
+	assert big.decl_type() == 'unsigned int'
 	both := enum_object_declaration('enum c99_both { BN = -1, BP = 4000000000 };', 'c99_both')
-	assert both.decl_type == 'long'
+	assert both.decl_type() == 'long'
 	assert both.resolved().enum_underlying() == types.Kind.long
 	huge := enum_object_declaration('enum c99_huge { H = 5000000000 };', 'c99_huge')
-	assert huge.decl_type == 'unsigned long'
+	assert huge.decl_type() == 'unsigned long'
 	assert huge.resolved().enum_underlying() == types.Kind.unsigned_long
 }
 
@@ -172,8 +172,8 @@ fn test_a_typedef_for_an_enum_and_an_anonymous_enum_name_the_same_type() {
 	result := enum_read('typedef enum { A = 7, B } anon_t;
 int main(void) { anon_t x = A; enum { C = 9, D } y = C; return x + y; }')
 	assert result.diagnostics.len == 0
-	assert result.unit.decls[0].body[0].decl_type == 'unsigned int'
-	assert result.unit.decls[0].body[1].decl_type == 'unsigned int'
+	assert result.unit.decls[0].body[0].decl_type() == 'unsigned int'
+	assert result.unit.decls[0].body[1].decl_type() == 'unsigned int'
 }
 
 // A use of an enumerator carries the type gcc 16.2.1 gives it, which is the
@@ -184,7 +184,7 @@ fn test_a_use_of_an_enumerator_carries_the_wider_type() {
 int main(void) { unsigned long n = H; return 0; }')
 	assert result.diagnostics.len == 0
 	stmt := result.unit.decls[0].body[0]
-	initializer := stmt.init or {
+	initializer := stmt.initializer() or {
 		assert false
 		return
 	}

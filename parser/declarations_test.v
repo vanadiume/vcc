@@ -146,7 +146,7 @@ fn test_a_block_scope_extern_object_emits_no_local() {
 	// The body is the local `got`, the nested block, and the return.
 	assert main_fn.body.len == 3
 	assert main_fn.body[0].kind == .var_decl
-	assert main_fn.body[0].decl_name == 'got'
+	assert main_fn.body[0].decl_name() == 'got'
 	assert main_fn.body[1].kind == .block
 	// The block holds the assignment alone: the extern declaration left no
 	// statement of its own.
@@ -438,7 +438,7 @@ fn test_a_written_zero_bound_is_zero_for_a_string_initializer() {
 	// The same in a body, where the written zero sizes the object as zero.
 	body := declarations_of('int main(void) { char s[0] = ""; return 0; }')
 	assert body.diagnostics.len == 0
-	assert body.unit.decls[0].body[0].decl_count == 0
+	assert body.unit.decls[0].body[0].decl_count() == 0
 }
 
 // A shape the reader does not implement is refused by name: an element that
@@ -1117,7 +1117,7 @@ fn test_a_body_brace_initializer_becomes_the_stores_of_the_values_written() {
 	body := result.unit.decls[0].body
 	assert body.len == 5
 	assert body[0].kind == .var_decl
-	assert body[0].decl_count == 3
+	assert body[0].decl_count() == 3
 	assert body[1].kind == .assign
 	assert body[2].kind == .assign
 	assert body[3].kind == .assign
@@ -1132,7 +1132,7 @@ fn test_a_body_list_gives_an_empty_bracket_array_its_size() {
 	assert result.diagnostics.len == 0
 	decl := result.unit.decls[0].body[0]
 	assert decl.kind == .var_decl
-	assert decl.decl_count == 3
+	assert decl.decl_count() == 3
 }
 
 // The same initializer in a body is the stores the declaration makes where it is
@@ -1144,7 +1144,7 @@ fn test_a_body_char_array_takes_a_string_literal() {
 	assert result.diagnostics.len == 0
 	decl := result.unit.decls[0].body[0]
 	assert decl.kind == .var_decl
-	assert decl.decl_count == 4
+	assert decl.decl_count() == 4
 	// One store per element the literal writes, the terminator last.
 	mut assigns := 0
 	for stmt in result.unit.decls[0].body {
@@ -1165,7 +1165,7 @@ fn test_a_body_char_array_takes_a_string_literal() {
 	// A written size is used, and the elements after the terminator stay zero.
 	sized := declarations_of('int main(void) { char s[8] = "abc"; return 0; }')
 	assert sized.diagnostics.len == 0
-	assert sized.unit.decls[0].body[0].decl_count == 8
+	assert sized.unit.decls[0].body[0].decl_count() == 8
 }
 
 // A wide literal in a body owns four-byte elements the same way it does at file
@@ -1173,7 +1173,7 @@ fn test_a_body_char_array_takes_a_string_literal() {
 fn test_a_body_wide_array_takes_a_wide_literal() {
 	result := declarations_of('typedef int wchar_t;\nint main(void) { wchar_t w[] = L"abc"; return sizeof w; }')
 	assert result.diagnostics.len == 0
-	assert result.unit.decls[0].body[0].decl_count == 4
+	assert result.unit.decls[0].body[0].decl_count() == 4
 }
 
 // A written bound in a body is used and not filled in from the literal:
@@ -1195,7 +1195,7 @@ fn test_a_body_scalar_in_braces_is_the_number_in_them() {
 	assert result.diagnostics.len == 0
 	decl := result.unit.decls[0].body[0]
 	assert decl.kind == .var_decl
-	value := decl.init or {
+	value := decl.initializer() or {
 		assert false
 		return
 	}
@@ -1236,7 +1236,7 @@ fn test_a_body_nested_or_designated_list_stores_the_subobject_it_names() {
 	assert values == [0, 0, 2, 1]
 	designated := declarations_of('int main(void) { int a[6] = {[4] = 40, [0] = 1, [2] = 20}; return 0; }')
 	assert designated.diagnostics.len == 0
-	assert designated.unit.decls[0].body[0].decl_count == 6
+	assert designated.unit.decls[0].body[0].decl_count() == 6
 	excess := declarations_of('int main(void) { int a[2] = {1, 2, 3}; return 0; }')
 	assert excess.diagnostics.len == 1
 	assert excess.diagnostics[0].msg.contains('holds 2 elements')
@@ -1249,7 +1249,7 @@ fn test_a_body_nested_or_designated_list_stores_the_subobject_it_names() {
 fn test_a_body_list_of_addresses_becomes_the_stores_of_the_elements() {
 	result := declarations_of('int main(void) { int v = 1; int *p[2] = {&v, 0}; return 0; }')
 	assert result.diagnostics.len == 0
-	assert result.unit.decls[0].body[1].decl_count == 2
+	assert result.unit.decls[0].body[1].decl_count() == 2
 	mut assigns := 0
 	for stmt in result.unit.decls[0].body {
 		if stmt.kind == .assign {
@@ -1292,7 +1292,7 @@ fn test_a_body_list_that_addresses_a_part_of_an_object_is_stored() {
 fn test_a_body_list_element_that_is_a_constant_expression_is_read() {
 	result := declarations_of('int main(void) { int a[2] = {1 + 1, 3}; return 0; }')
 	assert result.diagnostics.len == 0
-	assert result.unit.decls[0].body[0].decl_count == 2
+	assert result.unit.decls[0].body[0].decl_count() == 2
 	mut assigns := 0
 	for stmt in result.unit.decls[0].body {
 		if stmt.kind == .assign {
@@ -1694,8 +1694,8 @@ fn test_the_argument_list_resolves_from_the_compiler_spelling() {
 	body := result.unit.decls[0].body
 	assert body.len == 2
 	assert body[0].kind == .var_decl
-	assert body[0].decl_type.contains('*')
-	assert body[0].decl_type.contains('__va_list_tag')
+	assert body[0].decl_type().contains('*')
+	assert body[0].decl_type().contains('__va_list_tag')
 }
 
 // C99 6.7.5.3p7: a parameter written with an array type is adjusted to a
@@ -2115,7 +2115,7 @@ fn test_a_written_array_bound_is_evaluated_as_a_constant_expression() {
 	// returns `sizeof b` exits 8.
 	body := declarations_of('int main(void) { char b[12 * sizeof(int) - 5 * sizeof(void *)]; return 0; }')
 	assert body.diagnostics.len == 0
-	assert body.unit.decls[0].body[0].decl_count == 8
+	assert body.unit.decls[0].body[0].decl_count() == 8
 }
 
 // A bound that is not an integer constant expression leaves an object at the top
@@ -2370,11 +2370,11 @@ fn test_a_local_auto_takes_the_type_of_its_initializer() {
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
 	assert body.len == 6
-	assert body[0].decl_type == 'int'
-	assert body[1].decl_type == 'double'
-	assert body[2].decl_type == 'unsigned int'
-	assert body[3].decl_type == 'char *'
-	assert body[4].decl_type == 'long'
+	assert body[0].decl_type() == 'int'
+	assert body[1].decl_type() == 'double'
+	assert body[2].decl_type() == 'unsigned int'
+	assert body[3].decl_type() == 'char *'
+	assert body[4].decl_type() == 'long'
 }
 
 // C23 requires the initializer: there is nothing to take the type from, and the
@@ -2402,8 +2402,8 @@ fn test_auto_needs_a_plain_identifier_and_one_declarator() {
 fn test_auto_with_a_type_after_it_is_still_the_storage_class() {
 	result := declarations_of('int main(void) { auto int x = 1; auto y = x; return y; }')
 	assert result.diagnostics.len == 0
-	assert result.unit.decls[0].body[0].decl_type == 'int'
-	assert result.unit.decls[0].body[1].decl_type == 'int'
+	assert result.unit.decls[0].body[0].decl_type() == 'int'
+	assert result.unit.decls[0].body[1].decl_type() == 'int'
 }
 
 // Measured on gcc 16.2.1, C23's auto is taken at file scope too and the object is

@@ -217,16 +217,16 @@ fn (mut p Parser) compound_literal_object(name string, spec DeclSpec, d Declarat
 	// stores made so far, and with no collector the copy it grew from stays.
 	mut stmts := []ast.Stmt{cap: leaves.len + writes.len + 1}
 	stmts << ast.Stmt{
-		kind:       .var_decl
-		decl_name:  name
-		decl_type:  p.spelling_of(spec, d.pointer_count())
-		decl_count: count
-		extra:      &ast.StmtExtra{
+		kind:  .var_decl
+		extra: &ast.StmtExtra{
+			decl_name:   name
+			decl_type:   p.spelling_of(spec, d.pointer_count())
+			decl_count:  count
 			decl_stride: stride
 			bytes:       bytes
 		}
-		line:       at.line
-		col:        at.col
+		line:  at.line
+		col:   at.col
 	}
 	for leaf in leaves {
 		stmts << p.store_a_leaf(name, at, leaf, zero_initializer(at), array, bytes, element_width,

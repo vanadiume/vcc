@@ -309,36 +309,28 @@ pub:
 	// expr is the returned expression of a return statement, none for a bare
 	// `return;` or for a statement that returns nothing.
 	expr ?Expr
-	// init is the initializer of a declaration, and none for `int x;`.
-	init ?Expr
-	// decl_name and decl_type are a declaration's name and the type the back end
-	// reads it as, which is the spelling a typedef name and an enum tag are
-	// spelled out to; decl_count is how many elements an array declaration has:
-	// zero for a declaration of one value. resolved is the type the declaration
-	// resolved to, and it is the zero value for a statement that declares
-	// nothing.
-	decl_name  string
-	decl_type  string
-	decl_count int
 	// extra is what a statement carries only when it is one of the statements
-	// that has one: the type and the byte width a declaration resolved to, the
-	// bound and the stride of a variable-length array, the element an assignment
-	// of an element writes through, the dereference an assignment writes
-	// through, the name a goto jumps to, the value a case names, and the whole
-	// of an asm statement. Every one of them was a field of its own here, which
-	// put all of them in every statement in the tree. A declaration's resolved
-	// type alone is 192 bytes, and the tree holds hundreds of thousands of
-	// assignments and returns that never read it. A statement that has one holds
-	// it by pointer; the rest are nil, and read it through the accessors below.
+	// that has one: everything a declaration carries, the operator of a
+	// compound assignment, the bound and the stride of a variable-length
+	// array, the element an assignment of an element writes through, the
+	// dereference an assignment writes through, the name a goto jumps to, the
+	// value a case names, the branches and the step of a structured statement,
+	// and the whole of an asm statement. Every one of them was a field of its
+	// own here, which put all of them in every statement in the tree. The
+	// tree holds hundreds of thousands of assignments and returns, and a
+	// declaration's resolved type alone is 200 bytes. A statement that has an
+	// extra part holds it by pointer; the rest are nil, and read it through
+	// the accessors below.
 	extra ?&StmtExtra
 	// target is the name an assignment writes to, index is the subscript of
 	// an array element: `a[i] = v` writes to an element, and a plain `x = v`
 	// has none. field is the member of an aggregate the assignment writes to,
 	// `x.a = v`, which is an offset into the object rather than a name of its
-	// own.
+	// own. These three are what most statements in a C file are: an
+	// assignment to a name, or to a member of one.
 	//
 	// field is held by pointer because an Option holds its value inline and a
-	// Field is 376 bytes: written as `?Field` it made every statement in the
+	// Field is 384 bytes: written as `?Field` it made every statement in the
 	// tree 1224 bytes, a third of the node spent on the member of an
 	// assignment that is a member almost never. The pointer costs eight bytes
 	// and the value lives in the heap, which is where it was going to end up
@@ -346,35 +338,14 @@ pub:
 	target string
 	index  ?Expr
 	field  ?&Field
-	// compound is the arithmetic operator of a compound assignment: `+` for
-	// `+=`, `-` for `-=`, and the empty string for a plain `=`. The reader
-	// expands the spelling into the assignment it means in `expr` as well, and
-	// a name target is emitted from that expansion because reading a name has
-	// no side effect to repeat. A target reached through an address is
-	// emitted from this operator and the value instead: the address is
-	// computed once and used for both the read and the write, so that an
-	// index like `a[i++]` is stepped once rather than once per use. The empty
-	// string means the value in `expr` is written as it stands, which is what
-	// every plain assignment does.
-	compound string
-	// cond is the controlling expression of an if or a while: what has to be
-	// true for the branch to be taken, or for the loop to go round again.
+	// cond is the controlling expression of an if, a while or a switch: what
+	// has to be true for the branch to be taken, or for the loop to go round
+	// again.
 	cond ?Expr
 	// body is the contents of a block, or the body of a loop.
 	body []Stmt
-	// step is what a loop runs at the end of every turn before going round
-	// again: the third part of a `for`, and empty for a `while`. It belongs to
-	// the loop and not to the body, because a continue has to reach it — as the
-	// body's last statement it would be jumped over by every continue above it,
-	// and a loop whose counter only advances in its last statement would never
-	// end.
-	step []Stmt
-	// then_body and else_body are the two branches of an if. The else is empty
-	// when it was not written.
-	then_body []Stmt
-	else_body []Stmt
-	line      int
-	col       int
+	line int
+	col  int
 }
 
 // StmtExtra is the part of a statement only some statements carry, held by
@@ -388,6 +359,37 @@ pub:
 	// resolved is the type a declaration resolved to, and the zero value for
 	// one that declares nothing.
 	resolved types.Type
+	// decl_name and decl_type are a declaration's name and the type the back end
+	// reads it as, which is the spelling a typedef name and an enum tag are
+	// spelled out to; decl_count is how many elements an array declaration has:
+	// zero for a declaration of one value.
+	decl_name  string
+	decl_type  string
+	decl_count int
+	// init is the initializer of a declaration, and none for `int x;`.
+	init ?Expr
+	// compound is the arithmetic operator of a compound assignment: `+` for
+	// `+=`, `-` for `-=`, and the empty string for a plain `=`. The reader
+	// expands the spelling into the assignment it means in `expr` as well, and
+	// a name target is emitted from that expansion because reading a name has
+	// no side effect to repeat. A target reached through an address is
+	// emitted from this operator and the value instead: the address is
+	// computed once and used for both the read and the write, so that an
+	// index like `a[i++]` is stepped once rather than once per use. The empty
+	// string means the value in `expr` is written as it stands, which is what
+	// every plain assignment does.
+	compound string
+	// step is what a loop runs at the end of every turn before going round
+	// again: the third part of a `for`, and empty for a `while`. It belongs to
+	// the loop and not to the body, because a continue has to reach it — as the
+	// body's last statement it would be jumped over by every continue above it,
+	// and a loop whose counter only advances in its last statement would never
+	// end.
+	step []Stmt
+	// then_body and else_body are the two branches of an if. The else is empty
+	// when it was not written.
+	then_body []Stmt
+	else_body []Stmt
 	// bytes is how many bytes of storage the object is when its type is an
 	// aggregate, and zero for an object the back end sizes from its spelling.
 	// A struct is not the address of anything and has no spelling the back end
@@ -524,6 +526,88 @@ pub fn (stmt Stmt) bytes() int {
 		return extra.bytes
 	}
 	return 0
+}
+
+// decl_name is the name a declaration declares, or the empty string for a
+// statement that declares nothing.
+@[inline]
+pub fn (stmt Stmt) decl_name() string {
+	if extra := stmt.extra {
+		return extra.decl_name
+	}
+	return ''
+}
+
+// decl_type is the type a declaration was written with, spelled out the way
+// the back end reads it: a typedef name and an enum tag are resolved to what
+// they name.
+@[inline]
+pub fn (stmt Stmt) decl_type() string {
+	if extra := stmt.extra {
+		return extra.decl_type
+	}
+	return ''
+}
+
+// decl_count is how many elements a declaration declared, and zero for an
+// object that is one value.
+@[inline]
+pub fn (stmt Stmt) decl_count() int {
+	if extra := stmt.extra {
+		return extra.decl_count
+	}
+	return 0
+}
+
+// initializer is the value a declaration gave the object it declares, or none
+// for a declaration that gave none. It is the field the tree calls `init`,
+// under a name a statement can answer without hiding anything.
+@[inline]
+pub fn (stmt Stmt) initializer() ?Expr {
+	if extra := stmt.extra {
+		return extra.init
+	}
+	return none
+}
+
+// compound is the arithmetic operator a compound assignment was written with,
+// `+` for `+=`, and the empty string for a plain `=`.
+@[inline]
+pub fn (stmt Stmt) compound() string {
+	if extra := stmt.extra {
+		return extra.compound
+	}
+	return ''
+}
+
+// step is what a loop runs at the end of every turn, and empty for a statement
+// that is not a loop.
+@[inline]
+pub fn (stmt Stmt) step() []Stmt {
+	if extra := stmt.extra {
+		return extra.step
+	}
+	return []Stmt{}
+}
+
+// then_body is the branch an if runs when its condition is true, and empty for
+// a statement that is not an if.
+@[inline]
+pub fn (stmt Stmt) then_body() []Stmt {
+	if extra := stmt.extra {
+		return extra.then_body
+	}
+	return []Stmt{}
+}
+
+// else_body is the branch an if runs when its condition is false, and empty
+// when it was not written.
+@[inline]
+pub fn (stmt Stmt) else_body() []Stmt {
+	if extra := stmt.extra {
+		return extra.else_body
+	}
+	return []Stmt{}
 }
 
 @[inline]

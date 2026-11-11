@@ -1264,7 +1264,7 @@ fn (mut e Emitter) check_statements(stmts []ast.Stmt, depth int) !void {
 		if expr := stmt.expr {
 			e.check_expression(expr, depth)!
 		}
-		if init := stmt.init {
+		if init := stmt.initializer() {
 			e.check_expression(init, depth)!
 		}
 		if index := stmt.index {
@@ -1274,9 +1274,9 @@ fn (mut e Emitter) check_statements(stmts []ast.Stmt, depth int) !void {
 			e.check_expression(cond, depth)!
 		}
 		e.check_statements(stmt.body, depth)!
-		e.check_statements(stmt.then_body, depth)!
-		e.check_statements(stmt.else_body, depth)!
-		e.check_statements(stmt.step, depth)!
+		e.check_statements(stmt.then_body(), depth)!
+		e.check_statements(stmt.else_body(), depth)!
+		e.check_statements(stmt.step(), depth)!
 		// A nested function is a body of its own, and a constant in it is the
 		// emitter's to write just as one in the enclosing body is, so the walk
 		// reaches into it. Nothing else of the nested definition is checked
@@ -1372,9 +1372,9 @@ fn collect_nested(stmts []ast.Stmt) []ast.FnDecl {
 			out << collect_nested(decl.body)
 		}
 		out << collect_nested(stmt.body)
-		out << collect_nested(stmt.then_body)
-		out << collect_nested(stmt.else_body)
-		out << collect_nested(stmt.step)
+		out << collect_nested(stmt.then_body())
+		out << collect_nested(stmt.else_body())
+		out << collect_nested(stmt.step())
 	}
 	return out
 }
@@ -2817,12 +2817,12 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 	// declaration it leaves empty, as `(os__Eof){E_STRUCT}` is, and the reader's
 	// layout of an empty structure is a size the spelling has no width for.
 	measured := e.known_aggregate_bytes(stmt.resolved()) != none || e.storage_of_no_bytes(stmt.resolved())
-	slot := e.declare(stmt.decl_name, stmt.decl_type, stmt.decl_count, stmt.bytes(), stmt.decl_stride(),
+	slot := e.declare(stmt.decl_name(), stmt.decl_type(), stmt.decl_count(), stmt.bytes(), stmt.decl_stride(),
 		stmt.line, stmt.col, measured)!
 	// What makes an object an argument list is the type it was declared with,
 	// because that is what says how the four operations over a list may treat it.
 	if abi.is_argument_list(stmt.resolved()) {
-		e.argument_lists << stmt.decl_name
+		e.argument_lists << stmt.decl_name()
 	}
 	if stmt.cleanup() != '' && e.cleanups.len > 0 {
 		// The object is in the block this declaration sits in, and the function
@@ -2831,14 +2831,14 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 		// block is emitted as it is read, and the slot the object got is what
 		// the call needs the address of, not the name alone.
 		e.cleanups[e.cleanups.len - 1] << Cleanup{
-			name:     stmt.decl_name
+			name:     stmt.decl_name()
 			typ:      stmt.resolved()
 			function: stmt.cleanup()
 			line:     stmt.line
 			col:      stmt.col
 		}
 	}
-	init := stmt.init or { return }
+	init := stmt.initializer() or { return }
 	if slot.long_double && slot.count == 0 {
 		// An object of the extended type declared with a value: the value is
 		// copied if it is a long double, and converted by the machine's x87 moves
@@ -2859,7 +2859,7 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 		// A complex object is written by the conversion its type names rather
 		// than by a copy: a real initializer is a complex value with a zero
 		// imaginary part, which is 6.3.2.2 and not a byte copy.
-		return e.store_complex_local(slot, stmt.decl_type, init, stmt.line, stmt.col, 0)
+		return e.store_complex_local(slot, stmt.decl_type(), init, stmt.line, stmt.col, 0)
 	}
 	if slot.wide {
 		// A 128-bit object declared with a value takes one of three things: a copy
@@ -2876,18 +2876,18 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 		// just claimed.
 		declared := ast.Stmt{
 			kind:   .assign
-			target: stmt.decl_name
+			target: stmt.decl_name()
 			expr:   init
 			line:   stmt.line
 			col:    stmt.col
 		}
 		return e.assign_object_local(declared, slot, 0)
 	}
-	if stmt.decl_count > 0 {
+	if stmt.decl_count() > 0 {
 		// An array is storage, and the elements of it are whatever the frame
 		// held: an initializer for one is a shape this back end does not copy
 		// yet, and writing one element of it would be a wrong program.
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.decl_name} is an array declared with an initializer, and an array of elements is not initialized here')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.decl_name()} is an array declared with an initializer, and an array of elements is not initialized here')
 		return error('array initializer')
 	}
 	if e.wide_value(init) {
@@ -2901,7 +2901,7 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 			// though the top of the value were zero. Measured on gcc 16.2.1:
 			// `double d = (__int128)5` is 5.0, and the low word read as an integer
 			// into a double slot is a different number entirely.
-			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a conversion from a 128-bit object to ${stmt.decl_type} is not one this back end makes, and a value that wide does not convert to a floating type here')
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a conversion from a 128-bit object to ${stmt.decl_type()} is not one this back end makes, and a value that wide does not convert to a floating type here')
 			return error('128-bit to a double')
 		}
 		e.low_word_of_object(init, slot.width, stmt.line, stmt.col, 1)!
@@ -2922,11 +2922,11 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 // function, so a loop body that declares an array does not grow the stack every
 // time round.
 fn (mut e Emitter) emit_vla_decl(stmt ast.Stmt, size_expr ast.Expr) !void {
-	if stmt.init != none {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.decl_name} is a variable-length array, and a variable-length array may not be initialized')
+	if stmt.initializer() != none {
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.decl_name()} is a variable-length array, and a variable-length array may not be initialized')
 		return error('VLA initializer')
 	}
-	slot := e.declare_vla(stmt.decl_name, stmt.decl_stride(), stmt.line, stmt.col)!
+	slot := e.declare_vla(stmt.decl_name(), stmt.decl_stride(), stmt.line, stmt.col)!
 	// The size the object is, before the frame rounds it up: sizeof answers with
 	// this and not with the padded size, because padding is a fact about the
 	// stack and not about the object.
@@ -2975,7 +2975,7 @@ fn (mut e Emitter) emit_assign(stmt ast.Stmt, depth int) !void {
 	// written by the path that computes that address once and reads and writes
 	// through it. A name target is not one of those: reading a name has no side
 	// effect to repeat, and the expansion in expr is emitted directly below.
-	if stmt.compound != '' && (stmt.field != none || stmt.deref() != none || stmt.subscript() != none || stmt.index != none) {
+	if stmt.compound() != '' && (stmt.field != none || stmt.deref() != none || stmt.subscript() != none || stmt.index != none) {
 		return e.assign_compound(stmt, depth)
 	}
 	if deref := stmt.deref() {
@@ -3171,36 +3171,36 @@ fn (mut e Emitter) assign_deref(stmt ast.Stmt, target ast.Expr, expr ast.Expr, d
 // for.
 fn (mut e Emitter) assign_compound(stmt ast.Stmt, depth int) !void {
 	value := stmt.expr or {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= has no value')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= has no value')
 		return error('compound assignment without a value')
 	}
 	binary := value as ast.Binary
 	destination := binary.left
 	written := destination.typ.describe()
 	if destination.typ.kind == .unknown {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= writes an object whose type this compiler cannot resolve')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= writes an object whose type this compiler cannot resolve')
 		return error('unknown compound target type')
 	}
 	if destination is ast.Field {
 		if destination.bitfield {
-			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= to the bitfield ${destination.name}.${destination.member} is not implemented, and this back end does not step a bitfield in place')
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to the bitfield ${destination.name}.${destination.member} is not implemented, and this back end does not step a bitfield in place')
 			return error('bitfield compound assignment')
 		}
 	}
 	if destination.typ.kind.is_complex() {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= to an object of ${written} is not implemented, and this back end keeps one value of a complex type in a register')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to an object of ${written} is not implemented, and this back end keeps one value of a complex type in a register')
 		return error('complex compound assignment')
 	}
 	if destination.typ.kind.is_extended() {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= to an object of ${written} is not one this back end makes at the width of the type')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to an object of ${written} is not one this back end makes at the width of the type')
 		return error('long double compound assignment')
 	}
 	if destination.typ.kind in [.int128, .unsigned_int128] {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= to an object of ${written} is not implemented')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to an object of ${written} is not implemented')
 		return error('wide compound assignment')
 	}
 	if destination.typ.is_pointer() {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= to an object of ${written} is not implemented, and an integer added to a pointer is scaled by the size of what it points at')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to an object of ${written} is not implemented, and an integer added to a pointer is scaled by the size of what it points at')
 		return error('pointer compound assignment')
 	}
 	// The address of the target, computed once and parked while the value is
@@ -3219,7 +3219,7 @@ fn (mut e Emitter) assign_compound(stmt ast.Stmt, depth int) !void {
 		return e.assign_compound_float(stmt, binary, address, single, depth)
 	}
 	width := e.storage_width(destination.typ) or {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound}= writes an object of ${written}, and this back end stores ints, chars, floats, doubles and pointers only')
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= writes an object of ${written}, and this back end stores ints, chars, floats, doubles and pointers only')
 		return error('unsupported compound width')
 	}
 	// The old value is read through the parked address, at the width and
@@ -4579,12 +4579,12 @@ fn (mut e Emitter) emit_if(stmt ast.Stmt) !bool {
 	e.emit_condition(cond, 0, stmt.line, stmt.col)!
 	else_label := e.label()
 	e.branch(.branch_zero, else_label, stmt.line, stmt.col)!
-	then_returned := e.emit_branch_body(stmt.then_body)!
-	if stmt.else_body.len > 0 {
+	then_returned := e.emit_branch_body(stmt.then_body())!
+	if stmt.else_body().len > 0 {
 		end_label := e.label()
 		e.jump(end_label)!
 		e.place(else_label)
-		else_returned := e.emit_branch_body(stmt.else_body)!
+		else_returned := e.emit_branch_body(stmt.else_body())!
 		e.place(end_label)
 		return then_returned && else_returned
 	}
@@ -4612,7 +4612,7 @@ fn (mut e Emitter) emit_while(stmt ast.Stmt) !void {
 	// body instead would read the same and be wrong — every continue above it
 	// would jump past the statement that advances the loop.
 	step := e.label()
-	continue_to := if stmt.step.len > 0 { step } else { top }
+	continue_to := if stmt.step().len > 0 { step } else { top }
 	e.place(top)
 	e.emit_condition(cond, 0, stmt.line, stmt.col)!
 	e.branch(.branch_zero, end, stmt.line, stmt.col)!
@@ -4625,11 +4625,11 @@ fn (mut e Emitter) emit_while(stmt ast.Stmt) !void {
 	}
 	e.emit_branch_body(stmt.body)!
 	e.loops.pop()
-	if stmt.step.len > 0 {
+	if stmt.step().len > 0 {
 		// The step runs in the loop's own scope, which is where C puts it: the
 		// names a for declares in its head are the names its step writes to.
 		e.place(step)
-		_ := e.emit_statements(stmt.step)!
+		_ := e.emit_statements(stmt.step())!
 	}
 	e.jump(top)!
 	e.place(end)
@@ -4901,21 +4901,21 @@ fn (mut e Emitter) collect_cases(body []ast.Stmt, mut cases []CaseTarget) {
 				}
 			}
 			.if_stmt {
-				if stmt.else_body.len > 0 {
+				if stmt.else_body().len > 0 {
 					stack << CaseWalk{
-						list: stmt.else_body
+						list: stmt.else_body()
 					}
 				}
-				if stmt.then_body.len > 0 {
+				if stmt.then_body().len > 0 {
 					stack << CaseWalk{
-						list: stmt.then_body
+						list: stmt.then_body()
 					}
 				}
 			}
 			.while_stmt {
-				if stmt.step.len > 0 {
+				if stmt.step().len > 0 {
 					stack << CaseWalk{
-						list: stmt.step
+						list: stmt.step()
 					}
 				}
 				if stmt.body.len > 0 {
@@ -5647,11 +5647,11 @@ fn (mut c VlaCounter) statement(stmt ast.Stmt) {
 			}
 		}
 		.if_stmt {
-			if stmt.then_body.len > 0 {
-				c.scope(stmt.then_body)
+			if stmt.then_body().len > 0 {
+				c.scope(stmt.then_body())
 			}
-			if stmt.else_body.len > 0 {
-				c.scope(stmt.else_body)
+			if stmt.else_body().len > 0 {
+				c.scope(stmt.else_body())
 			}
 		}
 		.while_stmt {
@@ -5660,7 +5660,7 @@ fn (mut c VlaCounter) statement(stmt ast.Stmt) {
 			}
 			// A for loop's step runs in the scope around the loop, which is where
 			// emission writes it, so it is walked without opening a scope.
-			for step in stmt.step {
+			for step in stmt.step() {
 				c.statement(step)
 			}
 		}
@@ -5703,8 +5703,8 @@ fn statement_has_vla(stmt ast.Stmt) bool {
 	match stmt.kind {
 		.block { return function_has_vla(stmt.body) }
 		.var_decl { return stmt.decl_vla_size() != none }
-		.if_stmt { return function_has_vla(stmt.then_body) || function_has_vla(stmt.else_body) }
-		.while_stmt { return function_has_vla(stmt.body) || function_has_vla(stmt.step) }
+		.if_stmt { return function_has_vla(stmt.then_body()) || function_has_vla(stmt.else_body()) }
+		.while_stmt { return function_has_vla(stmt.body) || function_has_vla(stmt.step()) }
 		.do_while_stmt { return function_has_vla(stmt.body) }
 		.switch_stmt { return function_has_vla(stmt.body) }
 		else { return false }
@@ -5747,11 +5747,11 @@ fn (mut c CleanupCounter) statement(stmt ast.Stmt) {
 			}
 		}
 		.if_stmt {
-			if stmt.then_body.len > 0 {
-				c.scope(stmt.then_body)
+			if stmt.then_body().len > 0 {
+				c.scope(stmt.then_body())
 			}
-			if stmt.else_body.len > 0 {
-				c.scope(stmt.else_body)
+			if stmt.else_body().len > 0 {
+				c.scope(stmt.else_body())
 			}
 		}
 		.while_stmt {
@@ -5760,7 +5760,7 @@ fn (mut c CleanupCounter) statement(stmt ast.Stmt) {
 			}
 			// A for loop's step runs in the scope around the loop, which is
 			// where emission writes it, so it is walked without opening a scope.
-			for step in stmt.step {
+			for step in stmt.step() {
 				c.statement(step)
 			}
 		}
@@ -5804,9 +5804,11 @@ fn statement_has_cleanups(stmt ast.Stmt) bool {
 		.block { return function_has_cleanups(stmt.body) }
 		.var_decl { return stmt.cleanup() != '' }
 		.if_stmt {
-			return function_has_cleanups(stmt.then_body) || function_has_cleanups(stmt.else_body)
+			return function_has_cleanups(stmt.then_body()) || function_has_cleanups(stmt.else_body())
 		}
-		.while_stmt { return function_has_cleanups(stmt.body) || function_has_cleanups(stmt.step) }
+		.while_stmt {
+			return function_has_cleanups(stmt.body) || function_has_cleanups(stmt.step())
+		}
 		.do_while_stmt { return function_has_cleanups(stmt.body) }
 		.switch_stmt { return function_has_cleanups(stmt.body) }
 		else { return false }

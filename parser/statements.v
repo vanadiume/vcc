@@ -209,7 +209,7 @@ fn (mut p Parser) comma_continuation(stmt ast.Stmt) !ast.Stmt {
 	if !p.at_punct(',') {
 		return stmt
 	}
-	if stmt.kind == .assign && stmt.compound.len > 0 {
+	if stmt.kind == .assign && stmt.compound().len > 0 {
 		return stmt
 	}
 	mut expr := p.trailing_value(stmt) or {
@@ -644,14 +644,14 @@ fn (mut p Parser) parse_deref_assignment(start tokenize.Token, target ast.Expr, 
 				arithmetic := p.compound_operator(op)!
 				deref := ast.Expr(target)
 				return ast.Stmt{
-					kind:     .assign
-					expr:     p.compound_expansion(op, arithmetic, deref, value)
-					compound: arithmetic
-					extra:    &ast.StmtExtra{
-						deref: deref
+					kind:  .assign
+					expr:  p.compound_expansion(op, arithmetic, deref, value)
+					extra: &ast.StmtExtra{
+						compound: arithmetic
+						deref:    deref
 					}
-					line:     start.line
-					col:      start.col
+					line:  start.line
+					col:   start.col
 				}
 			}
 			// The object written to is the one the pointer points at, so the
@@ -901,12 +901,14 @@ fn (mut p Parser) parse_member_compound_assignment(op tokenize.Token, member &as
 	right := p.parse_assignment_expression()!
 	left := ast.Expr(*member)
 	return ast.Stmt{
-		kind:     .assign
-		field:    member
-		expr:     p.compound_expansion(op, arithmetic, left, right)
-		compound: arithmetic
-		line:     member.line
-		col:      member.col
+		kind:  .assign
+		field: member
+		expr:  p.compound_expansion(op, arithmetic, left, right)
+		extra: &ast.StmtExtra{
+			compound: arithmetic
+		}
+		line:  member.line
+		col:   member.col
 	}
 }
 
@@ -988,12 +990,14 @@ fn (mut p Parser) parse_member_assignment(member ast.Field) !ast.Stmt {
 		right := p.parse_assignment_expression()!
 		left := ast.Expr(member)
 		return ast.Stmt{
-			kind:     .assign
-			field:    member.boxed()
-			expr:     p.compound_expansion(op, arithmetic, left, right)
-			compound: arithmetic
-			line:     member.line
-			col:      member.col
+			kind:  .assign
+			field: member.boxed()
+			expr:  p.compound_expansion(op, arithmetic, left, right)
+			extra: &ast.StmtExtra{
+				compound: arithmetic
+			}
+			line:  member.line
+			col:   member.col
 		}
 	}
 	value := p.converted_into(member.typ, p.parse_assignment_expression()!)
@@ -1118,13 +1122,15 @@ fn (mut p Parser) parse_compound_assignment(target tokenize.Token, op tokenize.T
 	}
 	value := p.compound_expansion(op, arithmetic, left, right)
 	return ast.Stmt{
-		kind:     .assign
-		target:   target.text
-		index:    index
-		expr:     value
-		compound: arithmetic
-		line:     target.line
-		col:      target.col
+		kind:   .assign
+		target: target.text
+		index:  index
+		expr:   value
+		extra:  &ast.StmtExtra{
+			compound: arithmetic
+		}
+		line:   target.line
+		col:    target.col
 	}
 }
 
@@ -1167,12 +1173,14 @@ fn (mut p Parser) parse_if_statement() ![]ast.Stmt {
 		else_body = p.parse_control_body()!
 	}
 	return [ast.Stmt{
-		kind:      .if_stmt
-		cond:      cond
-		then_body: then_body
-		else_body: else_body
-		line:      t.line
-		col:       t.col
+		kind:  .if_stmt
+		cond:  cond
+		extra: &ast.StmtExtra{
+			then_body: then_body
+			else_body: else_body
+		}
+		line:  t.line
+		col:   t.col
 	}]
 }
 
@@ -1749,13 +1757,19 @@ fn (mut p Parser) parse_for_statement() ![]ast.Stmt {
 	// The step is the loop's own third part rather than the body's last
 	// statement: a continue has to reach it, and a continue at the end of the
 	// body would jump over a statement written inside the body.
+	mut extra := ?&ast.StmtExtra(none)
+	if step.len > 0 {
+		extra = &ast.StmtExtra{
+			step: step
+		}
+	}
 	loop := ast.Stmt{
-		kind: .while_stmt
-		cond: cond
-		body: body
-		step: step
-		line: t.line
-		col:  t.col
+		kind:  .while_stmt
+		cond:  cond
+		body:  body
+		extra: extra
+		line:  t.line
+		col:   t.col
 	}
 	mut block := head.clone()
 	block << loop
@@ -2261,16 +2275,16 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// writes an initializer defines the object and is emitted below.
 		if !spec.is_typedef && !(spec.is_extern && !has_initializer) {
 			stmts << ast.Stmt{
-				kind:       .var_decl
-				init:       decl_init
-				decl_name:  d.name
-				decl_type:  if spec.auto_deduced {
-					declared.describe()
-				} else {
-					p.spelling_of(spec, d.pointer_count())
-				}
-				decl_count: count
-				extra:      &ast.StmtExtra{
+				kind:  .var_decl
+				extra: &ast.StmtExtra{
+					init:          decl_init
+					decl_name:     d.name
+					decl_type:     if spec.auto_deduced {
+						declared.describe()
+					} else {
+						p.spelling_of(spec, d.pointer_count())
+					}
+					decl_count:    count
 					decl_stride:   vla_stride
 					decl_vla_size: vla_size
 					// The declarator decides whether the object is the aggregate or
@@ -2286,8 +2300,8 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 					// empty for a declaration that asked for none.
 					cleanup:       cleanup
 				}
-				line:       d.name_at.line
-				col:        d.name_at.col
+				line:  d.name_at.line
+				col:   d.name_at.col
 			}
 		}
 		// A union's brace initializer is the one member it names, written at the

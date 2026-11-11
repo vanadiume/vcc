@@ -39,7 +39,7 @@ fn first(source string) ast.FnDecl {
 fn test_a_complex_value_converted_to_a_real_type_carries_its_real_part() {
 	result := checked('int main(void) { double _Complex z = 3.0 + 4.0i; double d = z; _Bool b = z; if (b) { return 0; } return (int)d; }')
 	decl := result.unit.decls[0]
-	initializer := decl.body[1].init or {
+	initializer := decl.body[1].initializer() or {
 		assert false
 		return
 	}
@@ -48,7 +48,7 @@ fn test_a_complex_value_converted_to_a_real_type_carries_its_real_part() {
 	assert part.typ.same(types.double_type())
 	// The comparison a `_Bool` conversion is worth is a `!=` against zero, and
 	// its type is the int a comparison has.
-	boolean := decl.body[2].init or {
+	boolean := decl.body[2].initializer() or {
 		assert false
 		return
 	}
@@ -104,10 +104,10 @@ fn test_a_local_declaration_carries_the_type_it_declared() {
 	body := result.unit.decls[0].body
 	assert body.len == 3
 	assert body[0].kind == .var_decl
-	assert body[0].decl_name == 'x'
+	assert body[0].decl_name() == 'x'
 	assert body[0].resolved().same(types.int_type())
 	assert body[1].kind == .var_decl
-	assert body[1].decl_name == 'c'
+	assert body[1].decl_name() == 'c'
 	assert body[1].resolved().same(types.char_type())
 	// `x + c` converts both to int, and neither operand keeps its own type.
 	returned := body[2].expr or {
@@ -133,12 +133,12 @@ fn test_a_declarator_after_a_cast_initializer_keeps_the_declared_type() {
 	// A declaration writes one statement per declarator, so la and lb are the
 	// two statements after the ones that declared a and b. lb is the one the
 	// cast's type would have reached.
-	assert body[2].decl_name == 'la'
+	assert body[2].decl_name() == 'la'
 	assert body[2].resolved().same(types.unsigned_long_type())
-	assert body[3].decl_name == 'lb'
+	assert body[3].decl_name() == 'lb'
 	assert body[3].resolved().same(types.unsigned_long_type())
 	// The cast inside la's initializer is still the conversion it names.
-	la_initializer := body[2].init or {
+	la_initializer := body[2].initializer() or {
 		assert false
 		return
 	}
@@ -154,7 +154,7 @@ fn test_an_inner_declaration_hides_an_outer_one_and_the_outer_one_comes_back() {
 	inner := body[1]
 	assert inner.kind == .block
 	assert inner.body.len == 1
-	assert inner.body[0].decl_name == 'x'
+	assert inner.body[0].decl_name() == 'x'
 	assert inner.body[0].resolved().same(types.char_type())
 	returned := body[2].expr or {
 		assert false
@@ -272,7 +272,7 @@ fn test_sizeof_answers_a_value_and_a_type_where_it_was_refused_by_name() {
 	// the declaration after it is read as it always was.
 	after := parsed('int main() { int x = sizeof(int); return x; }')
 	assert after.diagnostics.len == 0
-	initializer := after.unit.decls[0].body[0].init or {
+	initializer := after.unit.decls[0].body[0].initializer() or {
 		assert false
 		return
 	}
@@ -343,7 +343,7 @@ fn test_a_read_through_an_address_is_typed_as_what_it_points_at() {
 // where a value is wanted instead of a refusal.
 fn test_a_read_through_a_function_designator_is_the_designator() {
 	result := checked('static int f(void) { return 7; } int main(void) { int (*p)(void) = *f; return p(); }')
-	initializer := result.unit.decls[1].body[0].init or {
+	initializer := result.unit.decls[1].body[0].initializer() or {
 		assert false
 		return
 	}
@@ -379,7 +379,7 @@ fn test_a_cast_is_read_as_a_conversion_to_the_type_it_names() {
 	// written, which is what a refusal has to be able to quote.
 	result := checked('int main() { char *p = (char *)0; return (int)p; }')
 	assert result.diagnostics.len == 0
-	initializer := result.unit.decls[0].body[0].init or {
+	initializer := result.unit.decls[0].body[0].initializer() or {
 		assert false
 		return
 	}
@@ -421,7 +421,7 @@ fn test_a_cast_is_read_as_a_conversion_to_the_type_it_names() {
 // where the function type itself had no width for the conversion to widen.
 fn test_a_cast_to_a_function_pointer_names_the_function_pointer() {
 	result := checked('static int inc(int x) { return x + 1; } int main(void) { int (*fp)(int) = (int (*)(int))inc; return 0; }')
-	initializer := result.unit.decls[1].body[0].init or {
+	initializer := result.unit.decls[1].body[0].initializer() or {
 		assert false
 		return
 	}
@@ -811,7 +811,7 @@ fn test_a_conditional_between_a_void_pointer_constant_and_a_pointer_is_the_point
 	for source in shapes {
 		result := parsed(source)
 		assert result.diagnostics.len == 0
-		init := result.unit.decls[0].body[0].init or {
+		init := result.unit.decls[0].body[0].initializer() or {
 			assert false
 			return
 		}
@@ -839,7 +839,7 @@ fn test_a_conditional_with_a_void_pointer_that_is_not_constant_is_a_void_pointer
 	for source in shapes {
 		result := parsed(source)
 		assert result.diagnostics.len == 0
-		init := result.unit.decls[0].body[0].init or {
+		init := result.unit.decls[0].body[0].initializer() or {
 			assert false
 			return
 		}
@@ -992,7 +992,7 @@ fn test_a_definition_spelled_with_a_typedef_name_is_the_definition_it_names() {
 	// form, so `count n = 2;` declares an int and not a type of its own.
 	result := parsed('typedef int count;\nint main() { int c = 1; count n = 2; return c + n; }')
 	assert result.diagnostics.len == 0
-	assert result.unit.decls[0].body[1].decl_type == 'int'
+	assert result.unit.decls[0].body[1].decl_type() == 'int'
 }
 
 // An object of an aggregate type is a block of storage, and the size of it is
@@ -1006,7 +1006,7 @@ fn test_an_object_of_an_aggregate_type_carries_the_size_of_its_layout() {
 	decl := first('struct S { int a; char c; };\nint main() { struct S s; return 0; }')
 	body := decl.body
 	assert body.len == 2
-	assert body[0].decl_type == 'struct S'
+	assert body[0].decl_type() == 'struct S'
 	assert body[0].bytes() == 8
 }
 
@@ -1517,7 +1517,7 @@ fn test_an_imaginary_constant_is_the_complex_value_6_4_4_2_names() {
 	// is `double _Complex`. `_Complex_I` in <complex.h> is `1.0if`, so the
 	// suffix-before-suffix order is the one the header writes.
 	single := first('int main(void) { float _Complex z = 1.0if; return 0; }')
-	single_lit := single.body[0].init or {
+	single_lit := single.body[0].initializer() or {
 		assert false
 		return
 	} as ast.ComplexLit
@@ -1525,14 +1525,14 @@ fn test_an_imaginary_constant_is_the_complex_value_6_4_4_2_names() {
 	assert single_lit.value == 1.0
 	assert single_lit.text == '1.0if'
 	// The capital spelling and the other order are the same constant.
-	assert (first('int main(void) { float _Complex z = 1.0Fi; return 0; }').body[0].init or {
+	assert (first('int main(void) { float _Complex z = 1.0Fi; return 0; }').body[0].initializer() or {
 		assert false
 		return
 	} as ast.ComplexLit).typ.same(types.complex_float_type())
 	// No floating suffix is a double complex, and `j` is the other spelling of
 	// the imaginary suffix.
 	wide := first('int main(void) { double _Complex z = 2.0j; return 0; }')
-	wide_lit := wide.body[0].init or {
+	wide_lit := wide.body[0].initializer() or {
 		assert false
 		return
 	} as ast.ComplexLit
@@ -1545,7 +1545,7 @@ fn test_an_imaginary_constant_is_the_complex_value_6_4_4_2_names() {
 	// value take.
 	long_imaginary := parsed('int main(void) { float _Complex z = 1.0il; return 0; }')
 	assert long_imaginary.diagnostics.len == 0
-	long_lit := first('int main(void) { long double _Complex z = 1.0il; return 0; }').body[0].init or {
+	long_lit := first('int main(void) { long double _Complex z = 1.0il; return 0; }').body[0].initializer() or {
 		assert false
 		return
 	} as ast.ComplexLit
@@ -1677,8 +1677,8 @@ fn test_a_parameter_and_a_local_of_the_128_bit_type_are_typed_as_the_declaration
 	body := local.unit.decls[0].body
 	assert body.len == 2
 	assert body[0].kind == .var_decl
-	assert body[0].decl_name == 'r'
-	assert body[0].decl_type == '__int128'
+	assert body[0].decl_name() == 'r'
+	assert body[0].decl_type() == '__int128'
 	assert body[0].resolved().same(types.int128_type())
 }
 
@@ -1698,7 +1698,7 @@ fn test_a_call_to_a_function_the_128_bit_type_is_written_on_is_read_against_its_
 	// The other direction: a call to a function that returns the type is a value
 	// of that type, which is what a declaration initialized from it reads.
 	wide := checked('__int128 give(void);\nint main(void) { __int128 y = give(); return 0; }')
-	initializer := wide.unit.decls[1].body[0].init or {
+	initializer := wide.unit.decls[1].body[0].initializer() or {
 		assert false
 		return
 	}
