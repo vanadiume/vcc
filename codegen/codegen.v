@@ -13745,9 +13745,17 @@ fn (mut e Emitter) intern_single(value f64) string {
 	return key
 }
 
-// append puts finished instruction bytes into the text.
+// append copies one encoded instruction into the text of the unit. The bytes
+// arrive in an array the target built for this instruction and nothing else
+// holds: every caller hands over what `e.target.*` just answered, which is a
+// fresh array of the instruction's own length. The buffer is freed once its bytes
+// are copied, because otherwise the emitter leaves one behind per instruction it
+// writes, and the object this compiler emits is tens of megabytes of them.
+//
+// A caller with an array it means to keep has to hand over a copy.
 fn (mut e Emitter) append(bytes []u8) {
 	e.program.text << bytes
+	unsafe { bytes.free() }
 }
 
 // reference appends an instruction whose displacement is not known yet and
@@ -13756,10 +13764,12 @@ fn (mut e Emitter) append(bytes []u8) {
 // string is loaded where the value is about to be used from.
 fn (mut e Emitter) reference(bytes []u8, kind image.FixupKind, name string, register string) {
 	start := e.program.text.len
+	length := bytes.len
 	e.program.text << bytes
+	unsafe { bytes.free() }
 	e.program.fixups << image.Fixup{
 		start:    start
-		length:   bytes.len
+		length:   length
 		kind:     kind
 		name:     name
 		register: register
