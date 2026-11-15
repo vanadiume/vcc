@@ -380,6 +380,13 @@ fn test_an_object_or_an_archive_is_classified_and_named() {
 	// object handed to the compiler is named as itself and not as an object.
 	assert classify_input(elf_of(3), 'libm.so', '') == .shared_object
 	assert classify_input(elf_of(2), 'a.out', '') == .program
+	// A shared object is a link input like an object and an archive, so a run
+	// that stops before a link refuses it as one, and the refusal does not
+	// claim the file is something this compiler cannot read at all.
+	said_shared := input_refusal('libx.so', .shared_object)
+	assert said_shared.contains('libx.so')
+	assert said_shared.contains('shared object')
+	assert said_shared.contains('an input to a link')
 
 	path := input_scratch('real_object.o')
 	os.write_file_array(path, object.bytes()) or { panic(err) }

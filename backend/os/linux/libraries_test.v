@@ -229,6 +229,35 @@ fn test_the_c_library_answers_nothing_when_the_image_names_none() {
 	assert unresolved_imports(['nowhere'], [], system_dirs, false) == ['nowhere']
 }
 
+// A shared object the command line names as a file is a library like one a -l
+// name resolves to: the file is read for the name the loader is asked for, and
+// its dynamic symbol table answers the imports. `fetestexcept` is in libm and in
+// no default library, so it is the name that proves the file was read.
+fn test_a_library_named_as_a_file_answers_its_name_and_symbols() {
+	system_dirs := backend.host() or { panic('this test needs the host target') }.library_dirs
+	path := find_system_library(system_dirs, 'libm.so.6') or { return }
+	named := shared_library(path) or { panic(err) }
+	assert named.path == path
+	assert named.soname == 'libm.so.6'
+	assert !named.archive
+	assert unresolved_imports_including_files(['fetestexcept'], [], [], system_dirs, true) == [
+		'fetestexcept',
+	]
+	assert unresolved_imports_including_files(['fetestexcept'], [], [named], system_dirs,
+		true) == []string{}
+}
+
+// A name given as a file that is not there is the reader's own refusal and not
+// a library with no symbols: the command line named a file, and a file it cannot
+// open is not a library it can link against.
+fn test_a_library_named_as_a_file_that_is_not_there_is_refused() {
+	if _ := shared_library(os.join_path(os.temp_dir(), 'vcc_no_such_library.so')) {
+		assert false, 'a file that is not there has to be an error'
+	} else {
+		assert err.msg().contains('no such file')
+	}
+}
+
 fn copy_bytes(from string, to string) {
 	bytes := os.read_bytes(from) or { panic(err) }
 	os.write_file_array(to, bytes) or { panic(err) }

@@ -297,6 +297,22 @@ pub fn resolve_library(given string, dirs []string) !Library {
 	}
 }
 
+// shared_library is what a shared object named as a file on the command line
+// comes to: the path itself and the name the image records for it. A file that
+// carries no SONAME is recorded under its own name, which is the rule
+// resolve_library applies to a -l name and the rule the loader follows when it
+// searches for a file named in DT_NEEDED. A script gets the name of the library
+// it stands for, because that is the file the loader has to open.
+pub fn shared_library(path string) !Library {
+	if !os.is_file(path) {
+		return error('${path}: no such file')
+	}
+	return Library{
+		path:   path
+		soname: library_name_of(path)!
+	}
+}
+
 // archive_library is the Library a static archive comes to. The name is the
 // file's own, because an archive carries no SONAME and the image asks the loader
 // for nothing; `archive` says the file is read as members rather than as an
@@ -894,6 +910,17 @@ pub fn library_symbols(path string) ?map[string]bool {
 // read leaves the import it answers reported, since no file it could read
 // defines it.
 pub fn unresolved_imports(imports []string, names []string, dirs []string, base_library_counts bool) []string {
+	return unresolved_imports_including_files(imports, names, []Library{}, dirs, base_library_counts)
+}
+
+// unresolved_imports_including_files is the same question asked of the shared
+// objects a command line named by file as well as the ones -l resolves. A
+// shared object named as an input is one the loader maps beside the image, so a
+// name it defines is a name the image can be started against, and the file is
+// read through the same dynamic table a -l library is. It is a separate
+// function rather than another argument to unresolved_imports because a caller
+// with no files on its command line should not have to say so.
+pub fn unresolved_imports_including_files(imports []string, names []string, files []Library, dirs []string, base_library_counts bool) []string {
 	if imports.len == 0 {
 		return []string{}
 	}
@@ -908,6 +935,11 @@ pub fn unresolved_imports(imports []string, names []string, dirs []string, base_
 	}
 	for library in resolve_library_files(names, dirs) or { []Library{} } {
 		if table := open_library_symbols(library.path) {
+			tables << table
+		}
+	}
+	for file in files {
+		if table := open_library_symbols(file.path) {
 			tables << table
 		}
 	}

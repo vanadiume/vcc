@@ -34,6 +34,14 @@ pub:
 	libraries []string
 	// library_dirs are the -L directories, in order.
 	library_dirs []string
+	// shared_libraries are the shared objects the command line named as files
+	// rather than through -l, in order. They are not units: no byte of one is
+	// placed in the merged image. What the link takes from one is the names it
+	// defines, which answer the image's imports, and the name the loader is
+	// asked for, which the image records the way it records a -l name. The
+	// dynamic table already holds both, so nothing has to be read out of a
+	// section header table the file does not have.
+	shared_libraries []linux.Library
 	// no_default_libraries says the link names no default libraries: no C
 	// library, and no runtime archive. -nostdlib and -nodefaultlibs are the two
 	// flags that ask for it, and the two answers it changes are the library the
@@ -239,6 +247,18 @@ pub fn link(units []image.Program, options Options) !image.Program {
 		// program to whoever wraps it.
 		no_default_libraries: options.no_default_libraries
 	}
+	// A shared object named as a file is recorded the way a -l name is: the
+	// loader maps it beside this image and answers the names it defines. Its
+	// bytes are not merged, because an image that held a copy of every name a
+	// library exports would be a second definition of them rather than a use
+	// of the first. The name is the one the library carries for the loader, not
+	// the path on this command line, which is why the reader answered it when
+	// the input was classified.
+	for library in options.shared_libraries {
+		if library.soname !in merged.libraries {
+			merged.libraries << library.soname
+		}
+	}
 	// Every reference that is still external has to be answerable by a library
 	// the image names, or the program dies at load with nothing on the
 	// compiler's stderr. The copies are checked beside the imports because a
@@ -266,8 +286,8 @@ pub fn link(units []image.Program, options Options) !image.Program {
 		}
 	}
 	dirs := linux.search_dirs(options.library_dirs, options.target.library_dirs)
-	unresolved := linux.unresolved_imports(requested, options.libraries, dirs,
-		!options.no_default_libraries)
+	unresolved := linux.unresolved_imports_including_files(requested, options.libraries,
+		options.shared_libraries, dirs, !options.no_default_libraries)
 	if unresolved.len > 0 {
 		return error('undefined reference to `${unresolved[0]}`: no library the image names defines it')
 	}
