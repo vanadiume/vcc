@@ -1074,3 +1074,5 @@ it owns the change, which is the same vocabulary the commits use.
 * preprocess: rescan an object-like replacement with the text after it (9bdde26)
 * regression: an object-like alias of a function-like macro (f4f2e56)
 * docs: the changelog records the alias rescan (bf3c0a2)
+* preprocess: a replacement that opens an argument list reads it from the file (7a0ef96)
+* regression: a tail that opens an argument list (283cf16)
