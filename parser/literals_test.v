@@ -223,6 +223,21 @@ fn test_an_escape_gcc_does_not_know_is_the_character_itself() {
 	assert (parse_escape('xg') or { i64(-1) }) == -1
 }
 
+// A character constant without a prefix is a plain char read as an int, and plain
+// char is signed on this target, so a byte past 127 is negative. Measured on gcc
+// 16.2.1: '\301' is -63, '\200' is -128 and '\377' is -1, and an escape too wide
+// for the byte is cut to it first: '\777' is -1 and '\x1234' is 52. A prefixed
+// constant keeps the value its encoding gives, so L'\377' is 255.
+fn test_a_narrow_character_constant_has_the_value_plain_char_gives_it() {
+	assert (parse_character_literal("'\\301'") or { i64(0) }) == -63
+	assert (parse_character_literal("'\\200'") or { i64(0) }) == -128
+	assert (parse_character_literal("'\\377'") or { i64(0) }) == -1
+	assert (parse_character_literal("'\\777'") or { i64(0) }) == -1
+	assert (parse_character_literal("'\\x1234'") or { i64(0) }) == 52
+	assert (parse_character_literal("L'\\377'") or { i64(0) }) == 255
+	assert (parse_character_literal("'\\u00E9'") or { i64(0) }) == 0xC3A9
+}
+
 // The three decimal suffixes name the format a floating constant is stored in:
 // `df`/`DF` is `_Decimal32`, `dd`/`DD` is `_Decimal64` and `dl`/`DL` is
 // `_Decimal128`. Each pair is two spellings of one suffix and the reader takes
