@@ -1407,7 +1407,7 @@ fn (mut p Parser) parse_member_path(base string, base_at tokenize.Token, through
 			// element, which is an object rather than a place the name alone
 			// addresses, so the access goes through the general reader with
 			// that object as its base.
-			mut object := ast.Expr(ast.Ident{
+			mut object := p.arena.put_ident(ast.Ident{
 				name: base
 				typ:  declared
 				line: base_at.line
