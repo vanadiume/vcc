@@ -5964,25 +5964,27 @@ fn (mut e Emitter) remainder(line int, col int) !backend.Register {
 	}
 }
 
+// object_scratch is the register a move of an object too wide for one instruction
+// holds its pieces in. The machine names it because a parameter that has not been
+// stored yet may still be in the scratch register, and an object move runs in the
+// callee before the parameters after it have been stored.
+fn (mut e Emitter) object_scratch(line int, col int) !backend.Register {
+	return e.target.object_scratch() or {
+		e.diagnostics << problem(line, col, "${e.target.name}: the machine's table has no register for the piece of an object move")
+		return error('no object scratch register')
+	}
+}
+
 // store_chunked_into_slot writes a register into a slot whose width is not one the
-// machine moves, which is an object of an aggregate type handed over in a register:
-// the low chunk goes where the object is and each chunk above it is shifted down out
-// of a copy of the register first, so the register itself is left as it was. A
-// three-byte object is a two-byte write and a one-byte write of the register shifted
-// sixteen bits down, which is the shape gcc emits for the same store.
+// machine moves, which is an object of an aggregate type handed over in a register.
+// The machine composes the store a chunk at a time, out of a copy of the register,
+// so the register itself is left as it was. The copy is held in the machine's object
+// scratch: this store runs in a callee before the parameters after it have been
+// stored, and one of those may be in the scratch register.
 fn (mut e Emitter) store_chunked_into_slot(slot Slot, register backend.Register, line int, col int) !void {
 	base := e.slot_base_register(slot, line, col)!
-	piece := e.scratch(line, col)!
-	mut done := 0
-	for done < slot.width {
-		chunk := machine_chunk(slot.width - done)
-		e.append(e.target.move_register64(piece, register)!)
-		if done > 0 {
-			e.append(e.target.shift_right_word(piece, u8(done * 8))!)
-		}
-		e.append(e.target.store_slot(base, slot.offset + done, piece, chunk)!)
-		done += chunk
-	}
+	scratch := e.object_scratch(line, col)!
+	e.append(e.target.store_object_slot(base, slot.offset, register, scratch, slot.width)!)
 }
 
 // store_register writes a register into a slot at the slot's width. A slot
@@ -6046,51 +6048,11 @@ fn low_eightbyte_width(bytes int, word_size int) int {
 
 // store_chunked_indirect writes a register into the `width` bytes at an address a
 // register holds, for an object of a width the machine does not move in one
-// instruction: the low chunk goes where the object is and each chunk above it is
-// shifted down out of a copy of the register first, so the register itself is left
-// as it was. A three-byte object is a two-byte write and a one-byte write of the
-// register shifted sixteen bits down, which is the shape gcc emits for the same
-// store.
+// instruction. The machine composes the store a chunk at a time, out of a copy of
+// the register, so the register itself is left as it was.
 fn (mut e Emitter) store_chunked_indirect(address backend.Register, register backend.Register, width int, line int, col int) !void {
-	// The piece has to be a register the address and the value are not in: the
-	// address is the one the caller parked the object's address in and the value
-	// is the register the call handed it back in, so a copy of either used as
-	// scratch is lost. The three the emitter keeps are asked in turn, which is
-	// enough for every call site: the address stands in one of them and the value
-	// in another.
-	mut piece := e.scratch(line, col)!
-	if piece == address || piece == register {
-		piece = e.remainder(line, col)!
-	}
-	if piece == address || piece == register {
-		piece = e.accumulator(line, col)!
-	}
-	mut done := 0
-	for done < width {
-		chunk := machine_chunk(width - done)
-		e.append(e.target.move_register64(piece, register)!)
-		if done > 0 {
-			e.append(e.target.shift_right_word(piece, u8(done * 8))!)
-		}
-		e.append(e.target.store_slot(address, i32(done), piece, chunk)!)
-		done += chunk
-	}
-}
-
-// machine_chunk is the widest move the machine has that fits in `remaining` bytes,
-// which is how an object of a width the machine does not move is moved: eight, then
-// four, then two, then one.
-fn machine_chunk(remaining int) int {
-	if remaining >= 8 {
-		return 8
-	}
-	if remaining >= 4 {
-		return 4
-	}
-	if remaining >= 2 {
-		return 2
-	}
-	return 1
+	scratch := e.object_scratch(line, col)!
+	e.append(e.target.store_object_slot(address, 0, register, scratch, width)!)
 }
 
 // machine_width_is_a_move says whether a width is one the machine moves through an
@@ -6103,68 +6065,33 @@ fn machine_width_is_a_move(width int) bool {
 
 // load_chunked_argument reads an object of `width` bytes out of a frame slot into a
 // register, where the width is the one the calling convention hands the object over
-// at rather than one the machine moves. The bytes go in a machine-wide chunk at a
-// time and each chunk above the first is shifted into place, so a three-byte object
-// is a two-byte read and a one-byte read shifted sixteen bits, which is the shape
-// gcc emits for the same argument. The chunk reads take the bits above them as zero,
-// because what is being put together is a bit pattern and not a value.
+// at rather than one the machine moves. The machine composes the read a chunk at a
+// time, the low chunk landing in the register and each chunk above it shifted into
+// place, so a three-byte object is a two-byte read and a one-byte read shifted
+// sixteen bits, which is the shape gcc emits for the same argument. The chunk reads
+// take the bits above them as zero, because what is being put together is a bit
+// pattern and not a value.
 fn (mut e Emitter) load_chunked_argument(slot Slot, register backend.Register, width int, line int, col int) !void {
 	base := e.slot_base_register(slot, line, col)!
-	mut done := 0
-	for done < width {
-		chunk := machine_chunk(width - done)
-		if done == 0 {
-			if chunk < 4 {
-				e.append(e.target.load_slot_unsigned(base, slot.offset, register, chunk)!)
-			} else {
-				e.append(e.target.load_slot(base, slot.offset, register, chunk)!)
-			}
-		} else {
-			piece := e.scratch(line, col)!
-			if chunk < 4 {
-				e.append(e.target.load_slot_unsigned(base, slot.offset + done, piece, chunk)!)
-			} else {
-				e.append(e.target.load_slot(base, slot.offset + done, piece, chunk)!)
-			}
-			e.append(e.target.shift_left_word(piece, u8(done * 8))!)
-			e.append(e.target.or_word(register, piece)!)
-		}
-		done += chunk
-	}
+	scratch := e.object_scratch(line, col)!
+	e.append(e.target.load_object_slot(base, slot.offset, register, scratch, width)!)
 }
 
 // load_chunked_indirect is load_chunked_argument where the object is named by an
 // address in a register rather than by a frame slot, which is how an argument that
-// is an object is handed over: the address is walked with a register of its own
-// because the register the value ends in is where the address was, and the walking
-// register is what is left of the address once the low chunk has replaced it.
+// is an object is handed over: the address is copied to the machine's object scratch
+// because the register the value ends in is where the address was, and the move then
+// reads through the copy. The scratch above the low chunk is the emitter's scratch
+// register unless that is the destination, which is the case for the second
+// eightbyte of a returned object: that one arrives in the remainder register.
 fn (mut e Emitter) load_chunked_indirect(address backend.Register, register backend.Register, width int, line int, col int) !void {
-	at := e.scratch(line, col)!
+	at := e.object_scratch(line, col)!
 	e.append(e.target.move_register64(at, address)!)
-	mut done := 0
-	for done < width {
-		chunk := machine_chunk(width - done)
-		if done > 0 {
-			e.append(e.target.add_immediate(at, done))
-		}
-		if done == 0 {
-			if chunk < 4 {
-				e.append(e.target.load_indirect_unsigned(at, register, chunk)!)
-			} else {
-				e.append(e.target.load_indirect(at, register, chunk)!)
-			}
-		} else {
-			piece := e.remainder(line, col)!
-			if chunk < 4 {
-				e.append(e.target.load_indirect_unsigned(at, piece, chunk)!)
-			} else {
-				e.append(e.target.load_indirect(at, piece, chunk)!)
-			}
-			e.append(e.target.shift_left_word(piece, u8(done * 8))!)
-			e.append(e.target.or_word(register, piece)!)
-		}
-		done += chunk
+	mut scratch := e.scratch(line, col)!
+	if scratch == register {
+		scratch = e.remainder(line, col)!
 	}
+	e.append(e.target.load_object_slot(at, 0, register, scratch, width)!)
 }
 
 // load_argument reads one argument slot into the register that carries that
@@ -12224,7 +12151,11 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 						e.append(e.target.add_immediate(base, offset))
 					}
 					value := e.scratch(line, col)!
-					e.append(e.target.load_indirect(base, value, read)!)
+					// The last word of a stacked object is only as wide as the
+					// object has left, and a word of three, five, six or seven
+					// bytes is a width this machine has no one move for.
+					scratch := e.object_scratch(line, col)!
+					e.append(e.target.load_object_slot(base, 0, value, scratch, read)!)
 					e.append(e.target.push_register(value))
 					e.stack_pushed += width
 					k--
@@ -12614,7 +12545,12 @@ fn (mut e Emitter) load_argument_eightbyte(base backend.Register, offset int, wi
 		e.diagnostics << problem(line, col, 'internal: the general argument register an eightbyte is handed over in is not in the machine table')
 		return error('no argument register')
 	}
-	e.append(e.target.load_indirect(base, register, width)!)
+	// The eightbyte's last chunk is only as wide as the object has left, and a
+	// tail of three, five, six or seven bytes is a width this machine has no move
+	// for: the machine reads it a chunk at a time, out of the object and into the
+	// register the callee will read its parameter's bytes back out of.
+	scratch := e.object_scratch(line, col)!
+	e.append(e.target.load_object_slot(base, 0, register, scratch, width)!)
 }
 
 // store_argument_eightbyte copies the eightbyte an argument register carries into a
@@ -12636,7 +12572,11 @@ fn (mut e Emitter) store_argument_eightbyte(object Slot, offset int, width int, 
 		e.diagnostics << problem(line, col, 'internal: the general argument register a parameter arrives in is not in the machine table')
 		return error('no argument register')
 	}
-	e.append(e.target.store_slot(base, i32(object.offset + offset), register, width)!)
+	// The parameter's storage is exactly as large as the object, and the second
+	// eightbyte's last chunk is as wide as the object has left: the machine writes
+	// that many bytes, a chunk at a time when no one move covers the width.
+	scratch := e.object_scratch(line, col)!
+	e.append(e.target.store_object_slot(base, i32(object.offset + offset), register, scratch, width)!)
 }
 
 // copy_stack_object copies an object that was passed in memory into the parameter's

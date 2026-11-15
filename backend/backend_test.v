@@ -309,6 +309,109 @@ fn test_the_slot_moves_are_the_bytes_the_machine_reads() {
 	assert x86_64.load_slot(target.describe(rbp), -8, target.describe(eax), 3) or { []u8{} }.len == 0
 }
 
+// An object of a width the machine has no one move for travels in a register by
+// composition: the low chunk lands in the value register and each chunk above it
+// is read into the object scratch, shifted into place and or-ed in. The bytes are
+// the ones the machine's assembler produces for the same instructions.
+fn test_an_object_tail_is_moved_in_chunks() {
+	target := lookup('x86_64-linux') or { panic('the target description has no such name') }
+	rbp := target.reg('rbp') or { panic('the target description has no such name') }
+	eax := target.reg('eax') or { panic('the target description has no such name') }
+	edi := target.reg('edi') or { panic('the target description has no such name') }
+	r11 := target.reg('r11') or { panic('the target description has no such name') }
+	// Three bytes into eax: movzwl -8(%rbp), %eax; movzbl -6(%rbp), %r11d;
+	// shl $16, %r11; or %r11, %rax. The third byte goes in the scratch register
+	// because the machine has no three-byte move.
+	assert target.load_object_slot(rbp, -8, eax, r11, 3) or {
+		panic('the target description has no such name')
+	} == [
+		u8(0x0f),
+		0xb7,
+		0x85,
+		0xf8,
+		0xff,
+		0xff,
+		0xff,
+		0x44,
+		0x0f,
+		0xb6,
+		0x9d,
+		0xfa,
+		0xff,
+		0xff,
+		0xff,
+		0x49,
+		0xc1,
+		0xe3,
+		0x10,
+		0x4c,
+		0x09,
+		0xd8,
+	]
+	// The same object stored from edi: mov %di, -16(%rbp); mov %rdi, %r11;
+	// shr $16, %r11; mov %r11b, -14(%rbp).
+	assert target.store_object_slot(rbp, -16, edi, r11, 3) or {
+		panic('the target description has no such name')
+	} == [
+		u8(0x66),
+		0x89,
+		0xbd,
+		0xf0,
+		0xff,
+		0xff,
+		0xff,
+		0x49,
+		0x89,
+		0xfb,
+		0x49,
+		0xc1,
+		0xeb,
+		0x10,
+		0x44,
+		0x88,
+		0x9d,
+		0xf2,
+		0xff,
+		0xff,
+		0xff,
+	]
+	// Five bytes are four and one, not two and two and one: the widest chunk the
+	// machine moves comes first.
+	assert target.load_object_slot(rbp, -8, eax, r11, 5) or {
+		panic('the target description has no such name')
+	} == [
+		u8(0x8b),
+		0x85,
+		0xf8,
+		0xff,
+		0xff,
+		0xff,
+		0x44,
+		0x0f,
+		0xb6,
+		0x9d,
+		0xfc,
+		0xff,
+		0xff,
+		0xff,
+		0x49,
+		0xc1,
+		0xe3,
+		0x20,
+		0x4c,
+		0x09,
+		0xd8,
+	]
+	// A width the machine moves is that one move, and a width wider than a
+	// register is refused by name rather than composed.
+	assert target.load_object_slot(rbp, -8, eax, r11, 8) or {
+		panic('the target description has no such name')
+	} == x86_64.load_slot(target.describe(rbp), -8, target.describe(eax), 8) or {
+		panic('the target description has no such name')
+	}
+	assert target.load_object_slot(rbp, -8, eax, r11, 9) or { []u8{} }.len == 0
+}
+
 fn test_a_conversion_widens_a_value_with_its_sign_kept() {
 	target := lookup('x86_64-linux') or { panic('the target description has no such name') }
 	eax := target.reg('eax') or { panic('the target description has no such name') }

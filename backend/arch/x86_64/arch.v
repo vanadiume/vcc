@@ -1406,6 +1406,13 @@ pub const scratch_reg = 'ecx'
 pub const remainder_reg = 'edx'
 pub const static_chain_reg = 'r10'
 
+// object_scratch_reg is the register a move that composes several instructions
+// holds its pieces in. It is the one general register the convention passes no
+// argument in and this compiler keeps no value in: a move of an object runs
+// while the argument registers hold the parameters after it, so neither the
+// scratch register nor the remainder one is free for it.
+pub const object_scratch_reg = 'r11'
+
 // load_slot and store_slot move a value between a register and the frame. The
 // displacement is written in the wide form always: the frame is still growing
 // while the body is emitted, so the length of an access must not depend on how
@@ -1632,6 +1639,85 @@ fn indirect_move(address Register, operand Register, width int, store bool, sign
 		out << u8(0x8b)
 	}
 	out << u8(((operand.code & 0x07) << 3) | low) // mod 00: [address]
+	return out
+}
+
+// object_chunk is the widest move this machine has that fits in `remaining`
+// bytes, which is how an object of a width no instruction covers is moved:
+// eight bytes, then four, then two, then one.
+fn object_chunk(remaining int) int {
+	if remaining >= 8 {
+		return 8
+	}
+	if remaining >= 4 {
+		return 4
+	}
+	if remaining >= 2 {
+		return 2
+	}
+	return 1
+}
+
+// load_object_slot reads `width` bytes of an object from `[base + disp]` into
+// `dst`. A width this machine moves in one instruction is that move; a width it
+// does not, which is the tail of the second eightbyte of an object of eleven to
+// fifteen bytes, is read one machine-wide chunk at a time, the low chunk landing
+// in `dst` and each chunk above it shifted into place and or-ed in. That is the
+// shape gcc emits for the same argument.
+//
+// `scratch` carries the pieces above the first, so it must be a register the
+// caller holds no value in and must differ from `base` and `dst`. The address is
+// read again for every chunk, so `base` is not spent.
+pub fn load_object_slot(base Register, disp i32, dst Register, scratch Register, width int) ![]u8 {
+	if width < 1 || width > word_size {
+		return error('${name}: an object of ${width} bytes is not one this machine hands over in a register')
+	}
+	mut out := []u8{cap: 32}
+	mut done := 0
+	for done < width {
+		chunk := object_chunk(width - done)
+		if done == 0 {
+			if chunk < 4 {
+				out << load_slot_unsigned(base, disp, dst, chunk)!
+			} else {
+				out << load_slot(base, disp, dst, chunk)!
+			}
+		} else {
+			if chunk < 4 {
+				out << load_slot_unsigned(base, disp + i32(done), scratch, chunk)!
+			} else {
+				out << load_slot(base, disp + i32(done), scratch, chunk)!
+			}
+			out << shl_reg64(scratch, u8(done * 8))!
+			out << or_reg64(dst, scratch)!
+		}
+		done += chunk
+	}
+	return out
+}
+
+// store_object_slot writes the low `width` bytes of `src` to `[base + disp]`. A
+// width this machine moves in one instruction is that store; any other is
+// written one machine-wide chunk at a time, the low chunk first and each chunk
+// above it taken from a copy of `src` shifted down, so `src` keeps its value.
+// `scratch` holds the copy and must differ from `base` and `src`.
+pub fn store_object_slot(base Register, disp i32, src Register, scratch Register, width int) ![]u8 {
+	if width < 1 || width > word_size {
+		return error('${name}: an object of ${width} bytes is not one this machine takes in a register')
+	}
+	mut out := []u8{cap: 32}
+	mut done := 0
+	for done < width {
+		chunk := object_chunk(width - done)
+		if done == 0 {
+			out << store_slot(base, disp, src, chunk)!
+		} else {
+			out << mov_reg64(scratch, src)!
+			out << shr_reg64(scratch, u8(done * 8))!
+			out << store_slot(base, disp + i32(done), scratch, chunk)!
+		}
+		done += chunk
+	}
 	return out
 }
 
@@ -2854,6 +2940,12 @@ fn one_operand64(reg Register, group u8) ![]u8 {
 	return out
 }
 
+// ObjectMove is the shape of a composed move an object of a width no single
+// instruction covers goes through: the base register and displacement of its
+// storage, the register that carries the value, a register the move may use for
+// the pieces above the low chunk, and the object's width in bytes.
+pub type ObjectMove = fn (Register, i32, Register, Register, int) ![]u8
+
 // Encoders is the machine's instruction set as one value: one field per
 // encoding, so what a target emits is decided where the machine is read and
 // not by an emitter naming a module. It is a struct of function fields and not
@@ -3010,6 +3102,8 @@ pub:
 	xor_reg64                       fn (Register, Register) ![]u8           = unsafe { nil }
 	zero_double                     fn (Register) ![]u8                     = unsafe { nil }
 	zero_extend_half                fn (Register) ![]u8                     = unsafe { nil }
+	load_object_slot                ObjectMove = unsafe { nil }
+	store_object_slot               ObjectMove = unsafe { nil }
 }
 
 // encoders gathers the machine's instruction set into the value a target
@@ -3101,6 +3195,7 @@ pub fn encoders() Encoders {
 		load_indirect:                   &load_indirect
 		load_indirect_unsigned:          &load_indirect_unsigned
 		load_int_extended:               &load_int_extended
+		load_object_slot:                &load_object_slot
 		load_rip_slot:                   &load_rip_slot
 		load_slot:                       &load_slot
 		load_slot_unsigned:              &load_slot_unsigned
@@ -3152,6 +3247,7 @@ pub fn encoders() Encoders {
 		store_float_slot:                &store_float_slot
 		store_indirect:                  &store_indirect
 		store_int_extended:              &store_int_extended
+		store_object_slot:               &store_object_slot
 		store_slot:                      &store_slot
 		store_word_extended:             &store_word_extended
 		sub_reg32:                       &sub_reg32
