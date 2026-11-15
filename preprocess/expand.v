@@ -99,17 +99,65 @@ struct Arguments {
 	next int
 }
 
+// ScanFrame is one list being rescanned and where the scan had reached in it
+// when the scan inside it started. The tokens after that position are what the
+// inner scan reads when its own list runs out, so the frames are the text after
+// each replacement without copying any of it.
+struct ScanFrame {
+mut:
+	tokens []Piece
+	pos    int
+}
+
+// scan_total is the text a scan can read: the list it was given and, after it,
+// the tokens the scans it is inside of had not reached yet.
+fn (p Processor) scan_total(tokens []Piece) int {
+	mut total := tokens.len
+	// The topmost frame is the scan's own list, which is `tokens`; the frames
+	// under it are the text after it. A frame whose scan reached past its own
+	// list has already read that far into the frame under it, so its count is
+	// negative and takes those tokens off the total.
+	for k := p.scan_base; k < p.scans.len - 1; k++ {
+		total += p.scans[k].tokens.len - p.scans[k].pos
+	}
+	return total
+}
+
+// scan_at reads one token of a scan. A position past the end of the list is a
+// position in the text after it, which is the rest of the scan it is inside of
+// and then the rest of that one, the sequence C99 6.10.3p4 rescans. A frame
+// whose own scan reached past its list passes that reach on to the frame under
+// it, which is what a frame position beyond the list says.
+fn (p Processor) scan_at(tokens []Piece, index int) Piece {
+	if index < tokens.len {
+		return tokens[index]
+	}
+	mut at := index - tokens.len
+	for k := p.scans.len - 2; k >= p.scan_base; k-- {
+		frame := p.scans[k]
+		left := frame.tokens.len - frame.pos
+		if at < left {
+			return frame.tokens[frame.pos + at]
+		}
+		at -= left
+	}
+	return Piece{}
+}
+
 // collect_arguments reads the argument list of a macro use starting at the
-// token after the name. Commas inside parentheses are part of an argument and
+// token after the name. The tokens are read from the list and then from the
+// text after it, in that order, because a use a replacement starts has its
+// arguments in the file. Commas inside parentheses are part of an argument and
 // commas at the top level separate them, which is the only kind of nesting C
 // protects.
 fn (mut p Processor) collect_arguments(tokens []Piece, from int, tok tokenize.Token) Arguments {
-	if from >= tokens.len {
+	total := p.scan_total(tokens)
+	if from >= total {
 		return Arguments{
 			next: from
 		}
 	}
-	open := tokens[from]
+	open := p.scan_at(tokens, from)
 	if open.tok.kind != .punct || open.tok.text != '(' {
 		return Arguments{
 			next: from
@@ -120,8 +168,8 @@ fn (mut p Processor) collect_arguments(tokens []Piece, from int, tok tokenize.To
 	mut current := []Piece{}
 	mut depth := 1
 	mut i := from + 1
-	for i < tokens.len {
-		t := tokens[i]
+	for i < total {
+		t := p.scan_at(tokens, i)
 		if t.tok.kind == .punct {
 			if t.tok.text == '(' {
 				depth++
@@ -149,7 +197,7 @@ fn (mut p Processor) collect_arguments(tokens []Piece, from int, tok tokenize.To
 	}
 	p.problem(tok, 'the arguments of ${tok.text} have no closing )')
 	return Arguments{
-		next: tokens.len
+		next: from
 	}
 }
 
@@ -191,7 +239,7 @@ fn (mut p Processor) expand_all(tokens []tokenize.Token) []tokenize.Token {
 	unsafe {
 		out.flags.set(.noslices)
 	}
-	expanded := p.expand_pieces(pieces)
+	expanded, _ := p.expand_pieces(pieces)
 	for piece in expanded {
 		out << piece.tok
 	}
@@ -229,7 +277,7 @@ fn (p Processor) may_expand(tokens []tokenize.Token) bool {
 // C. The append that copies instead of cloning is the fix, and it shares the hiding
 // list between the two pieces, so it waits for a caller that frees one. None does
 // today, which is what makes it a change to a contract rather than a line.
-fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
+fn (mut p Processor) expand_pieces(tokens []Piece) ([]Piece, int) {
 	// Expansion is recursive, and the guard that stops a macro naming itself
 	// stops the shapes a person writes. This limit is for the shapes nobody
 	// writes: without it, one that slipped past the guard would be a crash
@@ -240,10 +288,14 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 			p.expansion_reported = true
 			p.problem(tokens[0].tok, 'the expansion here is ${max_expansion_depth} levels deep and still going')
 		}
-		return tokens.clone()
+		return tokens.clone(), 0
 	}
 	p.expansion_depth++
+	p.scans << ScanFrame{
+		tokens: tokens
+	}
 	defer {
+		p.scans.delete(p.scans.len - 1)
 		p.expansion_depth--
 	}
 	mut out := expansion_pieces()
@@ -305,11 +357,11 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 				i++
 				continue
 			}
-			call := p.expand_call(macro, use_args, piece)
+			call, used := p.expand_call(macro, use_args, piece, use_args.next)
 			produced := call.len
 			out << call
 			unsafe { call.free() }
-			i = p.finish_use(mut out, produced, tokens, use_args.next)
+			i = p.finish_use(mut out, produced, tokens, use_args.next + used)
 			continue
 		}
 		if tok.text in piece.hide {
@@ -327,14 +379,20 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 				tok: body_token
 			}, piece)
 		}
-		expanded := p.expand_pieces(replacement)
+		// C99 6.10.3p4 rescans a replacement together with the text after the
+		// use, so a replacement that ends inside an argument list reads the
+		// rest of that list from the file. The ( that opened it is the
+		// replacement's, and its arguments are the tokens after the use.
+		p.scans[p.scans.len - 1].pos = i + 1
+		expanded, used := p.expand_pieces(replacement)
 		unsafe { replacement.free() }
 		produced := expanded.len
 		out << expanded
 		unsafe { expanded.free() }
-		i = p.finish_use(mut out, produced, tokens, i + 1)
+		i = p.finish_use(mut out, produced, tokens, i + 1 + used)
 	}
-	return out
+	used := if i > tokens.len { i - tokens.len } else { 0 }
+	return out, used
 }
 
 // finish_use reads the rest of a use that the tokens just produced did not
@@ -345,6 +403,12 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 //     #define F(x) ((x) + 1)
 //     #define G F
 //     G(1)              /* is F(1), and F(1) expands */
+//
+// A `(` the replacement itself produced is not this case: the scan of the
+// replacement reads the tokens after the use through the frame it is inside of,
+// so that list is already complete by the time the scan reaches it, and
+// `#define A F(` needs nothing here. What is left is a name whose `(` is still
+// in the file.
 //
 // `out` ends with the `produced` tokens the expansion made. Each call takes its
 // name back off `out` and writes the call's own tokens there, so the loop also
@@ -367,11 +431,11 @@ fn (mut p Processor) finish_use(mut out []Piece, produced int, tokens []Piece, f
 		if !use_args.called {
 			break
 		}
-		call := p.expand_call(macro, use_args, last)
+		call, used := p.expand_call(macro, use_args, last, use_args.next)
 		out.delete(out.len - 1)
 		out << call
 		tail = call.len
-		i = use_args.next
+		i = use_args.next + used
 		unsafe { call.free() }
 	}
 	return i
@@ -387,16 +451,33 @@ fn (mut p Processor) finish_use(mut out []Piece, produced int, tokens []Piece, f
 // left standing from becoming live again when the replacement is read, and it is
 // also what keeps a name the replacement produces from being handed to the
 // outer macro as if it were written here.
-fn (mut p Processor) expand_call(macro Macro, use_args Arguments, site Piece) []Piece {
+fn (mut p Processor) expand_call(macro Macro, use_args Arguments, site Piece, at int) ([]Piece, int) {
 	replacement := p.substitute(macro, use_args, site)
 	mut hidden := []Piece{cap: replacement.len}
 	for piece in replacement {
 		hidden << produced_from(piece, site)
 	}
 	unsafe { replacement.free() }
-	out := p.expand_pieces(hidden)
+	// The replacement the call produces is rescanned with the text after the
+	// call, which is where the scan of the use had got to: `#define F(x) G(`
+	// makes one call's replacement open the next list, and the file closes it.
+	p.scans[p.scans.len - 1].pos = at
+	out, used := p.expand_pieces(hidden)
 	unsafe { hidden.free() }
-	return out
+	return out, used
+}
+
+// expand_argument expands one argument as C99 6.10.3.1 asks: as if it formed
+// the rest of the file on its own, so no other tokens are available to it. The
+// frames the use it came from is inside of are hidden while it is read, which
+// is what stops a name at the end of an argument from taking a `(` that belongs
+// to the file as the start of its argument list.
+fn (mut p Processor) expand_argument(tokens []Piece) []Piece {
+	previous := p.scan_base
+	p.scan_base = p.scans.len
+	expanded, _ := p.expand_pieces(tokens)
+	p.scan_base = previous
+	return expanded
 }
 
 // substitute is the replacement itself: every parameter is replaced by its
@@ -549,7 +630,7 @@ fn (mut p Processor) substitute(macro Macro, arguments Arguments, site Piece) []
 				}
 			}
 			if !beside_paste {
-				expanded := p.expand_pieces(text)
+				expanded := p.expand_argument(text)
 				unsafe { text.free() }
 				for u in expanded {
 					out << u

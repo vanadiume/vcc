@@ -260,9 +260,20 @@ mut:
 	// already, so the report does not repeat for every token after it.
 	expansion_depth    int
 	expansion_reported bool
-	out                []tokenize.Token
-	diagnostics        []tokenize.Diagnostic
-	opts               Options
+	// scans is the lists being rescanned, innermost last. C99 6.10.3p4 reads a
+	// replacement together with the text after the use, so a scan that runs out
+	// of its own list reads on from the scan it is inside of. Keeping the lists
+	// as frames rather than joining them is what stops a nested replacement
+	// from copying the rest of the run once per name.
+	scans []ScanFrame
+	// scan_base is the innermost frame a scan may read from. C99 6.10.3.1
+	// expands an argument as if it formed the rest of the file, so the text
+	// after the use is not available to it and the frames below its own are
+	// hidden while it is read.
+	scan_base   int
+	out         []tokenize.Token
+	diagnostics []tokenize.Diagnostic
+	opts        Options
 	// pool is where the text of every token is kept. One pool for the whole
 	// translation unit is what makes a name the file spells a hundred thousand
 	// times, or a header and the file after it both spell, one buffer instead of
