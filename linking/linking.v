@@ -190,7 +190,7 @@ pub fn link(units []image.Program, options Options) !image.Program {
 			copies << name
 		}
 	}
-	labels := merge_labels(units, layout)
+	labels := merge_labels(units, layout, names.definitions)
 	place_of_entry := entry_place_of(units, layout, labels, options.entry)
 	mut merged := image.Program{
 		text:                 merge_text(units, layout)
@@ -378,15 +378,26 @@ fn text_place(unit image.Program, unit_index int, offset int, layout place.Layou
 // function's entry and every jump label the emitter made. The emitter numbers
 // its jump labels from zero in each unit, so two units can both hold a `.L0`
 // naming a different place, and a private label is keyed by its unit for that
-// reason. A public key is the name itself and the first unit to name it keeps
-// it, because two units naming one public function is the emitter's to prevent
-// rather than something a link can reconcile after the fact.
-fn merge_labels(units []image.Program, layout place.Layout) map[string]int {
+// reason. A public key is the name itself, and it belongs to the unit the link
+// resolved the name to: two units name one public function when one definition
+// is weak, and a call inside either unit is a local reference to that name, so
+// the table has to answer with the resolved definition rather than the first
+// unit's. Every other unit's label for the name is keyed privately, where no
+// reference reaches it.
+fn merge_labels(units []image.Program, layout place.Layout, definitions map[string]symbols.Definition) map[string]int {
 	mut labels := map[string]int{}
 	for i, unit in units {
 		for name, offset in unit.labels {
 			key := if name in unit.defined && name !in unit.internal {
-				name
+				if definition := definitions[name] {
+					if definition.unit == i {
+						name
+					} else {
+						symbols.private_key(i, name)
+					}
+				} else {
+					name
+				}
 			} else {
 				symbols.private_key(i, name)
 			}

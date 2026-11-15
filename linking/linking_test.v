@@ -89,6 +89,56 @@ fn test_a_strong_definition_wins_over_a_weak_one() {
 	assert 'sym' in merged.bound
 	assert merged.bound['sym'].offset == 1
 	assert merged.text[1] == u8(0x22)
+	// The binding the image records is the one that won, so the name is not
+	// weak in the merged program.
+	assert 'sym' !in merged.weak
+}
+
+// The label table answers the same question the binding does: the bare name
+// belongs to the unit the link resolved it to, not to the unit that was linked
+// first. A call inside the strong unit is a local reference to `sym`, and this
+// is the table it is answered from, so a weak unit linked first must not take
+// the name.
+fn test_a_weak_definition_linked_first_does_not_take_the_name() {
+	mut weak := defining('sym', [u8(0x11)])
+	weak.weak['sym'] = true
+	strong := defining('sym', [u8(0x22)])
+	merged := link([weak, strong], options('')) or { panic('the link failed: ${err.msg()}') }
+	// One byte of text each: the weak body is at 0 and the strong one at 1.
+	assert merged.labels['sym'] == 1
+	assert merged.labels[symbols.private_key(0, 'sym')] == 0
+}
+
+// The opposite order is the other half of the same rule: a weak definition
+// linked after a strong one does not displace it, and the image keeps the
+// strong binding.
+fn test_a_weak_definition_after_a_strong_one_does_not_displace_it() {
+	strong := defining('sym', [u8(0x22)])
+	mut weak := defining('sym', [u8(0x11)])
+	weak.weak['sym'] = true
+	mut main := defining('main', []u8{len: 1, init: u8(0x90)})
+	main.imports << 'sym'
+	merged := link([main, strong, weak], options('main')) or { panic('the link failed: ${err.msg()}') }
+	assert merged.bound['sym'].offset == 1
+	assert merged.text[1] == u8(0x22)
+	assert merged.labels['sym'] == 1
+}
+
+// Two weak definitions of one name are not a conflict. ELF resolves the name to
+// the first definition linked, the link succeeds, and the image records it with
+// the weak binding because that is the binding the definition that won carries.
+fn test_two_weak_definitions_keep_the_first_one_linked() {
+	mut first := defining('sym', [u8(0x11)])
+	first.weak['sym'] = true
+	mut second := defining('sym', [u8(0x22)])
+	second.weak['sym'] = true
+	mut main := defining('main', []u8{len: 1, init: u8(0x90)})
+	main.imports << 'sym'
+	merged := link([main, first, second], options('main')) or { panic('the link failed: ${err.msg()}') }
+	assert merged.bound['sym'].offset == 1
+	assert merged.text[1] == u8(0x11)
+	assert merged.labels['sym'] == 1
+	assert 'sym' in merged.weak
 }
 
 // A string, a double, and a top-level object all move when their unit is placed:
