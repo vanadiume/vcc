@@ -1079,3 +1079,4 @@ it owns the change, which is the same vocabulary the commits use.
 * regression: reach a block-scope static through a call and a loop (5dd1b1b)
 * codegen: a block-scope static shadows an outer local of its name (ba3fa66)
 * regression: a block-scope static shadows a parameter (e5dc46e)
+* parser: name the address constant a static object cannot hold (266d70d)
