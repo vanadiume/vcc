@@ -1070,3 +1070,4 @@ it owns the change, which is the same vocabulary the commits use.
 
 * types: a type clause is forty bytes (97b2f48)
 * ast: an expression is a position in one arena (12212d8)
+* docs: the tree lives in one arena, and the changelog says so (3e18efd)
