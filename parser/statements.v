@@ -1848,17 +1848,30 @@ fn (mut p Parser) block_static_object(object BlockStatic) ?ast.Global {
 	} else {
 		object.declared
 	}
+	// bytes is the storage one element of the object takes, which the image
+	// reserves count of: a struct or a union's layout size, and a row's size
+	// for an array of arrays. A flat array of scalars leaves it zero, because
+	// its writes are the elements themselves and the element path places them.
+	mut bytes := p.aggregate_bytes(object.declared)
 	if object.general_writes.len > 0 {
 		// A nested or designated list is placed at the byte each subobject
-		// starts at. An object with a byte size of its own - a struct, a
-		// union, or an array of either - takes those writes as member
-		// initializers; an array of scalars has no byte offset a member
-		// initializer means, so each write becomes the element its offset
-		// lands in.
-		if p.aggregate_bytes(object.declared) > 0 {
+		// starts at, and every write carries the class and the width of the
+		// subobject it reached. An object whose subobjects sit at bytes of
+		// their own - a struct, a union, an array of either, and an array of
+		// arrays - takes those writes as member initializers at those bytes;
+		// a flat array of scalars has no subobject one means, so each write
+		// becomes the element its offset lands in.
+		if object.declared.is_array() && element.kind == .array {
+			// A row of an array of arrays has no layout of its own to ask,
+			// but it does have a width: the element's size is the stride a
+			// row of the object steps by, and `int[2][3]` keeps two rows of
+			// twelve bytes.
+			bytes = p.representation.size_of(element) or { 0 }
+		}
+		if bytes > 0 {
 			member_inits = p.static_member_writes(object.general_writes, object.at) or { return none }
 		} else if element.kind == .array {
-			p.error_at(object.at, 'unsupported: ${object.name} is an array of arrays initialized with a nested or designated list, and a block-scope static object of that shape is not implemented')
+			p.error_at(object.at, 'unsupported: ${object.name} is an array of arrays whose row width this compiler does not know, and a block-scope static object needs the stride its initializer is placed against')
 			return none
 		} else {
 			width := p.representation.size_of(element) or { 0 }
@@ -1951,7 +1964,7 @@ fn (mut p Parser) block_static_object(object BlockStatic) ?ast.Global {
 		typ:          object.written
 		resolved:     object.declared
 		count:        object.count
-		bytes:        p.aggregate_bytes(object.declared)
+		bytes:        bytes
 		static_:      true
 		init:         init
 		init_float:   init_float
@@ -2016,6 +2029,15 @@ fn (mut p Parser) static_member_writes(writes []BraceWrite, at tokenize.Token) ?
 			continue
 		}
 		constant := p.static_write_constant(write, at) or { return none }
+		if write.spelling == 'long double' || write.spelling == '__float128'
+			|| constant.long_floating != none {
+			// An extended floating value does not fit the two classes a
+			// member initializer carries, and the storage starts as zeros:
+			// leaving the write out would make the subobject hold a value
+			// the source never wrote, so it is refused by name instead.
+			p.error_at(at, 'unsupported: a block-scope static object is initialized with a long double, and a member initializer carries only an integer or a double constant')
+			return none
+		}
 		init, init_float := initializer_for(write.spelling, constant.integer, constant.floating)
 		members << ast.MemberInit{
 			offset:     write.offset

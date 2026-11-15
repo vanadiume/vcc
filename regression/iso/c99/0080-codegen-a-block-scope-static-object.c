@@ -26,6 +26,13 @@ struct Pair {
     int right;
 };
 
+static int grid_step(int row, int column)
+{
+    static int grid[2][3] = {{1, 2, 3}, {4, 5, 6}};
+    grid[row][column] = grid[row][column] + 10;
+    return grid[row][column];
+}
+
 static int counter(void)
 {
     static int value = 3 * 7 + 2;
@@ -130,6 +137,12 @@ int main(void)
     /* A struct's members are the object's bytes, and both persist. */
     CHECK(pair_step() == 1122);
     CHECK(pair_step() == 2142);
+
+    /* An array of arrays is placed row by row, and each element persists. */
+    CHECK(grid_step(1, 2) == 16);
+    CHECK(grid_step(0, 0) == 11);
+    CHECK(grid_step(1, 2) == 26);
+    CHECK(grid_step(1, 1) == 15);
 
     /* Recursion shares one object rather than one per frame. */
     CHECK(recurse(2) == 2);
