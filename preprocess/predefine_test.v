@@ -1,6 +1,7 @@
 module preprocess
 
 import backend
+import standard
 
 // The predefined macros a C library's <float.h> and <limits.h> are written in
 // terms of, and the names a program asks when it wants to know what this machine
@@ -101,6 +102,52 @@ fn test_the_compiler_identifies_itself() {
 		assert !defines.any(it.starts_with('__VCC_COMMIT__'))
 	} else {
 		assert '__VCC_COMMIT__="${vcc_commit}"' in defines
+	}
+}
+
+// The conformance macros answer what this implementation promises about its
+// character and floating types. The three that describe the target are defined
+// in every mode, the two UTF macros are C11's and follow the language level the
+// way gcc's do, and the two complex claims are withheld because the tree's
+// complex support is not finished. Measured with
+// `gcc -std=X -dM -E -x c /dev/null`, the seven names answer:
+//
+//	c89, c99, gnu89            ISO_10646, IEC_559, IEC_60559_BFP
+//	c11, c17, c23, c29,
+//	gnu99, gnu11, gnu17,
+//	gnu23, gnu29, none, other  the three above plus UTF_16 and UTF_32
+//
+// and neither IEC_559_COMPLEX nor IEC_60559_COMPLEX is defined in any of them.
+// gnu99 has the UTF macros because a GNU dialect takes the C11 types from GNU
+// C99 on, which is what gcc's own gate measures. No -std and a spelling this
+// compiler does not implement take the default dialect's answer, which is
+// gnu-like.
+//
+// __GCC_IEC_559_COMPLEX=0 travels with them because glibc's <stdc-predef.h>
+// defines the two complex macros unless that name is predefined and zero; gcc
+// predefines it 2, and 0 is this compiler saying its complex arithmetic is not
+// conformant, which is what keeps the two macros undefined in a program that
+// includes a system header.
+fn test_the_conformance_macros_follow_the_target_and_the_language_level() {
+	older := ['__STDC_ISO_10646__=201706L', '__STDC_IEC_559__=1', '__STDC_IEC_60559_BFP__=201404L',
+		'__GCC_IEC_559_COMPLEX=0']
+	newer := ['__STDC_ISO_10646__=201706L', '__STDC_IEC_559__=1', '__STDC_IEC_60559_BFP__=201404L',
+		'__STDC_UTF_16__=1', '__STDC_UTF_32__=1', '__GCC_IEC_559_COMPLEX=0']
+	for mode in [standard.Mode.c89, .c99, .gnu89] {
+		assert conformance_defines(mode) == older
+	}
+	for mode in [standard.Mode.c11, .c17, .c23, .c29, .gnu99, .gnu11, .gnu17, .gnu23, .gnu29, .none,
+		.other] {
+		assert conformance_defines(mode) == newer
+	}
+	// The two complex claims are the ones a program must not read, in every
+	// mode: the tree does not conform to IEC 60559 complex arithmetic yet.
+	for mode in [standard.Mode.none, .c89, .c99, .c11, .c17, .c23, .c29, .gnu89, .gnu99, .gnu11,
+		.gnu17, .gnu23, .gnu29, .other] {
+		defines := conformance_defines(mode)
+		assert !defines.contains('__STDC_IEC_559_COMPLEX__=1')
+		assert !defines.contains('__STDC_IEC_60559_COMPLEX__=1')
+		assert '__GCC_IEC_559_COMPLEX=0' in defines
 	}
 }
 
