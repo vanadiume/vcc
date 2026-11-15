@@ -1165,8 +1165,8 @@ pub fn opaque_type(name string) Type {
 		}
 	} else {
 		Type{
-			kind:  .opaque
-			info:  &TypeInfo{parts: parts_of([]Member{}, []Param{}, name)}
+			kind: .opaque
+			info: &TypeInfo{ parts: parts_of([]Member{}, []Param{}, name) }
 		}
 	}
 }
@@ -1251,7 +1251,7 @@ pub fn function_type(ret Type, params []Param, variadic bool, prototyped bool) T
 	return Type{
 		kind:       .function
 		base:       &Type{ ...ret }
-		info:  &TypeInfo{parts: parts_of([]Member{}, adjusted, '')}
+		info:       &TypeInfo{ parts: parts_of([]Member{}, adjusted, '') }
 		variadic:   variadic
 		prototyped: prototyped
 		complete:   true
@@ -1288,7 +1288,7 @@ pub fn adjust_parameter(t Type) Type {
 pub fn struct_type(tag string, members []Member) Type {
 	return Type{
 		kind:     .struct_
-		info:  &TypeInfo{parts: parts_of(promote_anonymous(members), []Param{}, tag)}
+		info:     &TypeInfo{ parts: parts_of(promote_anonymous(members), []Param{}, tag) }
 		complete: true
 	}
 }
@@ -1296,7 +1296,7 @@ pub fn struct_type(tag string, members []Member) Type {
 pub fn union_type(tag string, members []Member) Type {
 	return Type{
 		kind:     .union_
-		info:  &TypeInfo{parts: parts_of(promote_anonymous(members), []Param{}, tag)}
+		info:     &TypeInfo{ parts: parts_of(promote_anonymous(members), []Param{}, tag) }
 		complete: true
 	}
 }
@@ -1430,8 +1430,8 @@ fn reject_ambiguous_names(members []Member) []Member {
 // keyword the declaration wrote.
 pub fn incomplete_tag(kind Kind, tag string) Type {
 	return Type{
-		kind:  kind
-		info:  &TypeInfo{parts: parts_of([]Member{}, []Param{}, tag)}
+		kind: kind
+		info: &TypeInfo{ parts: parts_of([]Member{}, []Param{}, tag) }
 	}
 }
 
@@ -1442,7 +1442,7 @@ pub fn incomplete_tag(kind Kind, tag string) Type {
 pub fn enum_type(tag string, underlying Kind) Type {
 	return Type{
 		kind:       .enum_
-		info:  &TypeInfo{parts: parts_of([]Member{}, []Param{}, tag)}
+		info:       &TypeInfo{ parts: parts_of([]Member{}, []Param{}, tag) }
 		complete:   true
 		underlying: underlying
 	}

@@ -46,7 +46,7 @@ const decimal_core_name = 'vcc_decimal_to_double_core'
 
 // decimal_of says whether an expression has one of the decimal floating types.
 fn (e Emitter) decimal_of(expr ast.Expr) bool {
-	return expr.typ.kind.is_decimal()
+	return e.expr_type(expr).kind.is_decimal()
 }
 
 // decimal_format_of is the format a decimal spelling names, or none for a type
@@ -722,20 +722,22 @@ fn (e Emitter) decimal_special(mut r DecimalRoutine, infinity string, nan string
 // reader keeps `-1.5df` as the negation of the constant rather than a constant
 // with a negative sign, and the sign the encoding carries is the top bit of the
 // last byte, so negating it is that bit's flip.
-fn decimal_constant_bytes(expr ast.Expr) ?[]u8 {
+fn (e Emitter) decimal_constant_bytes(expr ast.Expr) ?[]u8 {
 	mut negated := false
 	mut constant := expr
-	if expr is ast.Unary {
-		if expr.op != '-' && expr.op != '+' {
+	if expr.kind == .unary {
+		node := e.unit.arena.unary(expr)
+		if node.op != '-' && node.op != '+' {
 			return none
 		}
-		negated = expr.op == '-'
-		constant = expr.expr
+		negated = node.op == '-'
+		constant = node.expr
 	}
-	if constant is ast.FloatLit {
-		if constant.decimal_value.kind.is_decimal() && constant.typ.kind.is_decimal() {
-			format := constant.typ.kind.decimal_format()
-			mut bytes := decimal.encode(constant.decimal_value.value(), format)
+	if constant.kind == .float_lit {
+		node := e.unit.arena.float_lit(constant)
+		if node.decimal_value.kind.is_decimal() && node.typ.kind.is_decimal() {
+			format := node.typ.kind.decimal_format()
+			mut bytes := decimal.encode(node.decimal_value.value(), format)
 			if negated {
 				bytes[bytes.len - 1] ^= 0x80
 			}
@@ -774,44 +776,47 @@ enum DecimalStep {
 // so the step is reached instead of meeting a refusal written for a tree with no
 // routine at all.
 fn (e Emitter) decimal_step(expr ast.Expr) DecimalStep {
-	match expr {
-		ast.Binary {
-			if e.decimal_of(expr.left) && e.decimal_of(expr.right) {
-				if expr.op in ['+', '-', '*', '/'] {
+	match expr.kind {
+		.binary {
+			node := e.unit.arena.binary(expr)
+			if e.decimal_of(node.left) && e.decimal_of(node.right) {
+				if node.op in ['+', '-', '*', '/'] {
 					return .object
 				}
-				if expr.op in ['==', '!=', '<', '>', '<=', '>='] {
+				if node.op in ['==', '!=', '<', '>', '<=', '>='] {
 					return .value
 				}
 			}
 		}
-		ast.Unary {
-			if expr.op == '-' && e.decimal_of(expr.expr) && e.names_an_object(expr.expr) {
+		.unary {
+			node := e.unit.arena.unary(expr)
+			if node.op == '-' && e.decimal_of(node.expr) && e.names_an_object(node.expr) {
 				return .object
 			}
 		}
-		ast.Cast {
-			if expr.typ.kind.is_decimal() {
+		.cast {
+			node := e.unit.arena.cast(expr)
+			if node.typ.kind.is_decimal() {
 				// A conversion whose result is a decimal object: the back end
 				// writes it when the source is a decimal value, an integer, a
 				// float or a double.
-				if e.decimal_of(expr.expr) {
+				if e.decimal_of(node.expr) {
 					return .object
 				}
-				if _ := decimal_integer_bytes(expr.expr.typ.kind) {
+				if _ := decimal_integer_bytes(e.expr_type(node.expr).kind) {
 					return .object
 				}
-				if expr.expr.typ.kind in [.double, .float] {
+				if e.expr_type(node.expr).kind in [.double, .float] {
 					return .object
 				}
-			} else if e.decimal_of(expr.expr) {
+			} else if e.decimal_of(node.expr) {
 				// A conversion from a decimal that yields a value: a float, a
 				// double or an integer is written, and anything else is left
 				// uncovered.
-				if expr.typ.kind in [.double, .float] {
+				if node.typ.kind in [.double, .float] {
 					return .value
 				}
-				if _ := decimal_fix_target(expr.typ.kind) {
+				if _ := decimal_fix_target(node.typ.kind) {
 					return .value
 				}
 			}
@@ -830,27 +835,29 @@ fn (e Emitter) decimal_step(expr ast.Expr) DecimalStep {
 // refuses by name what it cannot write. depth is the level the caller writes at,
 // which the value path turns into the level below it for the value it reads.
 fn (mut e Emitter) store_decimal(slot Slot, expr ast.Expr, line int, col int, depth int) !void {
-	if bytes := decimal_constant_bytes(expr) {
+	if bytes := e.decimal_constant_bytes(expr) {
 		if bytes.len == slot.width {
 			return e.put_decimal_bytes(slot, bytes, line, col)
 		}
 	}
 	if e.decimal_step(expr) == .object {
-		if decimal_width_of(expr.typ) != slot.width {
-			e.diagnostics << problem(line, col, 'unsupported: a value of ${expr.typ.describe()} is stored in an object of a different decimal width')
+		typ := e.expr_type(expr)
+		if decimal_width_of(typ) != slot.width {
+			e.diagnostics << problem(line, col, 'unsupported: a value of ${typ.describe()} is stored in an object of a different decimal width')
 			return error('decimal width mismatch')
 		}
-		match expr {
-			ast.Binary {
-				if expr.op == '*' || expr.op == '/' {
-					return e.store_decimal_muldiv(slot, expr, line, col, depth)
+		match expr.kind {
+			.binary {
+				node := e.unit.arena.binary(expr)
+				if node.op == '*' || node.op == '/' {
+					return e.store_decimal_muldiv(slot, *node, line, col, depth)
 				}
-				return e.store_decimal_arith(slot, expr, line, col, depth)
+				return e.store_decimal_arith(slot, *node, line, col, depth)
 			}
-			ast.Unary {
-				return e.store_decimal_negate(slot, expr.expr, line, col, depth)
+			.unary {
+				return e.store_decimal_negate(slot, e.unit.arena.unary(expr).expr, line, col, depth)
 			}
-			ast.Cast {
+			.cast {
 				// A conversion whose result is this object: the conversion
 				// lane's routine writes it. The step is .object, so a routine
 				// is there; a value it does not write falls to the value path
@@ -874,27 +881,30 @@ fn (mut e Emitter) store_decimal(slot Slot, expr ast.Expr, line int, col int, de
 // what it cannot write.
 fn (mut e Emitter) store_decimal_through_object(address Slot, expr ast.Expr, width int, line int, col int, depth int) !void {
 	if e.decimal_step(expr) == .object {
-		if decimal_width_of(expr.typ) != width {
-			e.diagnostics << problem(line, col, 'unsupported: a value of ${expr.typ.describe()} is stored in a decimal object of a different width')
+		typ := e.expr_type(expr)
+		if decimal_width_of(typ) != width {
+			e.diagnostics << problem(line, col, 'unsupported: a value of ${typ.describe()} is stored in a decimal object of a different width')
 			return error('decimal store width')
 		}
-		match expr {
-			ast.Binary {
-				if expr.op == '*' || expr.op == '/' {
-					return e.store_decimal_muldiv_at(address, expr, line, col, depth)
+		match expr.kind {
+			.binary {
+				node := e.unit.arena.binary(expr)
+				if node.op == '*' || node.op == '/' {
+					return e.store_decimal_muldiv_at(address, *node, line, col, depth)
 				}
-				return e.store_decimal_arith_at(address, expr, line, col, depth)
+				return e.store_decimal_arith_at(address, *node, line, col, depth)
 			}
-			ast.Unary {
-				return e.store_decimal_negate_at(address, expr.expr, line, col, depth)
+			.unary {
+				return e.store_decimal_negate_at(address, e.unit.arena.unary(expr).expr, line, col,
+					depth)
 			}
-			ast.Cast {
+			.cast {
 				// The conversion routines write into the storage of an object
 				// the store names, which is a frame slot. There is no form
 				// that writes one through an address the caller parked, so
 				// the conversion is refused by name here rather than written
 				// as something else.
-				e.diagnostics << problem(line, col, 'unsupported: a conversion to ${expr.typ.describe()} is stored through an address here, and this back end writes a decimal conversion only into the storage of an object it names')
+				e.diagnostics << problem(line, col, 'unsupported: a conversion to ${typ.describe()} is stored through an address here, and this back end writes a decimal conversion only into the storage of an object it names')
 				return error('decimal conversion store')
 			}
 			else {}
@@ -904,11 +914,11 @@ fn (mut e Emitter) store_decimal_through_object(address Slot, expr ast.Expr, wid
 }
 
 // address_of builds the address expression the emitter reads an object through.
-fn address_of(expr ast.Expr, line int, col int) ast.Unary {
+fn (e Emitter) address_of(expr ast.Expr, line int, col int) ast.Unary {
 	return ast.Unary{
 		op:   '&'
 		expr: expr
-		typ:  expr.typ
+		typ:  e.expr_type(expr)
 		line: line
 		col:  col
 	}
@@ -959,9 +969,9 @@ fn (mut e Emitter) emit_decimal_arith(frame Slot, through ?Slot, binary ast.Bina
 	name := decimal_arith_name(format, binary.op == '-')
 	e.decimal_used[name] = true
 	accum := e.accumulator(line, col)!
-	e.emit_address(address_of(binary.left, line, col), depth + 1)!
+	e.emit_address(e.address_of(binary.left, line, col), depth + 1)!
 	e.append(e.target.push_register(accum))
-	e.emit_address(address_of(binary.right, line, col), depth + 1)!
+	e.emit_address(e.address_of(binary.right, line, col), depth + 1)!
 	e.append(e.target.push_register(accum))
 	e.decimal_destination(frame, through, registers.rdi, line, col)!
 	e.append(e.target.pop_register(registers.rdx))
@@ -986,18 +996,18 @@ fn (mut e Emitter) store_decimal_negate_at(address Slot, operand ast.Expr, line 
 // operand's address is in rsi and the destination's in rdi.
 fn (mut e Emitter) emit_decimal_negate(frame Slot, through ?Slot, operand ast.Expr, line int, col int, depth int) !void {
 	if !e.names_an_object(operand) {
-		e.diagnostics << problem(line, col, 'unsupported: a ${operand.typ.describe()} is negated here, and the routine reads its operand where it lives')
+		e.diagnostics << problem(line, col, 'unsupported: a ${e.expr_type(operand).describe()} is negated here, and the routine reads its operand where it lives')
 		return error('decimal operand')
 	}
 	registers := decimal_registers(e.target) or {
 		e.diagnostics << problem(line, col, 'internal: the target has no register a decimal operation needs')
 		return error('decimal registers')
 	}
-	format := operand.typ.kind.decimal_format()
+	format := e.expr_type(operand).kind.decimal_format()
 	name := decimal_arith_negate_name(format)
 	e.decimal_used[name] = true
 	accum := e.accumulator(line, col)!
-	e.emit_address(address_of(operand, line, col), depth + 1)!
+	e.emit_address(e.address_of(operand, line, col), depth + 1)!
 	e.append(e.target.push_register(accum))
 	e.decimal_destination(frame, through, registers.rdi, line, col)!
 	e.append(e.target.pop_register(registers.rsi))
@@ -1028,17 +1038,17 @@ fn (mut e Emitter) put_decimal_bytes(slot Slot, bytes []u8, line int, col int) !
 // local, so the routine is carried only by a unit that makes the conversion.
 fn (mut e Emitter) emit_decimal_to_double(expr ast.Expr, line int, col int, depth int) !void {
 	if !e.names_an_object(expr) {
-		e.diagnostics << problem(line, col, 'unsupported: a ${expr.typ.describe()} is converted to double here, and only an object of one can be, because the conversion reads it where it lives')
+		e.diagnostics << problem(line, col, 'unsupported: a ${e.expr_type(expr).describe()} is converted to double here, and only an object of one can be, because the conversion reads it where it lives')
 		return error('decimal value')
 	}
 	e.emit_address(ast.Unary{
 		op:   '&'
 		expr: expr
-		typ:  expr.typ
+		typ:  e.expr_type(expr)
 		line: line
 		col:  col
 	}, depth + 1)!
-	name := decimal_routine_name(expr.typ.kind.decimal_format())
+	name := decimal_routine_name(e.expr_type(expr).kind.decimal_format())
 	e.decimal_used[name] = true
 	e.reference(e.target.call_near(0), .call_local, name, '')
 }

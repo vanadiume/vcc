@@ -674,7 +674,7 @@ fn test_the_layout_of_a_scalar_or_an_array_is_its_size_and_alignment() {
 fn test_a_completed_aggregate_carries_the_layout_it_was_already_given() {
 	mut cached := Type{
 		kind:     .struct_
-		info:     &TypeInfo{parts: parts_of([]Member{}, []Param{}, 'cached')}
+		info:     &TypeInfo{ parts: parts_of([]Member{}, []Param{}, 'cached') }
 		complete: true
 	}
 	cached.set_layout(&Layout{
