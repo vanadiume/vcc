@@ -301,21 +301,23 @@ fn (p Parser) looks_like_compound_literal() bool {
 	return false
 }
 
-// file_scope_compound_literal reads a compound literal written as the
-// initializer of an object at file scope, where the unnamed object it names has
-// static storage duration rather than the enclosing block's. The object is a
-// definition in the image like any other top-level object, with a name of the
-// reader's own, and the value the literal is worth is that object's address:
-// `int *p = (int[]){1, 2, 3};` defines an int[3] holding 1, 2 and 3 and
-// initializes p with the address of its first element, which is what decays an
-// array to a pointer.
+// file_scope_compound_object reads the type name and list of a compound literal
+// written at file scope, defines the unnamed object it names, and answers that
+// object's address. The object is a definition in the image like any other
+// top-level object, with a name of the reader's own.
 //
-// The shape is read for an array whose element is a scalar, which is what an
-// image writes as a run of constants. An array of aggregates and a struct
-// literal would need the member walk the file-scope reader already does for a
-// named object, and neither is a shape the tests here settle, so each is
-// refused by name rather than written wrong.
-fn (mut p Parser) file_scope_compound_literal() ?ast.AddressInit {
+// `explicit` says the ampersand was written: `&(struct S){1, 2}` is the address
+// whatever the object holds, while a bare `(int[]){1, 2, 3}` is an array and the
+// address answered for it is the decay 6.3.2.1p3 gives an array in a value
+// position. A bare literal of any other type is the object itself and not an
+// address, which is the value an aggregate initializer holds and the shape
+// `compound_literal_list` reads, so it is refused here by name.
+//
+// The initialization is the reader a named object of the same scope takes, which
+// is what makes the two one shape: an array of a scalar element is a run of
+// constants, and an aggregate, an array of aggregates or a scalar is the walk
+// the file-scope brace initializer already places.
+fn (mut p Parser) file_scope_compound_object(explicit bool) ?ast.AddressInit {
 	at := p.peek()
 	name := p.compound_name()
 	p.next() // (
@@ -325,35 +327,97 @@ fn (mut p Parser) file_scope_compound_literal() ?ast.AddressInit {
 	}
 	list := p.parse_brace_initializer(false) or { return none }
 	declared := p.declared_type(spec.clause, d)
-	if !declared.is_array() {
-		p.error_at(at, 'unsupported: a compound literal at file scope is implemented for an array of a scalar type, and this one is of the type ${declared.describe()}')
+	if !explicit && !declared.is_array() {
+		p.error_at(at, 'unsupported: a compound literal at file scope is a value of its own type, and this one is of the type ${declared.describe()}; the address of one is an address constant, and it is written with &')
 		return none
-	}
-	element := declared.element() or { return none }
-	if element.kind in [types.Kind.struct_, .union_, .array, .unknown] {
-		p.error_at(at, 'unsupported: a compound literal at file scope is implemented for an array of a scalar type, and its element is ${element.describe()}')
-		return none
-	}
-	mut count := d.array_count()
-	if count <= 0 {
-		count = list.elements.len
 	}
 	written := p.spelling_of(spec, 0)
-	inits, init_floats := p.initializer_list_for(written, list.elements, name, at)
-	p.declared[name] = true
-	p.globals << ast.Global{
-		name:        name
-		typ:         written
-		resolved:    types.array_of(element, count)
-		count:       count
-		inits:       inits
-		init_floats: init_floats
-		line:        at.line
-		col:         at.col
+	if declared.is_array() && !(declared.element() or { declared }).kind.is_aggregate() {
+		mut count := d.array_count()
+		if count <= 0 {
+			count = list.elements.len
+		}
+		element := declared.element() or { return none }
+		inits, init_floats := p.initializer_list_for(written, list.elements, name, at)
+		p.declared[name] = true
+		p.globals << ast.Global{
+			name:        name
+			typ:         written
+			resolved:    types.array_of(element, count)
+			count:       count
+			inits:       inits
+			init_floats: init_floats
+			line:        at.line
+			col:         at.col
+		}
+	} else if declared.is_array() || declared.kind in [types.Kind.struct_, .union_] {
+		// An object with subobjects, `&(struct S){1, 2}` or `&(int[2]){1, 2}`:
+		// the list is walked against the object's own type, and each value
+		// reaches the byte the layout gives the member or element it writes.
+		general := p.file_scope_general_initializer(spec, d, list, name) or { return none }
+		p.declared[name] = true
+		p.globals << ast.Global{
+			name:         name
+			typ:          written
+			resolved:     general.resolved
+			count:        general.count
+			bytes:        general.bytes
+			member_inits: general.members
+			line:         at.line
+			col:          at.col
+		}
+	} else {
+		// A scalar, `&(int){5}`: the object is one value, which is the list's
+		// one element converted the way the object's type converts it. 6.7.8p13
+		// gives a scalar initializer list at most one element, so a longer list
+		// is the constraint gcc 16.2.1 reports as `excess elements in scalar
+		// initializer` rather than the extra values dropped.
+		if list.elements.len != 1 {
+			p.error_at(at, 'a constraint violation: a compound literal of the type ${declared.describe()} is one value, and its list writes ${list.elements.len}')
+			return none
+		}
+		element := list.elements[0]
+		number := element.number or {
+			p.error_at(at, 'unsupported: a compound literal of the type ${declared.describe()} is initialized with something that is not a written constant here')
+			return none
+		}
+		init, init_float := initializer_for(written, number.number.integer, number.number.floating)
+		p.declared[name] = true
+		p.globals << ast.Global{
+			name:       name
+			typ:        written
+			resolved:   declared
+			init:       init
+			init_float: init_float
+			line:       at.line
+			col:        at.col
+		}
 	}
 	return ast.AddressInit{
-		name: name
-		line: at.line
-		col:  at.col
+		name:     name
+		explicit: explicit
+		line:     at.line
+		col:      at.col
 	}
+}
+
+// file_scope_compound_literal reads a compound literal written as the initializer
+// of a pointer at file scope, where the unnamed object it names has static
+// storage duration rather than the enclosing block's. The value the literal is
+// worth is that object's address: `int *p = (int[]){1, 2, 3};` defines an int[3]
+// holding 1, 2 and 3 and initializes p with the address of its first element,
+// which is what decays an array to a pointer.
+fn (mut p Parser) file_scope_compound_literal() ?ast.AddressInit {
+	return p.file_scope_compound_object(false)
+}
+
+// file_scope_compound_address reads a compound literal whose address is written,
+// `struct S *s = &(struct S){1, 2};`. 6.5.2.5p5 gives a literal outside the body
+// of a function static storage duration, and 6.6p9 makes the address of an
+// object with static storage duration an address constant, so the initializer is
+// one a file-scope pointer may hold. The object is the same unnamed definition
+// the decay case builds, and the ampersand is the address of it rather than a
+// decay from an array.
+fn (mut p Parser) file_scope_compound_address() ?ast.AddressInit {
+	return p.file_scope_compound_object(true)
 }
