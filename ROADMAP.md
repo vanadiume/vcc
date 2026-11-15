@@ -60,9 +60,9 @@ reading the assembly.
 
 M4 was objects and linking: ELF relocatable objects, an `ar` archive reader,
 executable linking against libc, static and shared output, `-L`/`-l` search
-order, `-shared`, `-r`, `-nostdlib`, `-Wl,` passthroughs and the crt start
-files. It is checked by linking programs that use libc, libm, pthreads and dl
-and running them.
+order, `-shared`, `-r`, `-nostdlib`, the `-Wl,` linker options the image can
+express, and the crt start files. It is checked by linking programs that use
+libc, libm, pthreads and dl and running them.
 
 ## M5: the rest of the language
 

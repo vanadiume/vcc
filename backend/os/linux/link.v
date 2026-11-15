@@ -32,6 +32,27 @@ pub:
 	// resolved none, and a link that wants one falls back to the toolchain's own
 	// -lgcc name.
 	runtime string
+	// The three fields below are the -Wl, options the in-house container can
+	// express. The external linker never reads them; it gets the same flags as
+	// words of its own command line, because what its options mean is its
+	// business and not this compiler's.
+	//
+	// execstack is -Wl,-z,execstack: the stack the kernel maps is executable
+	// even when no unit asked for that.
+	execstack bool
+	// noexecstack is -Wl,-z,noexecstack: the stack is not executable, even for
+	// a unit that wrote a nested function's trampoline into its frame. The
+	// option wins over the unit's own request, which is what asking for it
+	// means in a linker that has one.
+	noexecstack bool
+	// bind_now is -Wl,-z,now: every imported name is resolved before the first
+	// instruction runs. The container already writes one eager binding per
+	// import and no lazy stub, so the flag states the promise in the dynamic
+	// table rather than changing a relocation.
+	bind_now bool
+	// relro is -Wl,-z,relro: the image carries a PT_GNU_RELRO segment over the
+	// tables the loader writes and nothing writes again.
+	relro bool
 }
 
 // link_arguments is the ordered argument list for the linker.

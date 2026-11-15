@@ -80,10 +80,15 @@ open.
 V passes the flags of the compiler it classified. vcc accepts the flags V
 passes to a C compiler (`-std=gnu11`, `-std=c99`, `-fwrapv`, `-fPIC`, `-g`,
 `-w`, `-Werror=implicit-function-declaration`, `-bt25`, `-B<dir>`, `-I<dir>`,
-`-L<dir>`, `-l<name>`, `-Wl,` passthroughs, `-D` defines), plus the
-preprocessor's own flags and `--version`. A flag it does not implement is
-recorded and never refused, because V passes flags for work it expects done
-and a compiler that errors on `-bt25` fails a build it was meant to serve.
+`-L<dir>`, `-l<name>`, `-Wl,` options, `-D` defines), plus the preprocessor's
+own flags and `--version`. A flag it does not implement is recorded and never
+refused, with one exception: a `-Wl,` option is an instruction to the link, and
+vcc performs the link itself, so an option its linker cannot express is refused
+by name rather than recorded as if it had been applied. With
+`-external-linker=NAME` the options belong to that linker and are passed
+through untouched. The other flags, `-bt25` among them, are still recorded and
+never refused, because V passes flags for work it expects done and a compiler
+that errors on `-bt25` fails a build it was meant to serve.
 
 The extensions V's generated C uses (`typeof`, `__int128`, the atomic
 builtins, statement expressions, `__attribute__`) are in the dialect table

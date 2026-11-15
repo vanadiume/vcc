@@ -44,9 +44,15 @@ and `vlib/v/pref/pref.v`.
 
 Three consequences for changes that touch the command line:
 
-- A flag you do not implement gets accepted and recorded, never rejected. V
-  passes `-bt25` and `-Wl,...` passthroughs, and a compiler that errors on them
-  fails a build it was supposed to serve.
+- A flag you do not implement gets accepted and recorded, never rejected, with
+  one exception. A `-Wl,` option is an instruction to the link, and this
+  compiler performs the link itself, so an option its linker cannot express is
+  refused by name rather than recorded: a build that reads a recorded
+  `-Wl,-z,now` has been told the option took effect when it did not. The
+  options the linker does implement change the image; with
+  `-external-linker=NAME` they belong to that linker and are passed through
+  untouched. The rest of what V passes, `-bt25` among them, is still accepted
+  and recorded.
 - `--version` stays stable and machine-parseable. Changing its shape changes
   what V thinks this compiler is and invalidates every cached artifact keyed on
   the old answer.
