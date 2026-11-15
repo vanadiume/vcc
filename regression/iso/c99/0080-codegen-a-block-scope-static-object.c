@@ -97,6 +97,18 @@ static int loop_counter(int turns)
     return last;
 }
 
+static int shadow_parameter(int value)
+{
+    static int shadowed = 40;
+    int sum = value;
+    {
+        static int value = 7;
+        sum += value;
+    }
+    shadowed += sum;
+    return sum + value * 100 + shadowed;
+}
+
 int main(void)
 {
     int total = 0;
@@ -143,6 +155,10 @@ int main(void)
     /* The same object through another function and through a loop. */
     CHECK(call_counter() == 29);
     CHECK(loop_counter(2) == 31);
+
+    /* A block-scope static shadows a parameter of the same name. */
+    CHECK(shadow_parameter(3) == 360);
+    CHECK(shadow_parameter(3) == 370);
 
     return 0;
 }
