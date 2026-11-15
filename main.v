@@ -352,7 +352,7 @@ fn read_options(opts cli.Options) preprocess.Options {
 	return preprocess.Options{
 		include_dirs:   opts.include_dirs
 		defines:        language_defines(opts)
-		undefines:      opts.undefines
+		actions:        opts.define_actions
 		standard_dirs:  standard_include_dirs_for(opts)
 		preludes:       opts.preludes
 		undef_builtins: opts.undef_builtins
@@ -880,20 +880,20 @@ fn link_inputs(opts cli.Options) {
 	}
 }
 
-// language_defines are the -D arguments the compiler hands the preprocessor: the
-// macros that identify this compiler, the ones the selected mode adds, and then
-// the ones the command line wrote. That order is what makes a -D win over the
-// mode and over the identity, the way it wins over a built-in in gcc. -undef
-// takes all of the compiler's own macros away with every other macro that
-// describes the target.
+// language_defines are the macros the compiler defines for itself before the
+// command line is applied: the ones that identify this compiler and the ones
+// the selected mode adds. That order is what makes a -D win over the mode and
+// over the identity, the way it wins over a built-in in gcc, because the -D
+// arguments arrive separately as cli.Options.define_actions and are applied
+// after these. -undef takes all of the compiler's own macros away with every
+// other macro that describes the target.
 fn language_defines(opts cli.Options) []string {
 	if opts.undef_builtins {
-		return opts.defines
+		return []
 	}
 	mut out := []string{}
 	out << preprocess.identity_defines(cli.version)
 	out << preprocess.standard_defines(opts.dialect, opts.emulation)
-	out << opts.defines
 	return out
 }
 
@@ -1425,7 +1425,7 @@ fn compile_source_object(path string, source string, opts cli.Options) ![]u8 {
 	processed := preprocess.preprocess(source, path, preprocess.Options{
 		include_dirs:   opts.include_dirs
 		defines:        language_defines(opts)
-		undefines:      opts.undefines
+		actions:        opts.define_actions
 		standard_dirs:  standard_include_dirs_for(opts)
 		preludes:       opts.preludes
 		undef_builtins: opts.undef_builtins

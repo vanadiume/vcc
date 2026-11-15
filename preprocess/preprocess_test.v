@@ -505,6 +505,37 @@ fn test_an_undefine_from_the_command_line_takes_a_macro_away() {
 	assert result.tokens[3].text == 'N'
 }
 
+// -D and -U take effect where they were written, so a define after an undefine
+// is in force and a define before one is not. Applying every -D before every
+// -U, which is what the two flat lists did, gets both of those wrong.
+fn test_a_define_and_an_undefine_are_applied_in_the_order_they_were_written() {
+	last_define_wins := preprocess('N', 'test.c', Options{
+		actions: [
+			DefineAction{ name: 'N=1' },
+			DefineAction{ name: 'N', undefine: true },
+			DefineAction{ name: 'N=2' },
+		]
+	})
+	assert last_define_wins.diagnostics.len == 0
+	assert last_define_wins.tokens.map(it.text) == ['2']
+	define_after_undefine := preprocess('N', 'test.c', Options{
+		actions: [
+			DefineAction{ name: 'N', undefine: true },
+			DefineAction{ name: 'N=1' },
+		]
+	})
+	assert define_after_undefine.diagnostics.len == 0
+	assert define_after_undefine.tokens.map(it.text) == ['1']
+	undefine_last := preprocess('N', 'test.c', Options{
+		actions: [
+			DefineAction{ name: 'N=1' },
+			DefineAction{ name: 'N', undefine: true },
+		]
+	})
+	assert undefine_last.diagnostics.len == 0
+	assert undefine_last.tokens.map(it.text) == ['N']
+}
+
 fn test_ifdef_reads_the_branch_that_is_taken() {
 	assert processed('#ifdef N\nint x;\n#endif\n') == [] // N is not defined
 	assert processed('#define N\n#ifdef N\nint x;\n#endif\n') == ['int', 'x', ';']
