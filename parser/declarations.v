@@ -5832,7 +5832,7 @@ fn (mut p Parser) note_declaration(d Declarator, depth int) {
 fn (mut p Parser) declare_name(name string, typ types.Type, at tokenize.Token, defined bool) {
 	p.declared[name] = true
 	previous := p.scopes.lookup(name)
-	linkage := types.linkage_for(p.pending_storage, p.scopes.at_file_scope(), previous)
+	linkage := types.linkage_for(p.pending_storage, p.scopes.at_file_scope(), typ.is_function(), previous)
 	// One name declared twice in one scope is one name (6.2.2), and the two
 	// declarations have to describe compatible types (6.2.7): asked here of what
 	// this declaration spells against what the scope already holds. Measured,

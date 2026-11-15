@@ -253,7 +253,14 @@ pub fn (t Table) lookup_tag(name string) ?Type {
 // and a name declared `extern` inside a body has the linkage of the declaration
 // outside it. Everything else declared in a body is known inside that body only.
 // A typedef names a type rather than an object and has no linkage at all.
-pub fn linkage_for(storage Storage, file_scope bool, previous ?Symbol) Linkage {
+//
+// A function declared in a body is not an object declared there: 6.2.2p5 gives it
+// the linkage a declaration written `extern` would have, whether it wrote that
+// storage class or none, so `int f(char *);` inside a body names the function the
+// file declares outside it and not a name that block alone knows. The call is the
+// symbol the declaration names, which is what lets one block call a function
+// another unit defines.
+pub fn linkage_for(storage Storage, file_scope bool, function bool, previous ?Symbol) Linkage {
 	if storage == .typedef_ {
 		return .none
 	}
@@ -263,7 +270,7 @@ pub fn linkage_for(storage Storage, file_scope bool, previous ?Symbol) Linkage {
 		}
 		return .external
 	}
-	if storage == .extern_ {
+	if storage == .extern_ || function {
 		if earlier := previous {
 			if earlier.linkage != .none {
 				return earlier.linkage

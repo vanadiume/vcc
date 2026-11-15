@@ -108,6 +108,31 @@ fn test_a_nested_function_declared_without_a_body_is_read() {
 	assert result.diagnostics.len == 0
 }
 
+fn test_a_function_declared_in_a_body_is_the_name_the_block_calls() {
+	// A function declared in a body is an ordinary declaration of an ordinary
+	// identifier (6.2.1p4, 6.2.2p5) and not a nested function: it writes no
+	// code, and the name it puts in scope is the symbol it names. Measured,
+	// gcc 16.2.1 on this shape builds a binary that exits 0; before the name
+	// was entered in the block's scope the call was refused with `main.f is
+	// used here`, which is a symbol no declaration in the file provides.
+	result := parse_nested('int f(char *p) { return *p + 1; } int main(void) { char s = 1; int f(char *); return f(&s); }')
+	assert result.diagnostics.len == 0
+	assert nested_decls(result).len == 0
+	stmt := result.unit.decls[1].body[1]
+	expr := stmt.expr or { panic('the return carries an expression') }
+	assert call_named(expr, 'f')
+	assert !call_named(expr, 'main.f')
+}
+
+fn test_a_function_declared_in_a_body_with_static_is_refused() {
+	// 6.7.1: the only storage class a function declaration in a body can be
+	// written with is extern. Measured on gcc 16.2.1, `static int f(char *);`
+	// inside a function is `error: invalid storage class for function 'f'`.
+	result := parse_nested('int f(char *p) { return *p + 1; } int main(void) { static int f(char *); return f(0); }')
+	assert result.diagnostics.len == 1
+	assert result.diagnostics[0].msg.contains('the only storage class a function declaration there can be written with is extern')
+}
+
 fn test_a_nested_function_declared_and_then_defined_is_reported() {
 	// The definition of a nested function is static and a declaration of one that
 	// says nothing about linkage is not, so gcc refuses the pair, and this reader
