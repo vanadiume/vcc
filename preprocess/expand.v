@@ -306,9 +306,10 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 				continue
 			}
 			call := p.expand_call(macro, use_args, piece)
+			produced := call.len
 			out << call
 			unsafe { call.free() }
-			i = use_args.next
+			i = p.finish_use(mut out, produced, tokens, use_args.next)
 			continue
 		}
 		if tok.text in piece.hide {
@@ -328,11 +329,52 @@ fn (mut p Processor) expand_pieces(tokens []Piece) []Piece {
 		}
 		expanded := p.expand_pieces(replacement)
 		unsafe { replacement.free() }
+		produced := expanded.len
 		out << expanded
 		unsafe { expanded.free() }
-		i++
+		i = p.finish_use(mut out, produced, tokens, i + 1)
 	}
 	return out
+}
+
+// finish_use reads the rest of a use that the tokens just produced did not
+// finish. C99 6.10.3p4 rescans a replacement together with the text after the
+// use, so a name a macro produced at the end of its expansion can be the name
+// of a function-like macro whose ( is the next token of the file:
+//
+//     #define F(x) ((x) + 1)
+//     #define G F
+//     G(1)              /* is F(1), and F(1) expands */
+//
+// `out` ends with the `produced` tokens the expansion made. Each call takes its
+// name back off `out` and writes the call's own tokens there, so the loop also
+// reads a call whose replacement again ends in a function-like name. A name
+// hidden from itself is text here as it is everywhere else, which is what keeps
+// `#define G G(x)` from being expanded a second time.
+fn (mut p Processor) finish_use(mut out []Piece, produced int, tokens []Piece, from int) int {
+	mut i := from
+	mut tail := produced
+	for tail > 0 {
+		last := out.last()
+		if last.tok.kind != .identifier || last.tok.text !in p.macros {
+			break
+		}
+		macro := p.macros[last.tok.text]
+		if !macro.takes_arguments() || last.tok.text in last.hide {
+			break
+		}
+		use_args := p.collect_arguments(tokens, i, last.tok)
+		if !use_args.called {
+			break
+		}
+		call := p.expand_call(macro, use_args, last)
+		out.delete(out.len - 1)
+		out << call
+		tail = call.len
+		i = use_args.next
+		unsafe { call.free() }
+	}
+	return i
 }
 
 // expand_call expands one use of a macro that takes arguments: the arguments go
