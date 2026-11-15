@@ -109,10 +109,13 @@ install that cannot find its own archive fails there.
   gated ones on by name.
 - SysV x86-64 code generation with stack frames, thread-local storage, unwind
   tables and position-independent code, `-O0` through `-O3` and `-Os`, and a
-  linker that takes translation units, relocatable objects and `ar` archives on
-  one command line, resolves `-l` names through the system ld scripts, pulls
-  only the members a program reaches, and refuses an unresolved import by name.
-  `-shared`, `-static`, `-nostdlib` and `-nodefaultlibs` are supported.
+  linker that takes translation units, relocatable objects, `ar` archives and
+  shared objects on one command line, resolves `-l` names through the system ld
+  scripts, pulls only the members a program reaches, reads a shared object's
+  dynamic table for the names it defines, and refuses an unresolved import by
+  name. `-shared`, `-static`, `-nostdlib` and `-nodefaultlibs` are supported. A
+  shared object this compiler writes is an input a later vcc link reads, by file
+  or with `-l`.
 - Diagnostics that name the construct and its file, line and column, and never
   an empty output file that fails later.
 
@@ -136,6 +139,9 @@ What is missing:
 - An object or archive carrying a section or relocation the linker does not
   model. It is refused by name rather than placed at a guessed address.
   `-external-linker=NAME` is the way through.
+- GNU ld reading a shared object this compiler writes. ld wants a section
+  header table and this compiler writes none, so `-external-linker=ld` cannot
+  consume one; vcc's own linker reads the dynamic table instead.
 - Speed. vcc is behind tcc, and the numbers are under Performance.
 - A complete V self-build. vcc does compile the C that V generates from vcc's
   own source, and the compiler it produces runs. V itself built by vcc and
