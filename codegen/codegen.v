@@ -284,6 +284,12 @@ struct LabelUse {
 struct PendingNested {
 	decl   ast.FnDecl
 	scopes []map[string]Slot
+	// static_scopes is the mapping from a block-scope static object's spelling
+	// to its symbol, for the block the definition was written in. The nested
+	// function's body may name such an object, and the mapping is what says
+	// which one; it is put back with the scopes because a block-scope static
+	// outlives the call and not the block's statements.
+	static_scopes []map[string]string
 	// outer_chains is the static chain of the function this definition is
 	// written in, and of the functions around that one: the frames a nested
 	// function walks through to reach an object more than one function out.
@@ -435,6 +441,13 @@ mut:
 	// the block it was declared in and the ones inside it, which is where a
 	// declaration gets its slot and its width from.
 	scopes []map[string]Slot
+	// static_scopes is the blocks being emitted, one entry per scope in scopes
+	// and in the same order, and maps the spelling a block-scope static object
+	// was declared with to the symbol its storage carries in the image. The
+	// object has no frame slot and no linkage, so the spelling alone does not
+	// name it: the same spelling in two functions is two objects. A name that
+	// is not here is resolved the way it always was.
+	static_scopes []map[string]string
 	// vla_saves is the stack of blocks being emitted, one entry per scope in
 	// scopes and in the same order: the frame offset of the word a scope saved
 	// the stack pointer in when it first declared a variable-length array, or
@@ -1533,9 +1546,10 @@ fn (mut e Emitter) record_nested(decl ast.FnDecl) {
 		scopes << marked
 	}
 	e.pending_nested << PendingNested{
-		decl:         decl
-		scopes:       scopes
-		outer_chains: e.reachable_chains()
+		decl:          decl
+		scopes:        scopes
+		static_scopes: e.static_scopes.clone()
+		outer_chains:  e.reachable_chains()
 	}
 }
 
@@ -1546,11 +1560,14 @@ fn (mut e Emitter) record_nested(decl ast.FnDecl) {
 // with its scopes, and the next function starts with none.
 fn (mut e Emitter) emit_nested(pending PendingNested) !void {
 	scopes := e.scopes
+	static_scopes := e.static_scopes
 	links := e.chain_links
 	e.scopes = pending.scopes
+	e.static_scopes = pending.static_scopes
 	e.chain_links = pending.outer_chains
 	e.emit_function(pending.decl)!
 	e.scopes = scopes
+	e.static_scopes = static_scopes
 	e.chain_links = links
 }
 
@@ -2812,6 +2829,18 @@ fn (e Emitter) returns_eight_byte_integer() bool {
 // storage and nothing else, which is what C says it is: the slot is there for
 // whatever the function writes into it next.
 fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
+	if stmt.static_storage() {
+		// The object has static storage duration (6.2.4p3). Its bytes are in
+		// the image, under the symbol the reader built for it, and its
+		// initializer was folded there; this statement only puts that symbol
+		// in the scope for the block's other statements, so every read and
+		// write of the spelling reaches the one object rather than a slot in
+		// this frame. Nothing is reserved and nothing is stored.
+		if e.static_scopes.len > 0 {
+			e.static_scopes[e.static_scopes.len - 1][stmt.decl_name()] = stmt.storage_name()
+		}
+		return
+	}
 	if size_expr := stmt.decl_vla_size() {
 		// A variable-length array is the one declaration whose storage is
 		// claimed while the program runs rather than reserved by the frame.
@@ -5456,6 +5485,7 @@ fn (mut e Emitter) callee_slot(depth int) Slot {
 // shadows one outside it and does not outlive it.
 fn (mut e Emitter) push_scope() {
 	e.scopes << map[string]Slot{}
+	e.static_scopes << map[string]string{}
 	e.vla_saves << vla_no_save
 	e.cleanups << []Cleanup{}
 }
@@ -5486,6 +5516,9 @@ fn (mut e Emitter) pop_scope() {
 		e.cleanups.pop()
 	}
 	e.scopes.pop()
+	if e.static_scopes.len > 0 {
+		e.static_scopes.pop()
+	}
 }
 
 // restore_stack_pointer puts the stack pointer back to the value a block saved in
@@ -12976,6 +13009,22 @@ fn (mut e Emitter) import_copy_object(name string) {
 	}
 }
 
+// object_storage_name is the name a top-level object's storage is under. A
+// spelling a block declared `static` names an object with no linkage, whose
+// symbol the reader built from the function and a counter; the block's
+// statements are emitted with that mapping in scope, so every read, write and
+// address of the spelling reaches the one object. A name that is not a
+// block-scope static is answered as it was written.
+fn (e Emitter) object_storage_name(name string) string {
+	for i := e.static_scopes.len - 1; i >= 0; i-- {
+		symbol := e.static_scopes[i][name]
+		if symbol.len > 0 {
+			return symbol
+		}
+	}
+	return name
+}
+
 // global_definition is the declaration of a top-level object by name: one this
 // unit defines, or one it declares with no storage here. A definition is
 // storage the image holds; an `extern` declaration is a name another object
@@ -12984,9 +13033,10 @@ fn (mut e Emitter) import_copy_object(name string) {
 // care which it is, and the place that lays out storage asks `global_of` rather
 // than this.
 fn (e Emitter) global_definition(name string) ?ast.Global {
+	storage := e.object_storage_name(name)
 	mut declared := ?ast.Global(none)
 	for global in e.unit.globals {
-		if global.name != name {
+		if global.name != storage {
 			continue
 		}
 		// A tentative definition and the definition that follows it are one
@@ -13006,7 +13056,7 @@ fn (e Emitter) global_definition(name string) ?ast.Global {
 		return global
 	}
 	for global in e.unit.extern_objects {
-		if global.name == name {
+		if global.name == storage {
 			return global
 		}
 	}
@@ -13028,10 +13078,11 @@ fn has_initializer(global ast.Global) bool {
 // the image, so an expression can ask it while it is being sized, before anything
 // has needed the address of the object and laid the storage out.
 fn (e Emitter) global_shape(name string) ?image.GlobalSlot {
-	if slot := e.program.globals[name] {
+	storage := e.object_storage_name(name)
+	if slot := e.program.globals[storage] {
 		return slot
 	}
-	if global := e.global_definition(name) {
+	if global := e.global_definition(storage) {
 		if global.bytes > 0 {
 			// An object of an aggregate type: its storage is as many bytes
 			// as the layout says and it has no element width a load could
@@ -13213,9 +13264,10 @@ fn (mut e Emitter) place_global(asked int) int {
 // definition in the same file is a definition, and gcc emits the same binding
 // whichever of the two is written first.
 fn (e Emitter) weak_object_import(name string) bool {
+	storage := e.object_storage_name(name)
 	mut weak := false
 	for global in e.unit.globals {
-		if global.name != name {
+		if global.name != storage {
 			continue
 		}
 		if !global.external {
@@ -13224,7 +13276,7 @@ fn (e Emitter) weak_object_import(name string) bool {
 		weak = weak || global.weak
 	}
 	for global in e.unit.extern_objects {
-		if global.name == name && global.weak {
+		if global.name == storage && global.weak {
 			weak = true
 		}
 	}
@@ -13239,16 +13291,17 @@ fn (e Emitter) weak_object_import(name string) bool {
 // afterwards - so every use of it is a reference the layout fills in, which is
 // the same mechanism a string literal is addressed by.
 fn (mut e Emitter) global_of(name string) ?image.GlobalSlot {
+	storage := e.object_storage_name(name)
 	// An object with internal linkage is recorded as such as soon as its
 	// storage is asked for, because the object writer binds the name local and
 	// the symbol table has to know before it is written.
-	if e.internal[name] {
-		e.program.internal[name] = true
+	if e.internal[storage] {
+		e.program.internal[storage] = true
 	}
-	if slot := e.program.globals[name] {
+	if slot := e.program.globals[storage] {
 		return slot
 	}
-	object := e.global_definition(name) or { return none }
+	object := e.global_definition(storage) or { return none }
 	if object.external {
 		// An object this unit declares weak and nothing here defines is a name
 		// no library has to answer: ELF gives an undefined weak symbol the
@@ -13256,17 +13309,17 @@ fn (mut e Emitter) global_of(name string) ?image.GlobalSlot {
 		// asked to copy one in. It is imported and left undefined, which is
 		// what gcc writes for the same declaration, and the reference is read
 		// out of the slot the loader leaves at zero.
-		if e.weak_object_import(name) {
-			e.import_object(name)
-			e.program.weak_imports[name] = true
-			return e.global_shape(name)
+		if e.weak_object_import(storage) {
+			e.import_object(storage)
+			e.program.weak_imports[storage] = true
+			return e.global_shape(storage)
 		}
 		// An object another object defines. An object file leaves the name
 		// undefined and every reference to it is one a linker resolves: the
 		// symbol is imported with no storage here and the relocation names it.
 		if e.compile_only {
-			e.import_object(name)
-			return e.global_shape(name)
+			e.import_object(storage)
+			return e.global_shape(storage)
 		}
 		// A program this back end links itself holds the storage for the
 		// object and the loader copies the library's object into it, which is
@@ -13274,9 +13327,9 @@ fn (mut e Emitter) global_of(name string) ?image.GlobalSlot {
 		// writes for a variable it names out of a shared library. The storage
 		// is laid out here, zeros to start, and the name is recorded so the
 		// container writes the symbol and the relocation that fills it.
-		return e.place_copy_object(name, object)
+		return e.place_copy_object(storage, object)
 	}
-	shape := e.global_shape(name) or { return none }
+	shape := e.global_shape(storage) or { return none }
 	element := shape.width
 	// A definition with no written count is one value, and one with a count is
 	// that many of them. An object of an aggregate type has neither: its storage
@@ -13301,7 +13354,7 @@ fn (mut e Emitter) global_of(name string) ?image.GlobalSlot {
 			object:   true
 			unsigned: e.written_is_unsigned(object.typ)
 		}
-		e.program.globals[name] = slot
+		e.program.globals[storage] = slot
 		// A union initialized in braces holds that value in its first member,
 		// which sits at the beginning of the object: the constant is written
 		// there at the member's width and the rest of the union stays zero.
@@ -13370,7 +13423,7 @@ fn (mut e Emitter) global_of(name string) ?image.GlobalSlot {
 		single:   shape.single
 		unsigned: shape.unsigned
 	}
-	e.program.globals[name] = slot
+	e.program.globals[storage] = slot
 	single := e.writes_a_float(object.typ)
 	if value := object.init_float {
 		if single {
@@ -13807,7 +13860,8 @@ fn (mut e Emitter) reference(bytes []u8, kind image.FixupKind, name string, regi
 // mode: the name stands for the address zero when nothing defines it, and the
 // only place that answer can come from is the slot the loader fills.
 fn (mut e Emitter) reference_object_address(register backend.Register, name string) {
-	if e.weak_object_import(name) {
+	storage := e.object_storage_name(name)
+	if e.weak_object_import(storage) {
 		// An undefined weak object has no place in this image to point at, and
 		// the answer the reference wants is the one the loader has: the value
 		// of the name's global offset table slot, which is the object's
@@ -13818,17 +13872,17 @@ fn (mut e Emitter) reference_object_address(register backend.Register, name stri
 		if e.compile_only {
 			// A relocatable object has no slots of its own, so the reference is
 			// the one a linker builds the slot for.
-			e.reference(e.target.load_slot_value(register, 0), .got_address, name, e.target.name_of(register))
+			e.reference(e.target.load_slot_value(register, 0), .got_address, storage, e.target.name_of(register))
 		} else {
-			e.reference(e.target.load_slot_value(register, 0), .import_address, name, e.target.name_of(register))
+			e.reference(e.target.load_slot_value(register, 0), .import_address, storage, e.target.name_of(register))
 		}
 		return
 	}
-	if e.compile_only && e.pic && !e.internal[name] {
-		e.reference(e.target.load_slot_value(register, 0), .got_address, name, e.target.name_of(register))
+	if e.compile_only && e.pic && !e.internal[storage] {
+		e.reference(e.target.load_slot_value(register, 0), .got_address, storage, e.target.name_of(register))
 		return
 	}
-	e.reference(e.target.address_of(register, 0), .global_address, name, e.target.name_of(register))
+	e.reference(e.target.address_of(register, 0), .global_address, storage, e.target.name_of(register))
 }
 
 // Wrapping arithmetic, spelled out rather than assumed. V 0.5.2 has no `+%`
