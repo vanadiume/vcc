@@ -677,6 +677,44 @@ fn test_a_repeated_value_flag_accumulates_in_order() {
 	assert opts.libraries == ['m', 'pthread']
 }
 
+// A link searches a library after the objects written before it and before the
+// objects written after it, so the order between the inputs and the -l names is
+// part of the command line, and the two lists beside this one cannot say it.
+// The joined and separate spellings of -l hold the same place, because they are
+// the same flag.
+fn test_the_link_keeps_the_order_inputs_and_libraries_were_written_in() {
+	opts := parse(['main.c', '-L.', '-lx', 'other.c', '-lm'])!
+	assert opts.inputs == ['main.c', 'other.c']
+	assert opts.libraries == ['x', 'm']
+	assert opts.link_items.len == 4
+	assert opts.link_items[0].value == 'main.c' && !opts.link_items[0].library
+	assert opts.link_items[1].value == 'x' && opts.link_items[1].library
+	assert opts.link_items[2].value == 'other.c' && !opts.link_items[2].library
+	assert opts.link_items[3].value == 'm' && opts.link_items[3].library
+	// The same two words in the other order are two more links, and the list
+	// says which is which.
+	first := parse(['-lx', 'main.c'])!
+	assert first.link_items.len == 2
+	assert first.link_items[0].value == 'x' && first.link_items[0].library
+	assert first.link_items[1].value == 'main.c' && !first.link_items[1].library
+	// -l x and -lx are one flag and one place on the line.
+	joined := parse(['-l', 'x', 'main.c'])!
+	separate := parse(['-lx', 'main.c'])!
+	assert joined.link_items == separate.link_items
+}
+
+// In a run the words after the source are the program's own arguments, so they
+// are not link inputs: only the first input keeps its place, and every -l name
+// stays where it was written.
+fn test_a_run_keeps_the_first_input_and_every_library_on_the_link() {
+	opts := parse(['-run', 'main.c', '-lx', 'arg'])!
+	assert opts.inputs == ['main.c']
+	assert opts.run_args == ['arg']
+	assert opts.link_items.len == 2
+	assert opts.link_items[0].value == 'main.c' && !opts.link_items[0].library
+	assert opts.link_items[1].value == 'x' && opts.link_items[1].library
+}
+
 // A boolean flag that can also be turned off is decided by the last spelling on
 // the line, which is what lets a build append -fno-pic to a line that already
 // had -fPIC. A flag with no negative spelling stays on however often it is

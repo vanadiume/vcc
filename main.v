@@ -128,6 +128,18 @@ fn main() {
 		link_inputs(opts)
 		return
 	}
+	// A -l name that resolves to an archive is a link input, and a .c input is
+	// compiled as the object it produces at its own place on the command line.
+	// `vcc main.c -lx` is therefore the same link as `vcc main.o -lx`, and it
+	// takes the path that reads archives: the single-input path below writes a
+	// program from one unit and has nowhere to put a member the link pulls. A
+	// shared library is the other answer - the loader maps it and settles its
+	// names when the program starts - so naming one keeps the single-input
+	// path.
+	if opts.links() && names_a_static_archive(opts) {
+		link_inputs(opts)
+		return
+	}
 	if opts.verbose {
 		verbose_print(verbose_include_dir_lines(opts))
 	}
@@ -375,35 +387,6 @@ fn dialect_messages(processed preprocess.Result, opts cli.Options) []tokenize.Di
 	})
 }
 
-// link_needs is the names a link still has to find outside its units: the
-// imports of its units that no unit in the link defines. An archive is asked
-// for these and for nothing else, so a name one unit defines is never a reason
-// to pull a member that also defines it.
-fn link_needs(units []unit.Program) map[string]bool {
-	provided := link_provides(units)
-	mut needed := map[string]bool{}
-	for entry in units {
-		for symbol in entry.imports {
-			if symbol !in provided && symbol !in entry.weak_imports {
-				needed[symbol] = true
-			}
-		}
-	}
-	return needed
-}
-
-// link_provides is the names the units of a link define, which is the other half
-// of link_needs: a name in it is answered, so no archive has to be asked for it.
-// The set grows as members are pulled, because a member's own definitions answer
-// the references of the members that follow it.
-fn link_provides(units []unit.Program) map[string]bool {
-	mut provided := map[string]bool{}
-	for entry in units {
-		provided_with(mut provided, entry)
-	}
-	return provided
-}
-
 // provided_with adds one unit's definitions to a set of names a link already
 // answers. A definition is a function this unit defines and an object whose
 // storage it holds, which is a name in `globals` that is not a copy of a
@@ -423,57 +406,88 @@ fn provided_with(mut provided map[string]bool, entry unit.Program) {
 	}
 }
 
-// pull_archives pulls the members of every archive that answer a name the link
-// still needs, and sweeps the whole set again while a sweep pulled anything. A
-// static link resolves its libraries against each other rather than one after
-// the other: libgcc's unwinding reaches for the C library's threads and the C
-// library reaches for libgcc, so coming back to an archive already passed is
-// the only order that finishes. A member is read once, whichever sweep reached
-// it, and the names are walked in sorted order rather than off the map, so one
-// set of archives and one set of needs always pull the same members in the same
-// order and the same link writes the same bytes. A member nothing refers to
-// stays out, which is what makes a library of many objects cost only the parts
-// the program asks for.
-fn pull_archives(archives []archive.Archive, target backend.Target, mut needed map[string]bool, mut provided map[string]bool) ![]unit.Program {
-	mut pulled := map[string]bool{}
+// pull_members pulls from one archive the members that answer a name the link
+// still needs, and goes round that archive again while a member it pulled opens
+// a name the archive itself answers. The sweep stops there: a name a member
+// leaves open is answered by an archive written later on the command line, and
+// an archive written earlier has already had its turn. That is the order ld
+// gives a command line, and it is why `-lb -la` and `-la -lb` are two different
+// links: the second answers `alpha`'s call to `beta` and the first does not.
+//
+// The walk carries the link's two sets. `provided` is every name the units seen
+// so far define, and `needed` is every name one of them uses. A member is read
+// once: pulling it puts its definitions in `provided`, and the test below then
+// skips it. `which` is the archive's place in the walk, so the key a member is
+// remembered under cannot collide with another archive holding a member of the
+// same name. The names are walked in sorted order rather than off the map so
+// one command line always pulls the same members in the same order.
+fn pull_members(which int, parts archive.Archive, target backend.Target, mut needed map[string]bool, mut provided map[string]bool, mut pulled map[string]bool) ![]unit.Program {
+	mut out := []unit.Program{}
+	mut again := true
+	for again {
+		again = false
+		mut names := parts.index.keys()
+		names.sort()
+		for name in names {
+			// A name no unit of the link defines yet is the only one a member
+			// is pulled for. It is the rule ld follows, and what keeps the C
+			// library's copy of a name the runtime's own crt1.o already
+			// defines from joining the link: two definitions of one name are
+			// what a link refuses.
+			if !needed[name] || provided[name] {
+				continue
+			}
+			index := parts.index[name]
+			key := '${which}:${index}'
+			if key in pulled {
+				continue
+			}
+			pulled[key] = true
+			member := parts.members[index]
+			entry := object.read(member.bytes, target) or {
+				return error('${member.name}: ${err.msg()}')
+			}
+			note_unit(mut provided, mut needed, entry)
+			out << entry
+			again = true
+		}
+	}
+	return out
+}
+
+// note_unit adds one unit's definitions and open names to the sets a link walks
+// its archives with. The definitions go in first, so a unit that imports a name
+// it also defines does not open it again. A weak import is left out because an
+// undefined weak symbol stands for zero, which is no archive's to answer.
+fn note_unit(mut provided map[string]bool, mut needed map[string]bool, entry unit.Program) {
+	provided_with(mut provided, entry)
+	for symbol in entry.imports {
+		if symbol !in provided && symbol !in entry.weak_imports {
+			needed[symbol] = true
+		}
+	}
+}
+
+// pull_group searches a group of archives together: every archive in it is
+// swept again while a sweep pulled a member, because the libraries a link adds
+// for itself are one group rather than a sequence. That is what the gcc driver
+// writes for a static link - `--start-group -lgcc -lgcc_eh -lc --end-group` -
+// and it is not an optimization: libc.a reaches into libgcc.a for a soft-float
+// routine and libgcc.a reaches back into libc.a for a thread primitive, so one
+// pass in either order leaves one of the two open. The command line's own -l
+// names are not a group: they are searched where they were written, by
+// pull_members, and an archive written earlier does not answer a name opened by
+// an archive written later.
+fn pull_group(archives []archive.Archive, first int, target backend.Target, mut needed map[string]bool, mut provided map[string]bool, mut pulled map[string]bool) ![]unit.Program {
 	mut out := []unit.Program{}
 	mut again := true
 	for again {
 		again = false
 		for a, parts in archives {
-			mut names := parts.index.keys()
-			names.sort()
-			for name in names {
-				// A name no unit of the link defines yet is the only one a member
-				// is pulled for. It is the rule ld follows, and what keeps the C
-				// library's copy of a name the runtime's own crt1.o already
-				// defines from joining the link: two definitions of one name are
-				// what a link refuses.
-				if !needed[name] || provided[name] {
-					continue
-				}
-				index := parts.index[name]
-				key := '${a}:${index}'
-				if key in pulled {
-					continue
-				}
-				pulled[key] = true
-				member := parts.members[index]
-				entry := object.read(member.bytes, target) or {
-					return error('${member.name}: ${err.msg()}')
-				}
-				for symbol in entry.imports {
-					// A member's references are reasons to reach into an archive
-					// only while nothing in the link answers them: a name a unit
-					// defines is answered already. A weak one is not a reason even
-					// when nothing defines it, because an undefined weak symbol
-					// stands for zero.
-					if symbol !in provided && symbol !in entry.weak_imports {
-						needed[symbol] = true
-					}
-				}
-				provided_with(mut provided, entry)
-				out << entry
+			members := pull_members(first + a, parts, target, mut needed, mut provided,
+				mut pulled)!
+			if members.len > 0 {
+				out << members
 				again = true
 			}
 		}
@@ -567,32 +581,92 @@ fn link_inputs(opts cli.Options) {
 	mut parsing := i64(0)
 	mut optimizing := i64(0)
 	mut emitting := i64(0)
-	mut archives := []archive.Archive{}
-	for path in opts.inputs {
+	// The members pulled out of archives, in the order the archives were
+	// reached. They are kept apart from the units the command line named until
+	// the start files have been placed: whether the link is started by the C
+	// library is a question about the named units, and a pulled member that
+	// carries a constructor is refused below rather than started in silence.
+	mut pulled := []unit.Program{}
+	// The two sets the archives are asked with, built while the command line is
+	// walked. `provided` is every name a unit so far defines and `needed` every
+	// name one of them leaves open. A program's entry is open before the first
+	// word, because the start file or the stub this link writes is what calls
+	// it, and both stand in front of the command line's own inputs.
+	mut provided := map[string]bool{}
+	mut needed := map[string]bool{}
+	if output_kind == .program {
+		needed['main'] = true
+	}
+	// A member is remembered under the place its archive holds in the walk, so
+	// two archives that each hold a member of one name are still two members
+	// and the same archive named twice is searched at both places.
+	mut member_keys := map[string]bool{}
+	mut archive_count := 0
+	for item in opts.link_items {
+		if item.library {
+			// A -l name is resolved where it sits on the line. A shared library
+			// answers nothing here: the loader maps it and settles its names
+			// when the program starts. An archive, and the archives a GNU ld
+			// script names beside a shared object, are read now: after the
+			// objects written before the name and before the objects written
+			// after it.
+			files := target.archive_libraries([item.value], opts.library_dirs) or {
+				abort(err.msg())
+				return
+			}
+			for file in files {
+				source := read_source(file.path) or {
+					abort('cannot read ${file.path}: ${err.msg()}')
+					return
+				}
+				parts := archive.read(source.bytes()) or {
+					abort('${file.path}: ${err.msg()}')
+					return
+				}
+				members := pull_members(archive_count, parts, target, mut needed, mut provided,
+					mut member_keys) or {
+					abort(err.msg())
+					return
+				}
+				pulled << members
+				archive_count++
+			}
+			continue
+		}
+		path := item.value
 		source := read_source(path) or {
 			abort('cannot read ${path}: ${err.msg()}')
 			return
 		}
 		// What the input is decides how it is read, by the rule the single-input
 		// path uses: source is compiled into a unit, an object is read back into
-		// the unit it holds, and an archive is held until the names the link
-		// needs are known. A program or a shared object is an input this
-		// compiler does not read, and reading one as source would answer a wrong
-		// input kind with a parse error raised from inside a binary file.
+		// the unit it holds, and an archive the command line named as a file is
+		// read where it stands, the same way its -l spelling would be. A program
+		// or a shared object is an input this compiler does not read, and
+		// reading one as source would answer a wrong input kind with a parse
+		// error raised from inside a binary file.
 		kind := cli.classify_input(source, path, opts.input_type)
 		if kind == .object {
 			read := object.read(source.bytes(), target) or {
 				abort('${path}: ${err.msg()}')
 				return
 			}
+			note_unit(mut provided, mut needed, read)
 			units << read
 			continue
 		}
 		if kind == .archive {
-			archives << archive.read(source.bytes()) or {
+			parts := archive.read(source.bytes()) or {
 				abort('${path}: ${err.msg()}')
 				return
 			}
+			members := pull_members(archive_count, parts, target, mut needed, mut provided,
+				mut member_keys) or {
+				abort(err.msg())
+				return
+			}
+			pulled << members
+			archive_count++
 			continue
 		}
 		if kind != .source {
@@ -632,34 +706,32 @@ fn link_inputs(opts cli.Options) {
 		if report(path, emitted.diagnostics, opts.warnings) > 0 {
 			exit(1)
 		}
+		note_unit(mut provided, mut needed, emitted.program)
 		units << emitted.program
 	}
-	// A -l name that resolved to an archive is an input of the same kind as an
-	// archive file the command line named, and its members are pulled by the
-	// same rule below. Nothing else about the name is kept: the image asks the
-	// loader for no name for a static archive, so the archive contributes no
-	// DT_NEEDED entry.
+	// The C library is on every image whether or not a -l named it, and the
+	// archives the ld script beside its shared object names are inputs of the
+	// same kind. glibc keeps there the functions that cannot live in a shared
+	// object at all, `atexit` among them, so a dynamic link that maps libc.so.6
+	// and pulls no archive of its own still owes an answer for every object
+	// that calls one. They come after the command line's own words, where a
+	// linker's implicit libraries sit. A static link has them through
+	// static_support_libraries, which is read where the start files are.
 	//
-	// The C library is on every image whether or not a -l named it, and the archives
-	// the ld script beside its shared object names are inputs of the same kind. glibc
-	// keeps there the functions that cannot live in a shared object at all, `atexit`
-	// among them, so a dynamic link that maps libc.so.6 and pulls no archive of its own
-	// still owes an answer for every object that calls one. A static link has them
-	// through static_support_libraries, which is read where the start files are.
-	mut support := []backend.Library{}
-	if opts.libraries.len > 0 {
-		support << target.archive_libraries(opts.libraries, opts.library_dirs) or {
-			abort(err.msg())
-			return
-		}
-	}
+	// A -l name that resolved to an archive was read where the command line
+	// wrote it and is not repeated here: the place a library holds decides what
+	// it can answer, and appending the name again would let an archive written
+	// before an object answer a name that object opens.
+	mut support := []string{}
 	// -nostdlib and -nodefaultlibs are read here and not at the archive pull: a
 	// link with no default libraries is one whose every library the command line
 	// named, so the C library's archives and the runtime archive are not inputs
 	// at all, and nothing is left for the pull to keep out.
 	if default_libraries(opts, target) {
 		if output_kind != .static_program && output_kind != .shared {
-			support << target.base_library_archives(opts.library_dirs)
+			for library in target.base_library_archives(opts.library_dirs) {
+				support << library.path
+			}
 		}
 		// The runtime archive is a program's. A shared object does not take it:
 		// its helper references are what the loader resolves from whatever maps
@@ -668,18 +740,8 @@ fn link_inputs(opts cli.Options) {
 		// archives it resolves against is written down.
 		if output_kind == .program {
 			if runtime := runtime_archive(opts, target) {
-				support << runtime
+				support << runtime.path
 			}
-		}
-	}
-	for file in support {
-		source := read_source(file.path) or {
-			abort('cannot read ${file.path}: ${err.msg()}')
-			return
-		}
-		archives << archive.read(source.bytes()) or {
-			abort('${file.path}: ${err.msg()}')
-			return
 		}
 	}
 	// A link that carries a constructor table is started by the C library's own
@@ -719,16 +781,20 @@ fn link_inputs(opts cli.Options) {
 		mut i := before.len
 		for i > 0 {
 			i--
-			units.prepend(read_unit(before[i], target) or {
+			start := read_unit(before[i], target) or {
 				abort('${before[i]}: ${err.msg()}')
 				return
-			})
+			}
+			note_unit(mut provided, mut needed, start)
+			units.prepend(start)
 		}
 		for path in after {
-			units << read_unit(path, target) or {
+			start := read_unit(path, target) or {
 				abort('${path}: ${err.msg()}')
 				return
 			}
+			note_unit(mut provided, mut needed, start)
+			units << start
 		}
 		// A static link resolves the library's own objects out of its archives, and
 		// static_support_libraries is where its list is written down. A link with
@@ -736,14 +802,7 @@ fn link_inputs(opts cli.Options) {
 		// inputs, and neither is a runtime archive.
 		if output_kind == .static_program && default_libraries(opts, target) {
 			for path in target.static_support_libraries(opts.library_dirs, runtime_library_name(opts)) {
-				source := read_source(path) or {
-					abort('cannot read ${path}: ${err.msg()}')
-					return
-				}
-				archives << archive.read(source.bytes()) or {
-					abort('${path}: ${err.msg()}')
-					return
-				}
+				support << path
 			}
 		}
 		entry = '_start'
@@ -761,6 +820,7 @@ fn link_inputs(opts cli.Options) {
 			exit(1)
 		}
 		units.prepend(stub.program)
+		note_unit(mut provided, mut needed, stub.program)
 		// The stub is the entry point, so crt1.o is the one start file this link
 		// leaves out. The rest go around the units the way they do a link that takes
 		// the C library's entry, and crtbegin.o is where __dso_handle is defined. A
@@ -778,44 +838,57 @@ fn link_inputs(opts cli.Options) {
 			mut i := before.len
 			for i > 0 {
 				i--
-				units.prepend(read_unit(before[i], target) or {
+				start := read_unit(before[i], target) or {
 					abort('${before[i]}: ${err.msg()}')
 					return
-				})
+				}
+				note_unit(mut provided, mut needed, start)
+				units.prepend(start)
 			}
 			for path in after {
-				units << read_unit(path, target) or {
+				start := read_unit(path, target) or {
 					abort('${path}: ${err.msg()}')
 					return
 				}
+				note_unit(mut provided, mut needed, start)
+				units << start
 			}
 		}
 	}
-	// An archive is pulled apart only for the names the link still needs. A
-	// member whose symbols nothing refers to stays where it is, the way a linker
-	// leaves it, so a library of many objects adds the ones the program asks
-	// for. The names already defined by a unit in the link are not needs, and
-	// the first unit is the stub, whose one import is the entry, so `main` is
-	// wanted from the start.
-	if archives.len > 0 {
-		mut provided := link_provides(units)
-		mut needed := link_needs(units)
-		pulled := pull_archives(archives, target, mut needed, mut provided) or {
-			abort(err.msg())
+	// The implicit archives are read now, after the command line's own words and
+	// after the start files: the names those files open are the ones the C
+	// library's archives were put there to answer. They are one group and are
+	// swept together, because the C library and the runtime reach into each
+	// other. A member whose symbols nothing refers to stays where it is, the
+	// way a linker leaves it, so a library of many objects adds the ones the
+	// program asks for.
+	mut support_parts := []archive.Archive{}
+	for path in support {
+		source := read_source(path) or {
+			abort('cannot read ${path}: ${err.msg()}')
 			return
 		}
-		// A constructor table that arrived with a member pulled out of an archive is
-		// one the program's own startup would have to walk, and this link is not
-		// started by the library: the stub calls `main` and leaves, so the constructor
-		// would be skipped in silence. Only the pulled members are asked, because the
-		// start files carry constructors of their own - crtbegin.o registers a frame -
-		// and those are the compiler's own startup rather than the program's.
-		if !reach && output_kind != .shared && has_constructors(pulled) {
-			abort('a member pulled out of an archive carries a constructor, and this link is not started by the C library: name the library with -l, or the constructor would never run')
+		support_parts << archive.read(source.bytes()) or {
+			abort('${path}: ${err.msg()}')
 			return
 		}
-		units << pulled
 	}
+	pulled << pull_group(support_parts, archive_count, target, mut needed, mut provided,
+		mut member_keys) or {
+		abort(err.msg())
+		return
+	}
+	// A constructor table that arrived with a member pulled out of an archive is
+	// one the program's own startup would have to walk, and this link is not
+	// started by the library: the stub calls `main` and leaves, so the constructor
+	// would be skipped in silence. Only the pulled members are asked, because the
+	// start files carry constructors of their own - crtbegin.o registers a frame -
+	// and those are the compiler's own startup rather than the program's.
+	if !reach && output_kind != .shared && has_constructors(pulled) {
+		abort('a member pulled out of an archive carries a constructor, and this link is not started by the C library: name the library with -l, or the constructor would never run')
+		return
+	}
+	units << pulled
 	mut started := time.now()
 	merged := linking.link(units, linking.Options{
 		entry:                entry
@@ -1284,6 +1357,28 @@ fn link_kind(opts cli.Options) linux.LinkKind {
 		return .static_program
 	}
 	return .program
+}
+
+// names_a_static_archive says whether a -l name the command line gave resolves
+// to a static archive. An archive is a link input this compiler has to read:
+// its members are pulled into the program, which only the link path does, and a
+// .c input is the object it produces at its own place on the line. A name that
+// resolves to nothing is left to the path that links to report by name, and a
+// name that resolves to a shared library is answered by the loader rather than
+// by this compiler.
+fn names_a_static_archive(opts cli.Options) bool {
+	if opts.libraries.len == 0 {
+		return false
+	}
+	target := backend.resolve(opts.target) or { return false }
+	dirs := target.library_dirs_for(opts.library_dirs)
+	for given in opts.libraries {
+		library := linux.resolve_library(given, dirs) or { continue }
+		if library.archive {
+			return true
+		}
+	}
+	return false
 }
 
 // external_link performs the final link with the program -external-linker named.
