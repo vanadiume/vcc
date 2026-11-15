@@ -151,11 +151,15 @@ pub fn (o Options) folds_builtin(name string) bool {
 	return name !in o.disabled
 }
 
-// Pass is one rewrite with the level that turns it on.
+// Pass is one rewrite with the level that turns it on. It is handed the arena
+// the unit's expressions sit in, because the nodes it builds are nodes of the
+// tree it hands back: a node built in an arena the caller never sees is a link
+// into nothing, and a node built in a copy of the arena is in an array that
+// stops growing the moment the pass returns.
 struct Pass {
 	name  string
 	min   Level
-	apply fn (unit ast.TranslationUnit, opts Options) ast.TranslationUnit @[required]
+	apply fn (unit ast.TranslationUnit, mut arena ast.Arena, opts Options) ast.TranslationUnit @[required]
 }
 
 // passes is the pipeline, in the order it runs. The only entry today folds a
@@ -171,11 +175,13 @@ const passes = [
 ]
 
 // Builtin is a library function the compiler knows the value of when its
-// argument is a constant. arity is checked before `apply` is called.
+// argument is a constant. arity is checked before `apply` is called, and the
+// arena is passed because an argument is read out of it: the value of a literal
+// is in its node and not in the eight bytes that point at it.
 struct Builtin {
 	name  string
 	arity int
-	apply fn (args []ast.Expr) ?i64 @[required]
+	apply fn (args []ast.Expr, arena &ast.Arena) ?i64 @[required]
 }
 
 // builtins is the table `fold-builtins` reads. The three abs spellings are the
@@ -237,12 +243,15 @@ pub fn pipeline(opts Options) []string {
 }
 
 // optimize runs the pipeline over a translation unit and returns the tree the
-// emitter gets.
+// emitter gets. Every pass writes into the arena of the unit it is handed and
+// hands it back with the tree, so the nodes a pass built are nodes the caller
+// reads: the arena is the unit's, and a pass that grew its own copy would leave
+// the links in the tree pointing into an array nothing holds any more.
 pub fn optimize(unit ast.TranslationUnit, opts Options) ast.TranslationUnit {
 	mut current := unit
 	for pass in passes {
 		if pass.min.rank() <= opts.level.rank() {
-			current = pass.apply(current, opts)
+			current = pass.apply(current, mut current.arena, opts)
 		}
 	}
 	return current
@@ -259,7 +268,7 @@ pub fn (o Options) summary() string {
 	return '${o.level.spelling()}: ${state}; ${builtins_state}'
 }
 
-fn fold_builtin_calls(unit ast.TranslationUnit, opts Options) ast.TranslationUnit {
+fn fold_builtin_calls(unit ast.TranslationUnit, mut arena ast.Arena, opts Options) ast.TranslationUnit {
 	mut decls := []ast.FnDecl{}
 	for decl in unit.decls {
 		// Every part of the declaration is carried over, because the pass
@@ -281,7 +290,7 @@ fn fold_builtin_calls(unit ast.TranslationUnit, opts Options) ast.TranslationUni
 			defined:  decl.defined
 			weak:     decl.weak
 			static_:  decl.static_
-			body:     rewrite_body(decl.body, opts)
+			body:     rewrite_body(decl.body, mut arena, opts)
 			nested:   decl.nested
 			owner:    decl.owner
 			line:     decl.line
@@ -292,10 +301,11 @@ fn fold_builtin_calls(unit ast.TranslationUnit, opts Options) ast.TranslationUni
 		decls:          decls
 		globals:        unit.globals
 		extern_objects: unit.extern_objects
+		arena:          arena
 	}
 }
 
-fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
+fn rewrite_body(body []ast.Stmt, mut arena ast.Arena, opts Options) []ast.Stmt {
 	mut out := []ast.Stmt{}
 	for stmt in body {
 		// Every expression a statement carries is rewritten, and the
@@ -304,19 +314,19 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 		// because the emitter reads them and decides nothing here: the member
 		// an assignment writes through and the operator a compound assignment
 		// was written with are as much a part of the statement as its value is.
-		mut expr := ?ast.Expr(none)
-		if value := stmt.expr {
-			expr = rewrite(value, opts, 0)
+		mut expr := stmt.expr
+		if !expr.is_none() {
+			expr = rewrite(expr, mut arena, opts, 0)
 		}
-		mut cond := ?ast.Expr(none)
-		if value := stmt.cond {
-			cond = rewrite(value, opts, 0)
+		mut cond := stmt.cond
+		if !cond.is_none() {
+			cond = rewrite(cond, mut arena, opts, 0)
 		}
 		// An element of an array is a place a value is read from as well as
 		// written to, so the subscript is rewritten like every other expression.
-		mut index := ?ast.Expr(none)
-		if value := stmt.index {
-			index = rewrite(value, opts, 0)
+		mut index := stmt.index
+		if !index.is_none() {
+			index = rewrite(index, mut arena, opts, 0)
 		}
 		// The expression an assignment writes through is a place as well as a
 		// value: `*p = v` reads the pointer, so a builtin call inside it is
@@ -331,30 +341,30 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 		// expression in it is shared with the statement that arrived.
 		mut extra := stmt.extra
 		if present := stmt.extra {
-			if present.init != none || present.deref != none || present.goto_expr != none
+			if !present.init.is_none() || !present.deref.is_none() || !present.goto_expr.is_none()
 				|| present.step.len > 0 || present.then_body.len > 0 || present.else_body.len > 0 {
 				mut init := present.init
-				if value := present.init {
-					init = rewrite(value, opts, 0)
+				if !init.is_none() {
+					init = rewrite(init, mut arena, opts, 0)
 				}
 				mut deref := present.deref
-				if value := present.deref {
-					deref = rewrite(value, opts, 0)
+				if !deref.is_none() {
+					deref = rewrite(deref, mut arena, opts, 0)
 				}
 				mut goto_expr := present.goto_expr
-				if value := present.goto_expr {
-					goto_expr = rewrite(value, opts, 0)
+				if !goto_expr.is_none() {
+					goto_expr = rewrite(goto_expr, mut arena, opts, 0)
 				}
-				extra = &ast.StmtExtra{
+				extra = arena.box_extra(ast.StmtExtra{
 					resolved:        present.resolved
 					decl_name:       present.decl_name
 					decl_type:       present.decl_type
 					decl_count:      present.decl_count
 					init:            init
 					compound:        present.compound
-					step:            rewrite_body(present.step, opts)
-					then_body:       rewrite_body(present.then_body, opts)
-					else_body:       rewrite_body(present.else_body, opts)
+					step:            rewrite_body(present.step, mut arena, opts)
+					then_body:       rewrite_body(present.then_body, mut arena, opts)
+					else_body:       rewrite_body(present.else_body, mut arena, opts)
 					bytes:           present.bytes
 					decl_vla_size:   present.decl_vla_size
 					decl_stride:     present.decl_stride
@@ -370,7 +380,7 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 					static_:         present.static_
 					storage_name:    present.storage_name
 					nested_fn:       present.nested_fn
-				}
+				})
 			}
 		}
 		out << ast.Stmt{
@@ -381,7 +391,7 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 			field:  stmt.field
 			extra:  extra
 			cond:   cond
-			body:   rewrite_body(stmt.body, opts)
+			body:   rewrite_body(stmt.body, mut arena, opts)
 			line:   stmt.line
 			col:    stmt.col
 		}
@@ -394,18 +404,22 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 // loop rather than with recursion: a chain of ten thousand terms is one level
 // deep in the grammar and ten thousand nodes deep in the tree, and recursing
 // over it is a stack overflow rather than an optimization.
-fn rewrite(expr ast.Expr, opts Options, depth int) ast.Expr {
+//
+// A node is read out of the arena into a copy before its children are rewritten,
+// because building a node of the same shape moves the array the node came from:
+// a payload pointer is good until the next put_* for its shape.
+fn rewrite(expr ast.Expr, mut arena ast.Arena, opts Options, depth int) ast.Expr {
 	if depth > max_rewrite_depth {
 		return expr
 	}
 	mut spine := []ast.Binary{}
 	mut node := expr
-	for node is ast.Binary {
-		binary := node as ast.Binary
+	for node.kind == .binary {
+		binary := *arena.binary(node)
 		spine << binary
 		node = binary.left
 	}
-	mut rebuilt := rewrite_leaf(node, opts, depth + 1)
+	mut rebuilt := rewrite_leaf(node, mut arena, opts, depth + 1)
 	for i := spine.len - 1; i >= 0; i-- {
 		binary := spine[i]
 		// The step's own type travels with it. The emitter sizes an operand by
@@ -413,10 +427,10 @@ fn rewrite(expr ast.Expr, opts Options, depth int) ast.Expr {
 		// one is an operand of unknown width: `x & (x - 1)` over two
 		// unsigned long longs is then refused as a bitwise operation on a
 		// pointer at -O1 and up while it compiles at -O0.
-		rebuilt = ast.Expr(ast.Binary{
+		rebuilt = arena.put_binary(ast.Binary{
 			op:    binary.op
 			left:  rebuilt
-			right: rewrite_leaf(binary.right, opts, depth + 1)
+			right: rewrite_leaf(binary.right, mut arena, opts, depth + 1)
 			typ:   binary.typ
 			line:  binary.line
 			col:   binary.col
@@ -425,130 +439,141 @@ fn rewrite(expr ast.Expr, opts Options, depth int) ast.Expr {
 	return rebuilt
 }
 
-fn rewrite_leaf(expr ast.Expr, opts Options, depth int) ast.Expr {
-	match expr {
-		ast.IntLit {
+fn rewrite_leaf(expr ast.Expr, mut arena ast.Arena, opts Options, depth int) ast.Expr {
+	match expr.kind {
+		.int_lit {
 			return expr
 		}
-		ast.FloatLit {
+		.float_lit {
 			// A floating constant is a value nothing in this file changes, like
 			// the integer one beside it.
 			return expr
 		}
-		ast.ComplexLit {
+		.complex_lit {
 			// An imaginary constant is a value too, and one no pass here folds:
 			// its two components are written at emission, so there is nothing
 			// for this file to compute.
 			return expr
 		}
-		ast.Ident {
+		.ident {
 			return expr
 		}
-		ast.StrLit {
+		.str_lit {
 			return expr
 		}
-		ast.Field {
+		.field {
 			// A member of an object is a place a value is read from, at an
 			// offset the reader worked out from the layout. There is no
-			// expression inside it to rewrite, so it is returned as it is.
+			// expression inside it to rewrite, so it is returned as it is: the
+			// node it points at is in the arena and is not built again here.
 			return expr
 		}
-		ast.Index {
+		.index {
 			// An element is a place a value is read from, and both the base
 			// and the expression that says which element are rewritten like
 			// any other. The node's own type and its run-time stride are not
 			// decided here and travel with it: the emitter sizes the element
 			// from the one and steps an array whose element size it cannot
 			// fold by the other.
-			return ast.Expr(ast.Index{
-				base:       rewrite(expr.base, opts, depth + 1)
-				index:      rewrite(expr.index, opts, depth + 1)
-				typ:        expr.typ
-				vla_stride: expr.vla_stride
-				line:       expr.line
-				col:        expr.col
+			node := *arena.index(expr)
+			return arena.put_index(ast.Index{
+				base:       rewrite(node.base, mut arena, opts, depth + 1)
+				index:      rewrite(node.index, mut arena, opts, depth + 1)
+				typ:        node.typ
+				vla_stride: node.vla_stride
+				line:       node.line
+				col:        node.col
 			})
 		}
-		ast.Binary {
-			return rewrite(expr, opts, depth + 1)
+		.binary {
+			return rewrite(expr, mut arena, opts, depth + 1)
 		}
-		ast.Unary {
-			return ast.Expr(ast.Unary{
-				op:   expr.op
-				expr: rewrite(expr.expr, opts, depth + 1)
-				typ:  expr.typ
-				line: expr.line
-				col:  expr.col
+		.unary {
+			node := *arena.unary(expr)
+			return arena.put_unary(ast.Unary{
+				op:   node.op
+				expr: rewrite(node.expr, mut arena, opts, depth + 1)
+				typ:  node.typ
+				line: node.line
+				col:  node.col
 			})
 		}
-		ast.Cast {
+		.cast {
 			// A conversion is not a call to a builtin, so the only thing inside
 			// it to rewrite is its operand. The clause travels with it: what the
 			// node is worth is the type converted to, and nothing in the operand
 			// says which conversion this is.
-			return ast.Expr(ast.Cast{
-				spelling: expr.spelling
-				expr:     rewrite(expr.expr, opts, depth + 1)
-				typ:      expr.typ
-				line:     expr.line
-				col:      expr.col
+			node := *arena.cast(expr)
+			return arena.put_cast(ast.Cast{
+				spelling: node.spelling
+				expr:     rewrite(node.expr, mut arena, opts, depth + 1)
+				typ:      node.typ
+				line:     node.line
+				col:      node.col
 			})
 		}
-		ast.Call {
+		.call {
 			// The arguments are rewritten first, so `abs(abs(-3))` folds the
 			// inner call and then has a constant to work with.
+			node := *arena.call(expr)
 			rewritten := ast.Call{
-				name:   expr.name
+				name:   node.name
 				// A callee that is an expression travels with the call: the
 				// rewrite changes the arguments, not what the call calls.
-				callee: expr.callee
-				args:   rewrite_arguments(expr.args, opts, depth + 1)
+				callee: node.callee
+				args:   rewrite_arguments(node.args, mut arena, opts, depth + 1)
 				// The type the reader resolved onto the call is the width its
 				// value has when the unit declares no return type for the name,
 				// so it travels with the call rather than being looked up again.
-				typ:    expr.typ
-				line:   expr.line
-				col:    expr.col
+				typ:    node.typ
+				line:   node.line
+				col:    node.col
 			}
-			return fold_call(rewritten, opts) or { ast.Expr(rewritten) }
+			if folded := fold_call(rewritten, mut arena, opts) {
+				return folded
+			}
+			return arena.put_call(rewritten)
 		}
-		ast.IncDec {
+		.inc_dec {
 			// The operand is an object, and an object holds no call to a
 			// builtin - but its own subexpressions still come through here.
-			return ast.Expr(ast.IncDec{
-				op:      expr.op
-				operand: rewrite(expr.operand, opts, depth + 1)
-				postfix: expr.postfix
-				typ:     expr.typ
-				line:    expr.line
-				col:     expr.col
+			node := *arena.inc_dec(expr)
+			return arena.put_inc_dec(ast.IncDec{
+				op:      node.op
+				operand: rewrite(node.operand, mut arena, opts, depth + 1)
+				postfix: node.postfix
+				typ:     node.typ
+				line:    node.line
+				col:     node.col
 			})
 		}
-		ast.Assign {
+		.assign {
 			// Both operands are rewritten, and the clause travels with the
 			// node: what the assignment is worth is the type of the object
 			// written, which is what the reader resolved.
-			return ast.Expr(ast.Assign{
-				op:     expr.op
-				target: rewrite(expr.target, opts, depth + 1)
-				value:  rewrite(expr.value, opts, depth + 1)
-				typ:    expr.typ
-				line:   expr.line
-				col:    expr.col
+			node := *arena.assign(expr)
+			return arena.put_assign(ast.Assign{
+				op:     node.op
+				target: rewrite(node.target, mut arena, opts, depth + 1)
+				value:  rewrite(node.value, mut arena, opts, depth + 1)
+				typ:    node.typ
+				line:   node.line
+				col:    node.col
 			})
 		}
-		ast.Comma {
+		.comma {
 			// The left operand is evaluated for what it does and the value is
 			// the right one's, whose type the node carries.
-			return ast.Expr(ast.Comma{
-				left:  rewrite(expr.left, opts, depth + 1)
-				right: rewrite(expr.right, opts, depth + 1)
-				typ:   expr.typ
-				line:  expr.line
-				col:   expr.col
+			node := *arena.comma(expr)
+			return arena.put_comma(ast.Comma{
+				left:  rewrite(node.left, mut arena, opts, depth + 1)
+				right: rewrite(node.right, mut arena, opts, depth + 1)
+				typ:   node.typ
+				line:  node.line
+				col:   node.col
 			})
 		}
-		ast.Conditional {
+		.conditional {
 			// All three operands are rewritten: a builtin call can sit in the
 			// condition as much as in either arm. The clause travels with the
 			// node, since which arm runs does not change the type they share.
@@ -556,39 +581,46 @@ fn rewrite_leaf(expr ast.Expr, opts Options, depth int) ast.Expr {
 			// the middle operand separately would lose the fact that the source
 			// wrote only one of them, and the emitter needs it to evaluate the
 			// condition once.
-			return ast.Expr(ast.Conditional{
-				cond:           rewrite(expr.cond, opts, depth + 1)
-				then_expr:      rewrite(expr.then_expr, opts, depth + 1)
-				else_expr:      rewrite(expr.else_expr, opts, depth + 1)
-				typ:            expr.typ
-				omitted_middle: expr.omitted_middle
-				line:           expr.line
-				col:            expr.col
+			node := *arena.conditional(expr)
+			return arena.put_conditional(ast.Conditional{
+				cond:           rewrite(node.cond, mut arena, opts, depth + 1)
+				then_expr:      rewrite(node.then_expr, mut arena, opts, depth + 1)
+				else_expr:      rewrite(node.else_expr, mut arena, opts, depth + 1)
+				typ:            node.typ
+				omitted_middle: node.omitted_middle
+				line:           node.line
+				col:            node.col
 			})
 		}
-		ast.StmtExpr {
+		.stmt_expr {
 			// The statements run in order and the value is the last
 			// expression statement's, so both halves are rewritten: a builtin
 			// call can sit in either. The clause travels with the node.
-			mut value := ?ast.Expr(none)
-			if present := expr.value {
-				value = rewrite(present, opts, depth + 1)
+			node := *arena.stmt_expr(expr)
+			mut value := node.value
+			if !value.is_none() {
+				value = rewrite(value, mut arena, opts, depth + 1)
 			}
-			return ast.Expr(ast.StmtExpr{
-				body:  rewrite_body(expr.body, opts)
+			return arena.put_stmt_expr(ast.StmtExpr{
+				body:  rewrite_body(node.body, mut arena, opts)
 				value: value
-				typ:   expr.typ
-				line:  expr.line
-				col:   expr.col
+				typ:   node.typ
+				line:  node.line
+				col:   node.col
 			})
+		}
+		.none {
+			// An absent expression has no node behind it and nothing inside it
+			// to rewrite.
+			return expr
 		}
 	}
 }
 
-fn rewrite_arguments(args []ast.Expr, opts Options, depth int) []ast.Expr {
+fn rewrite_arguments(args []ast.Expr, mut arena ast.Arena, opts Options, depth int) []ast.Expr {
 	mut out := []ast.Expr{}
 	for arg in args {
-		out << rewrite(arg, opts, depth)
+		out << rewrite(arg, mut arena, opts, depth)
 	}
 	return out
 }
@@ -597,7 +629,7 @@ fn rewrite_arguments(args []ast.Expr, opts Options, depth int) []ast.Expr {
 // stays in the tree and the emitter reports it. A name that is not in the table,
 // an argument count that does not match, an argument that is not a constant, and
 // a name the command line turned off all end the same way: leave it alone.
-fn fold_call(call ast.Call, opts Options) ?ast.Expr {
+fn fold_call(call ast.Call, mut arena ast.Arena, opts Options) ?ast.Expr {
 	if !opts.folds_builtin(call.name) {
 		return none
 	}
@@ -608,13 +640,13 @@ fn fold_call(call ast.Call, opts Options) ?ast.Expr {
 		if call.args.len != builtin.arity {
 			return none
 		}
-		value := builtin.apply(call.args) or { return none }
+		value := builtin.apply(call.args, arena) or { return none }
 		// The literal is the call's value and carries the call's type. A literal
 		// built without one is a constant the emitter sizes as an int, which
 		// refuses `x & llabs(-0x100000001)` at -O1 and up: a wide value has no
 		// type to be written at, so the program is refused where the call at
 		// -O0 compiles.
-		return ast.Expr(ast.IntLit{
+		return arena.put_int_lit(ast.IntLit{
 			value: value
 			text:  '${value}'
 			typ:   call.typ
@@ -629,17 +661,18 @@ fn fold_call(call ast.Call, opts Options) ?ast.Expr {
 // with a sign or a complement in front of it. Folding `abs(1 + 2)` would mean a
 // constant expression evaluator here, and the emitter already has one; until the
 // two are one function, a builtin's argument has to be written out.
-fn constant_of(expr ast.Expr, depth int) ?i64 {
+fn constant_of(expr ast.Expr, arena &ast.Arena, depth int) ?i64 {
 	if depth > 8 {
 		return none
 	}
-	match expr {
-		ast.IntLit {
-			return expr.value
+	match expr.kind {
+		.int_lit {
+			return arena.int_lit(expr).value
 		}
-		ast.Unary {
-			operand := constant_of(expr.expr, depth + 1) or { return none }
-			return match expr.op {
+		.unary {
+			node := *arena.unary(expr)
+			operand := constant_of(node.expr, arena, depth + 1) or { return none }
+			return match node.op {
 				'-' { wrap_sub(0, operand) }
 				'+' { operand }
 				'~' { ~operand }
@@ -652,8 +685,8 @@ fn constant_of(expr ast.Expr, depth int) ?i64 {
 	}
 }
 
-fn absolute_value(args []ast.Expr) ?i64 {
-	value := constant_of(args[0], 0) or { return none }
+fn absolute_value(args []ast.Expr, arena &ast.Arena) ?i64 {
+	value := constant_of(args[0], arena, 0) or { return none }
 	if value < 0 {
 		// The one value with no positive counterpart wraps to itself, which is
 		// what the emitter's arithmetic does with it too.

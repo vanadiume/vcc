@@ -151,9 +151,10 @@ fn (mut e Emitter) store_decimal_slot_value(slot Slot, width int, line int, col 
 // the encoding gives it are read out of the image into the decimal accumulator.
 // A sixteen-byte constant is two consecutive eight-byte entries, one per word of
 // the pair, because each instruction that reads one names a whole entry.
-fn (mut e Emitter) emit_decimal_constant(expr ast.FloatLit, line int, col int) !void {
-	bytes := decimal_constant_bytes(expr) or {
-		e.diagnostics << problem(line, col, 'unsupported: the decimal constant ${expr.text} is a ${expr.typ.describe()} this back end cannot materialize as a value')
+fn (mut e Emitter) emit_decimal_constant(expr ast.Expr, line int, col int) !void {
+	node := e.unit.arena.float_lit(expr)
+	bytes := e.decimal_constant_bytes(expr) or {
+		e.diagnostics << problem(line, col, 'unsupported: the decimal constant ${node.text} is a ${node.typ.describe()} this back end cannot materialize as a value')
 		return error('decimal constant')
 	}
 	low := e.float_accumulator(line, col)!
@@ -193,18 +194,18 @@ fn (mut e Emitter) emit_decimal_constant(expr ast.FloatLit, line int, col int) !
 // stores; anything else has to be a value of the same decimal type, read into
 // the floating accumulator and stored at the object's own width.
 fn (mut e Emitter) store_decimal_value(slot Slot, expr ast.Expr, line int, col int, depth int) !void {
-	if bytes := decimal_constant_bytes(expr) {
+	if bytes := e.decimal_constant_bytes(expr) {
 		if bytes.len == slot.width {
 			return e.put_decimal_bytes(slot, bytes, line, col)
 		}
 	}
-	if !expr.typ.kind.is_decimal() {
-		name := expr.typ.describe()
+	if !e.expr_type(expr).kind.is_decimal() {
+		name := e.expr_type(expr).describe()
 		e.diagnostics << problem(line, col, 'unsupported: an object of a decimal type is initialized here, and only a constant of its own width or a value of the same decimal type belongs in one; this back end has no form for a ${name} initializer')
 		return error('decimal initializer')
 	}
-	if decimal_width_of(expr.typ) != slot.width {
-		e.diagnostics << problem(line, col, 'unsupported: a value of ${expr.typ.describe()} is stored in an object of a different decimal width')
+	if decimal_width_of(e.expr_type(expr)) != slot.width {
+		e.diagnostics << problem(line, col, 'unsupported: a value of ${e.expr_type(expr).describe()} is stored in an object of a different decimal width')
 		return error('decimal width mismatch')
 	}
 	e.emit_expr_at(expr, depth + 1)!
@@ -225,8 +226,8 @@ fn (mut e Emitter) assign_decimal_local(slot Slot, expr ast.Expr, line int, col 
 // the argument's own type is the answer because no default argument promotion
 // applies to a decimal (measured on gcc 16.2.1, which passes the raw payload).
 fn (e Emitter) decimal_argument_width(call ast.Call, position int, arg ast.Expr) ?int {
-	if call.callee != none {
-		if parameter := call_parameter(call, position) {
+	if !call.callee.is_none() {
+		if parameter := e.call_parameter(call, position) {
 			if parameter.kind.is_decimal() {
 				return decimal_width_of(parameter)
 			}
@@ -240,8 +241,8 @@ fn (e Emitter) decimal_argument_width(call ast.Call, position int, arg ast.Expr)
 			return none
 		}
 	}
-	if arg.typ.kind.is_decimal() {
-		return decimal_width_of(arg.typ)
+	if e.expr_type(arg).kind.is_decimal() {
+		return decimal_width_of(e.expr_type(arg))
 	}
 	return none
 }
@@ -253,12 +254,12 @@ fn (e Emitter) decimal_argument_width(call ast.Call, position int, arg ast.Expr)
 // other type is refused by name rather than written with the bits of whatever
 // the accumulator held.
 fn (mut e Emitter) store_decimal_through_address(address Slot, expr ast.Expr, width int, line int, col int, depth int) !void {
-	if !expr.typ.kind.is_decimal() {
-		e.diagnostics << problem(line, col, 'unsupported: a ${expr.typ.describe()} is stored in a decimal object, and this back end has no conversion from it')
+	if !e.expr_type(expr).kind.is_decimal() {
+		e.diagnostics << problem(line, col, 'unsupported: a ${e.expr_type(expr).describe()} is stored in a decimal object, and this back end has no conversion from it')
 		return error('decimal store')
 	}
-	if decimal_width_of(expr.typ) != width {
-		e.diagnostics << problem(line, col, 'unsupported: a value of ${expr.typ.describe()} is stored in a decimal object of a different width')
+	if decimal_width_of(e.expr_type(expr)) != width {
+		e.diagnostics << problem(line, col, 'unsupported: a value of ${e.expr_type(expr).describe()} is stored in a decimal object of a different width')
 		return error('decimal store width')
 	}
 	e.emit_expr_at(expr, depth + 1)!

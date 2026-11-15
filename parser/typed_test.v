@@ -31,6 +31,14 @@ fn first(source string) ast.FnDecl {
 	return result.unit.decls[0]
 }
 
+// first_unit is the translation unit the source reads into: its arena travels
+// with it, which is what reading a node's payload needs.
+fn first_unit(source string) ast.TranslationUnit {
+	result := checked(source)
+	assert result.unit.decls.len == 1
+	return result.unit
+}
+
 // 6.3.1.7 is the conversion of a complex value into a real type, and the tree
 // carries it as the node `__real__` already is: the real part at the component's
 // own type. What the emitter is handed is therefore a real value, and no second
@@ -39,29 +47,33 @@ fn first(source string) ast.FnDecl {
 fn test_a_complex_value_converted_to_a_real_type_carries_its_real_part() {
 	result := checked('int main(void) { double _Complex z = 3.0 + 4.0i; double d = z; _Bool b = z; if (b) { return 0; } return (int)d; }')
 	decl := result.unit.decls[0]
-	initializer := decl.body[1].initializer() or {
+	initializer := decl.body[1].initializer()
+	if initializer.is_none() {
 		assert false
 		return
 	}
-	part := initializer as ast.Unary
+	part := result.unit.arena.unary(initializer)
 	assert part.op == '__real__'
 	assert part.typ.same(types.double_type())
 	// The comparison a `_Bool` conversion is worth is a `!=` against zero, and
 	// its type is the int a comparison has.
-	boolean := decl.body[2].initializer() or {
+	boolean := decl.body[2].initializer()
+	if boolean.is_none() {
 		assert false
 		return
 	}
-	comparison := boolean as ast.Binary
+	comparison := result.unit.arena.binary(boolean)
 	assert comparison.op == '!='
 	assert comparison.typ.same(types.int_type())
 	// A return converts into the function's own return type, which the reader
 	// knows while it reads the body.
-	returned := first('int f(double _Complex z) { return z; }').body[0].expr or {
+	converted := first_unit('int f(double _Complex z) { return z; }')
+	returned := converted.decls[0].body[0].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	assert (returned as ast.Unary).op == '__real__'
+	assert converted.arena.unary(returned).op == '__real__'
 }
 
 fn test_a_definition_carries_its_return_type_and_its_function_type() {
@@ -81,20 +93,21 @@ fn test_a_definition_carries_its_return_type_and_its_function_type() {
 }
 
 fn test_a_parameter_is_declared_in_the_body_it_belongs_to() {
-	decl := first('int add(int a, int b) { return a + b; }')
-	body := decl.body
+	unit := first_unit('int add(int a, int b) { return a + b; }')
+	body := unit.decls[0].body
 	assert body.len == 1
-	returned := body[0].expr or {
+	returned := body[0].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	sum := returned as ast.Binary
+	sum := unit.arena.binary(returned)
 	assert sum.op == '+'
 	assert sum.typ.same(types.int_type())
-	left := sum.left as ast.Ident
+	left := unit.arena.ident(sum.left)
 	assert left.name == 'a'
 	assert left.typ.same(types.int_type())
-	right := sum.right as ast.Ident
+	right := unit.arena.ident(sum.right)
 	assert right.name == 'b'
 	assert right.typ.same(types.int_type())
 }
@@ -110,14 +123,15 @@ fn test_a_local_declaration_carries_the_type_it_declared() {
 	assert body[1].decl_name() == 'c'
 	assert body[1].resolved().same(types.char_type())
 	// `x + c` converts both to int, and neither operand keeps its own type.
-	returned := body[2].expr or {
+	returned := body[2].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	sum := returned as ast.Binary
+	sum := result.unit.arena.binary(returned)
 	assert sum.typ.same(types.int_type())
-	assert (sum.left as ast.Ident).typ.same(types.int_type())
-	assert (sum.right as ast.Ident).typ.same(types.char_type())
+	assert result.unit.arena.ident(sum.left).typ.same(types.int_type())
+	assert result.unit.arena.ident(sum.right).typ.same(types.char_type())
 }
 
 // A cast in one declarator's initializer names its own type and not the
@@ -138,11 +152,12 @@ fn test_a_declarator_after_a_cast_initializer_keeps_the_declared_type() {
 	assert body[3].decl_name() == 'lb'
 	assert body[3].resolved().same(types.unsigned_long_type())
 	// The cast inside la's initializer is still the conversion it names.
-	la_initializer := body[2].initializer() or {
+	la_initializer := body[2].initializer()
+	if la_initializer.is_none() {
 		assert false
 		return
 	}
-	assert (la_initializer as ast.Cast).typ.same(types.unsigned_int_type())
+	assert result.unit.arena.cast(la_initializer).typ.same(types.unsigned_int_type())
 }
 
 fn test_an_inner_declaration_hides_an_outer_one_and_the_outer_one_comes_back() {
@@ -156,11 +171,12 @@ fn test_an_inner_declaration_hides_an_outer_one_and_the_outer_one_comes_back() {
 	assert inner.body.len == 1
 	assert inner.body[0].decl_name() == 'x'
 	assert inner.body[0].resolved().same(types.char_type())
-	returned := body[2].expr or {
+	returned := body[2].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	assert (returned as ast.Ident).typ.same(types.int_type())
+	assert result.unit.arena.ident(returned).typ.same(types.int_type())
 }
 
 fn test_a_declaration_reads_the_names_declared_before_it() {
@@ -170,23 +186,25 @@ fn test_a_declaration_reads_the_names_declared_before_it() {
 	// compilable at all: a name nothing in the file declares is refused once the
 	// unit has been read.
 	result := checked('int main() { return later; }\nint later;')
-	returned := result.unit.decls[0].body[0].expr or {
+	returned := result.unit.decls[0].body[0].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	assert (returned as ast.Ident).typ.kind == .unknown
+	assert result.unit.arena.ident(returned).typ.kind == .unknown
 }
 
 fn test_the_type_of_an_expression_is_the_type_its_operators_give_it() {
 	result := checked('int main() { return -1 + 2 * 3; }')
-	returned := result.unit.decls[0].body[0].expr or {
+	returned := result.unit.decls[0].body[0].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	sum := returned as ast.Binary
+	sum := result.unit.arena.binary(returned)
 	assert sum.op == '+'
 	assert sum.typ.same(types.int_type())
-	negative := sum.left as ast.Unary
+	negative := result.unit.arena.unary(sum.left)
 	assert negative.op == '-'
 	assert negative.typ.same(types.int_type())
 }
@@ -199,38 +217,43 @@ fn test_a_constant_is_typed_by_the_widths_the_description_carries() {
 	// them. 4294967296 needs a long, whose width the description carries now
 	// that the back end has a value of that width, so the constant is a long.
 	small := checked('int main() { return 42; }')
-	small_lit := small.unit.decls[0].body[0].expr or {
+	small_lit := small.unit.decls[0].body[0].expr
+	if small_lit.is_none() {
 		assert false
 		return
 	}
-	assert (small_lit as ast.IntLit).typ.same(types.int_type())
+	assert small.unit.arena.int_lit(small_lit).typ.same(types.int_type())
 	wide := checked('int main() { return 0xffffffff; }')
-	wide_lit := wide.unit.decls[0].body[0].expr or {
+	wide_lit := wide.unit.decls[0].body[0].expr
+	if wide_lit.is_none() {
 		assert false
 		return
 	}
-	assert (wide_lit as ast.IntLit).typ.same(types.unsigned_int_type())
+	assert wide.unit.arena.int_lit(wide_lit).typ.same(types.unsigned_int_type())
 	big := checked('int main() { return 100000; }')
-	big_lit := big.unit.decls[0].body[0].expr or {
+	big_lit := big.unit.decls[0].body[0].expr
+	if big_lit.is_none() {
 		assert false
 		return
 	}
-	assert (big_lit as ast.IntLit).typ.same(types.int_type())
+	assert big.unit.arena.int_lit(big_lit).typ.same(types.int_type())
 	// 4294967296 is the first value a four-byte int cannot hold, and `sizeof(long)`
 	// is 8 on this target, measured, so it is a long. `LL` names the same width
 	// and the answer is a long long.
 	long_one := checked('int main() { return 4294967296; }')
-	long_lit := long_one.unit.decls[0].body[0].expr or {
+	long_lit := long_one.unit.decls[0].body[0].expr
+	if long_lit.is_none() {
 		assert false
 		return
 	}
-	assert (long_lit as ast.IntLit).typ.same(types.long_type())
+	assert long_one.unit.arena.int_lit(long_lit).typ.same(types.long_type())
 	suffixed := checked('int main() { return 4294967296LL; }')
-	suffixed_lit := suffixed.unit.decls[0].body[0].expr or {
+	suffixed_lit := suffixed.unit.decls[0].body[0].expr
+	if suffixed_lit.is_none() {
 		assert false
 		return
 	}
-	assert (suffixed_lit as ast.IntLit).typ.same(types.long_long_type())
+	assert suffixed.unit.arena.int_lit(suffixed_lit).typ.same(types.long_long_type())
 	// A decimal constant with no unsigned suffix that fits no signed type is
 	// accepted as `unsigned long long`, the extension gcc performs with the
 	// warning `integer constant is so large that it is unsigned`. The node keeps
@@ -238,12 +261,13 @@ fn test_a_constant_is_typed_by_the_widths_the_description_carries() {
 	// is -1, and that is the value the back end writes at the width the type
 	// names.
 	past := checked('int main() { return 18446744073709551615; }')
-	past_lit := past.unit.decls[0].body[0].expr or {
+	past_lit := past.unit.decls[0].body[0].expr
+	if past_lit.is_none() {
 		assert false
 		return
 	}
-	assert (past_lit as ast.IntLit).typ.same(types.unsigned_long_long_type())
-	assert (past_lit as ast.IntLit).value == -1
+	assert past.unit.arena.int_lit(past_lit).typ.same(types.unsigned_long_long_type())
+	assert past.unit.arena.int_lit(past_lit).value == -1
 }
 
 fn test_sizeof_answers_a_value_and_a_type_where_it_was_refused_by_name() {
@@ -259,11 +283,12 @@ fn test_sizeof_answers_a_value_and_a_type_where_it_was_refused_by_name() {
 	] {
 		result := parsed(source)
 		assert result.diagnostics.len == 0
-		expr := result.unit.decls[0].body[1].expr or {
+		expr := result.unit.decls[0].body[1].expr
+		if expr.is_none() {
 			assert false
 			return
 		}
-		answer := expr as ast.IntLit
+		answer := result.unit.arena.int_lit(expr)
 		assert answer.value == 16
 		assert answer.typ.describe() == 'unsigned long'
 		assert answer.line == 1
@@ -272,11 +297,12 @@ fn test_sizeof_answers_a_value_and_a_type_where_it_was_refused_by_name() {
 	// the declaration after it is read as it always was.
 	after := parsed('int main() { int x = sizeof(int); return x; }')
 	assert after.diagnostics.len == 0
-	initializer := after.unit.decls[0].body[0].initializer() or {
+	initializer := after.unit.decls[0].body[0].initializer()
+	if initializer.is_none() {
 		assert false
 		return
 	}
-	assert (initializer as ast.IntLit).value == 4
+	assert after.unit.arena.int_lit(initializer).value == 4
 	assert after.unit.decls.len == 1
 }
 
@@ -311,11 +337,12 @@ fn test_a_static_function_nothing_names_is_stepped_over() {
 
 fn test_a_read_through_an_address_is_typed_as_what_it_points_at() {
 	result := checked('int main() { char *p = (char *)0; return *p; }')
-	returned := result.unit.decls[0].body[1].expr or {
+	returned := result.unit.decls[0].body[1].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	read := returned as ast.Unary
+	read := result.unit.arena.unary(returned)
 	assert read.op == '*'
 	assert read.typ.describe() == 'char'
 	// An operand that is not an address has no value at it, so it is refused by
@@ -326,11 +353,12 @@ fn test_a_read_through_an_address_is_typed_as_what_it_points_at() {
 	assert refused.diagnostics.len == 1
 	assert refused.diagnostics[0].msg.contains('reads through an address')
 	discarded := checked('int main() { void *p = (void *)0; *(void *)p; return 0; }')
-	read_through_void := discarded.unit.decls[0].body[1].expr or {
+	read_through_void := discarded.unit.decls[0].body[1].expr
+	if read_through_void.is_none() {
 		assert false
 		return
 	}
-	read_void := read_through_void as ast.Unary
+	read_void := discarded.unit.arena.unary(read_through_void)
 	assert read_void.op == '*'
 	assert read_void.typ.is_void()
 }
@@ -343,27 +371,29 @@ fn test_a_read_through_an_address_is_typed_as_what_it_points_at() {
 // where a value is wanted instead of a refusal.
 fn test_a_read_through_a_function_designator_is_the_designator() {
 	result := checked('static int f(void) { return 7; } int main(void) { int (*p)(void) = *f; return p(); }')
-	initializer := result.unit.decls[1].body[0].initializer() or {
+	initializer := result.unit.decls[1].body[0].initializer()
+	if initializer.is_none() {
 		assert false
 		return
 	}
-	read := initializer as ast.Unary
+	read := result.unit.arena.unary(initializer)
 	assert read.op == '*'
 	assert read.typ.is_function()
 	assert read.typ.describe() == 'int (void)'
 	// The operand is the designator itself and stays the function type: the
 	// decay to a pointer happens where the value is wanted, not here.
-	designator := read.expr as ast.Ident
+	designator := result.unit.arena.ident(read.expr)
 	assert designator.name == 'f'
 	assert designator.typ.is_function()
 	// The array case is unchanged: `*a` for an array is the element, and the
 	// address of an object is the ordinary read the clause has always covered.
 	elements := checked('int main(void) { int a[4]; return *a; }')
-	element := elements.unit.decls[0].body[1].expr or {
+	element := elements.unit.decls[0].body[1].expr
+	if element.is_none() {
 		assert false
 		return
 	}
-	element_read := element as ast.Unary
+	element_read := elements.unit.arena.unary(element)
 	assert element_read.op == '*'
 	assert element_read.typ.same(types.int_type())
 	// `*` is not made lax by this: an operand that is neither an array, a
@@ -379,37 +409,40 @@ fn test_a_cast_is_read_as_a_conversion_to_the_type_it_names() {
 	// written, which is what a refusal has to be able to quote.
 	result := checked('int main() { char *p = (char *)0; return (int)p; }')
 	assert result.diagnostics.len == 0
-	initializer := result.unit.decls[0].body[0].initializer() or {
+	initializer := result.unit.decls[0].body[0].initializer()
+	if initializer.is_none() {
 		assert false
 		return
 	}
-	conversion := initializer as ast.Cast
+	conversion := result.unit.arena.cast(initializer)
 	assert conversion.spelling == 'char *'
 	assert conversion.typ.describe() == 'char *'
 	assert conversion.line == 1
-	assert (conversion.expr as ast.IntLit).value == 0
+	assert result.unit.arena.int_lit(conversion.expr).value == 0
 	// The other direction, and the operand is read as the unary expression the
 	// grammar says it is.
-	returned := result.unit.decls[0].body[1].expr or {
+	returned := result.unit.decls[0].body[1].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	second := returned as ast.Cast
+	second := result.unit.arena.cast(returned)
 	assert second.spelling == 'int'
 	assert second.typ.describe() == 'int'
-	assert (second.expr as ast.Ident).name == 'p'
+	assert result.unit.arena.ident(second.expr).name == 'p'
 	// A conversion to void is a void expression rather than a refusal: 6.5.4
 	// lets a cast name void, and the node carries the void type the way a value
 	// conversion carries its type.
 	discarded := checked('int main() { int x = 3; (void)x; return 0; }')
-	to_void := discarded.unit.decls[0].body[1].expr or {
+	to_void := discarded.unit.decls[0].body[1].expr
+	if to_void.is_none() {
 		assert false
 		return
 	}
-	cast_to_void := to_void as ast.Cast
+	cast_to_void := discarded.unit.arena.cast(to_void)
 	assert cast_to_void.spelling == 'void'
 	assert cast_to_void.typ.is_void()
-	assert (cast_to_void.expr as ast.Ident).name == 'x'
+	assert discarded.unit.arena.ident(cast_to_void.expr).name == 'x'
 }
 
 // 6.3.2.3p8 lets a pointer to a function of one type convert to a pointer to a
@@ -421,21 +454,22 @@ fn test_a_cast_is_read_as_a_conversion_to_the_type_it_names() {
 // where the function type itself had no width for the conversion to widen.
 fn test_a_cast_to_a_function_pointer_names_the_function_pointer() {
 	result := checked('static int inc(int x) { return x + 1; } int main(void) { int (*fp)(int) = (int (*)(int))inc; return 0; }')
-	initializer := result.unit.decls[1].body[0].initializer() or {
+	initializer := result.unit.decls[1].body[0].initializer()
+	if initializer.is_none() {
 		assert false
 		return
 	}
-	conversion := initializer as ast.Cast
+	conversion := result.unit.arena.cast(initializer)
 	// The destination as the model resolved it and as a diagnostic quotes it:
 	// the specifiers, the parameters, and the star, and not the star alone.
 	assert conversion.typ.describe() == 'int (int) *'
 	assert conversion.spelling == 'int (int) *'
 	// The operand decayed to the pointer, which is the source type the emitter
 	// reads where a value is wanted.
-	assert conversion.expr.typ.describe() == 'int (int) *'
-	designator := conversion.expr as ast.Unary
+	assert result.unit.arena.typ(conversion.expr).describe() == 'int (int) *'
+	designator := result.unit.arena.unary(conversion.expr)
 	assert designator.op == '&'
-	assert (designator.expr as ast.Ident).name == 'inc'
+	assert result.unit.arena.ident(designator.expr).name == 'inc'
 }
 
 fn test_an_extension_marker_is_a_prefix_and_not_a_storage_class() {
@@ -444,11 +478,12 @@ fn test_an_extension_marker_is_a_prefix_and_not_a_storage_class() {
 	// `(__extension__ 3)` is a parenthesized expression and not a conversion,
 	// and the marker in front of the literal is worth nothing.
 	result := checked('int main() { return (__extension__ 3); }')
-	returned := result.unit.decls[0].body[0].expr or {
+	returned := result.unit.decls[0].body[0].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	assert (returned as ast.IntLit).value == 3
+	assert result.unit.arena.int_lit(returned).value == 3
 }
 
 fn test_an_extension_marker_prefixes_a_statement() {
@@ -458,11 +493,12 @@ fn test_an_extension_marker_prefixes_a_statement() {
 	result := checked('int main() { int x = 3; __extension__ *(void *)&x; return 0; }')
 	body := result.unit.decls[0].body
 	assert body[1].kind == .expr_stmt
-	read_through := body[1].expr or {
+	read_through := body[1].expr
+	if read_through.is_none() {
 		assert false
 		return
 	}
-	read := read_through as ast.Unary
+	read := result.unit.arena.unary(read_through)
 	assert read.op == '*'
 	assert read.typ.is_void()
 }
@@ -475,12 +511,13 @@ fn test_a_string_literal_is_an_array_of_char_with_room_for_the_terminator() {
 	result := checked('int wants(char *s);\nint main() { wants("abc"); return 0; }')
 	statement := result.unit.decls[1].body[0]
 	assert statement.kind == .expr_stmt
-	call_expr := statement.expr or {
+	call_expr := statement.expr
+	if call_expr.is_none() {
 		assert false
 		return
 	}
-	call := call_expr as ast.Call
-	argument := call.args[0] as ast.StrLit
+	call := result.unit.arena.call(call_expr)
+	argument := result.unit.arena.str_lit(call.args[0])
 	assert argument.typ.kind == .array
 	assert argument.typ.describe() == 'char[4]'
 }
@@ -495,12 +532,13 @@ fn test_a_wide_string_literal_is_an_array_of_wchar_t() {
 	// each, so `h` is `61 00 00 00` and the fifth character starts at byte 16.
 	result := checked('int wants(int *s);\nint main() { wants(L"hello"); return 0; }')
 	statement := result.unit.decls[1].body[0]
-	call_expr := statement.expr or {
+	call_expr := statement.expr
+	if call_expr.is_none() {
 		assert false
 		return
 	}
-	call := call_expr as ast.Call
-	argument := call.args[0] as ast.StrLit
+	call := result.unit.arena.call(call_expr)
+	argument := result.unit.arena.str_lit(call.args[0])
 	assert argument.unit == 4
 	assert argument.typ.describe() == 'int[6]'
 	bytes := argument.value.bytes()
@@ -520,15 +558,16 @@ fn test_a_u_prefixed_string_literal_is_refused_by_name() {
 
 fn test_an_element_of_an_array_carries_the_element_type() {
 	result := checked('char name[8];\nint main() { return name[1]; }')
-	returned := result.unit.decls[0].body[0].expr or {
+	returned := result.unit.decls[0].body[0].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	element := returned as ast.Index
-	base := element.base as ast.Ident
+	element := result.unit.arena.index(returned)
+	base := result.unit.arena.ident(element.base)
 	assert base.name == 'name'
 	assert element.typ.same(types.char_type())
-	assert (element.index as ast.IntLit).typ.same(types.int_type())
+	assert result.unit.arena.int_lit(element.index).typ.same(types.int_type())
 }
 
 // 6.5.2.1 makes `E1[E2]` mean `*((E1) + (E2))` and addition commutes, so `3[p]`
@@ -537,20 +576,20 @@ fn test_an_element_of_an_array_carries_the_element_type() {
 // other one. Measured on gcc 16.2.1, a program that returns `3[p]` for an `int *p`
 // returns the same element `p[3]` does.
 fn test_a_subscript_of_an_integer_is_the_element_the_pointer_names() {
-	element := subscript_of('int main() { int a[4]; int *p = a; return 3[p]; }')
-	base := element.base as ast.Ident
+	element, arena := subscript_of('int main() { int a[4]; int *p = a; return 3[p]; }')
+	base := arena.ident(element.base)
 	assert base.name == 'p'
-	assert (element.index as ast.IntLit).value == 3
+	assert arena.int_lit(element.index).value == 3
 	assert element.typ.same(types.int_type())
 }
 
 // The element of a pointer has the type the pointer points at, which is what the
 // general base is typed from: `p[1]` for an `int *p` is an int.
 fn test_an_element_of_a_pointer_carries_the_pointed_at_type() {
-	element := subscript_of('int main() { int a[4]; int *p = a; return p[1]; }')
-	base := element.base as ast.Ident
+	element, arena := subscript_of('int main() { int a[4]; int *p = a; return p[1]; }')
+	base := arena.ident(element.base)
 	assert base.name == 'p'
-	assert (element.index as ast.IntLit).value == 1
+	assert arena.int_lit(element.index).value == 1
 	assert element.typ.same(types.int_type())
 }
 
@@ -564,14 +603,15 @@ fn test_a_subscript_of_two_integers_is_refused_by_name() {
 }
 
 // subscript_of reads one program and returns the element of its return statement.
-fn subscript_of(source string) ast.Index {
+fn subscript_of(source string) (ast.Index, ast.Arena) {
 	result := checked(source)
-	returned := result.unit.decls[0].body[2].expr or {
+	returned := result.unit.decls[0].body[2].expr
+	if returned.is_none() {
 		assert false
-		return ast.Index{}
+		return ast.Index{}, ast.Arena{}
 	}
-	assert returned is ast.Index
-	return returned as ast.Index
+	assert returned.kind == .index
+	return *result.unit.arena.index(returned), result.unit.arena
 }
 
 // The difference of two pointers is a `ptrdiff_t`, and 6.5.6p9 makes that a
@@ -583,24 +623,26 @@ fn subscript_of(source string) ast.Index {
 fn test_the_difference_of_two_pointers_is_a_long() {
 	result := checked('int main() { int a[6]; int *p = a; int *q = a + 4; return q - p; }')
 	body := result.unit.decls[0].body
-	returned := body[3].expr or {
+	returned := body[3].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	difference := returned as ast.Binary
+	difference := result.unit.arena.binary(returned)
 	assert difference.op == '-'
 	assert difference.typ.same(types.long_type())
 	// `q - p < 0` is a comparison of a long and the whole expression is an int.
 	compared := parsed('int main() { int a[6]; int *p = a; int *q = a + 4; return q - p < 0; }')
 	assert compared.diagnostics.len == 0
-	outer := compared.unit.decls[0].body[3].expr or {
+	outer := compared.unit.decls[0].body[3].expr
+	if outer.is_none() {
 		assert false
 		return
 	}
-	less := outer as ast.Binary
+	less := compared.unit.arena.binary(outer)
 	assert less.op == '<'
 	assert less.typ.same(types.int_type())
-	assert (less.left as ast.Binary).typ.same(types.long_type())
+	assert compared.unit.arena.binary(less.left).typ.same(types.long_type())
 }
 
 // Two pointers whose pointed-at types are not compatible have no shared element
@@ -706,58 +748,65 @@ fn test_a_call_to_a_name_that_is_not_a_function_is_refused() {
 fn test_a_call_is_read_after_any_postfix_expression() {
 	// Through a dereferenced pointer: the callee is the dereference, not a name.
 	deref := checked('int h(int (*fp)(int, int)) { return (*fp)(1, 2); }')
-	deref_returned := deref.unit.decls[0].body[0].expr or {
+	deref_returned := deref.unit.decls[0].body[0].expr
+	if deref_returned.is_none() {
 		assert false
 		return
 	}
-	assert deref_returned is ast.Call
-	deref_call := deref_returned as ast.Call
+	assert deref_returned.kind == .call
+	deref_call := deref.unit.arena.call(deref_returned)
 	assert deref_call.name == ''
-	if callee := deref_call.callee {
-		assert callee is ast.Unary
+	deref_callee := deref_call.callee
+	if !deref_callee.is_none() {
+		assert deref_callee.kind == .unary
 	} else {
 		assert false
 	}
 	// Through a name that holds a function pointer, which is an object rather
 	// than the function itself.
 	named := checked('int g(int (*fp)(int, int)) { return fp(1, 2); }')
-	named_returned := named.unit.decls[0].body[0].expr or {
+	named_returned := named.unit.decls[0].body[0].expr
+	if named_returned.is_none() {
 		assert false
 		return
 	}
-	assert named_returned is ast.Call
-	named_call := named_returned as ast.Call
+	assert named_returned.kind == .call
+	named_call := named.unit.arena.call(named_returned)
 	assert named_call.name == ''
-	if callee := named_call.callee {
-		assert callee is ast.Ident
+	named_callee := named_call.callee
+	if !named_callee.is_none() {
+		assert named_callee.kind == .ident
 	} else {
 		assert false
 	}
 	// Through an element of a table.
 	table := checked('int t(void) { int (*t[2])(int, int); return t[0](3, 4); }')
-	table_returned := table.unit.decls[0].body[1].expr or {
+	table_returned := table.unit.decls[0].body[1].expr
+	if table_returned.is_none() {
 		assert false
 		return
 	}
-	assert table_returned is ast.Call
-	table_call := table_returned as ast.Call
+	assert table_returned.kind == .call
+	table_call := table.unit.arena.call(table_returned)
 	assert table_call.name == ''
-	if callee := table_call.callee {
-		assert callee is ast.Index
+	table_callee := table_call.callee
+	if !table_callee.is_none() {
+		assert table_callee.kind == .index
 	} else {
 		assert false
 	}
 	// A name that is a function is called directly, so it is the one call that
 	// still carries the name the back end resolves.
 	direct := checked('int f(void) { return 0; } int main(void) { return f(); }')
-	direct_returned := direct.unit.decls[1].body[0].expr or {
+	direct_returned := direct.unit.decls[1].body[0].expr
+	if direct_returned.is_none() {
 		assert false
 		return
 	}
-	assert direct_returned is ast.Call
-	direct_call := direct_returned as ast.Call
+	assert direct_returned.kind == .call
+	direct_call := direct.unit.arena.call(direct_returned)
 	assert direct_call.name == 'f'
-	assert direct_call.callee == none
+	assert direct_call.callee.is_none()
 	// An expression that is not a function or a pointer to one is refused at the
 	// call, and the message names what it was.
 	refused := parsed('int main(void) { int x = 1; int *p = &x; return p[0](1); }')
@@ -811,11 +860,12 @@ fn test_a_conditional_between_a_void_pointer_constant_and_a_pointer_is_the_point
 	for source in shapes {
 		result := parsed(source)
 		assert result.diagnostics.len == 0
-		init := result.unit.decls[0].body[0].initializer() or {
+		init := result.unit.decls[0].body[0].initializer()
+		if init.is_none() {
 			assert false
 			return
 		}
-		conditional := init as ast.Conditional
+		conditional := result.unit.arena.conditional(init)
 		assert conditional.typ.kind == types.Kind.pointer
 		pointee := conditional.typ.pointee() or {
 			assert false
@@ -839,11 +889,12 @@ fn test_a_conditional_with_a_void_pointer_that_is_not_constant_is_a_void_pointer
 	for source in shapes {
 		result := parsed(source)
 		assert result.diagnostics.len == 0
-		init := result.unit.decls[0].body[0].initializer() or {
+		init := result.unit.decls[0].body[0].initializer()
+		if init.is_none() {
 			assert false
 			return
 		}
-		conditional := init as ast.Conditional
+		conditional := result.unit.arena.conditional(init)
 		assert conditional.typ.kind == types.Kind.pointer
 		pointee := conditional.typ.pointee() or {
 			assert false
@@ -873,18 +924,20 @@ fn test_a_cast_to_an_object_pointer_is_not_a_null_pointer_constant() {
 fn test_an_arm_of_a_conditional_that_is_a_null_pointer_constant_takes_the_other_arms_type() {
 	shaped := parsed('int main(void) { return sizeof(*(0 ? (void *)0 : (char *)1)); }')
 	assert shaped.diagnostics.len == 0
-	expr := shaped.unit.decls[0].body[0].expr or {
+	expr := shaped.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert (expr as ast.IntLit).value == 1
+	assert shaped.unit.arena.int_lit(expr).value == 1
 	swapped := parsed('int main(void) { return sizeof(*(0 ? (char *)1 : (void *)0)); }')
 	assert swapped.diagnostics.len == 0
-	other := swapped.unit.decls[0].body[0].expr or {
+	other := swapped.unit.decls[0].body[0].expr
+	if other.is_none() {
 		assert false
 		return
 	}
-	assert (other as ast.IntLit).value == 1
+	assert swapped.unit.arena.int_lit(other).value == 1
 	// A cast to a pointer that is not a pointer to void is not a null pointer
 	// constant, so two such arms are a mismatch and not a type.
 	mismatch := parsed('int main(void) { return sizeof(*(0 ? (int *)0 : (char *)0)); }')
@@ -923,17 +976,18 @@ fn test_a_discarded_qualifier_is_a_warning_the_flags_decide() {
 
 fn test_a_call_reads_the_type_its_declaration_returns() {
 	result := checked('int twice(int n);\nint main() { return twice(3) + 1; }')
-	call := result.unit.decls[1].body[0].expr or {
+	call := result.unit.decls[1].body[0].expr
+	if call.is_none() {
 		assert false
 		return
 	}
-	sum := call as ast.Binary
+	sum := result.unit.arena.binary(call)
 	assert sum.typ.same(types.int_type())
-	inner := sum.left as ast.Call
+	inner := result.unit.arena.call(sum.left)
 	assert inner.name == 'twice'
 	assert inner.typ.same(types.int_type())
 	assert inner.args.len == 1
-	assert (inner.args[0] as ast.IntLit).typ.same(types.int_type())
+	assert result.unit.arena.int_lit(inner.args[0]).typ.same(types.int_type())
 }
 
 fn test_the_return_type_of_a_pointer_is_a_pointer() {
@@ -1014,14 +1068,15 @@ fn test_an_object_of_an_aggregate_type_carries_the_size_of_its_layout() {
 // layout: `c` is at 4 because an int comes first, and what is read there is a
 // char, which is the type the tag declared it with.
 fn test_a_member_is_read_at_the_offset_the_layout_puts_it_at() {
-	decl := first('struct S { int a; char c; };\nint main() { struct S s; return s.c; }')
-	body := decl.body
+	unit := first_unit('struct S { int a; char c; };\nint main() { struct S s; return s.c; }')
+	body := unit.decls[0].body
 	assert body.len == 2
-	returned := body[1].expr or {
+	returned := body[1].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	member := returned as ast.Field
+	member := unit.arena.field(returned)
 	assert member.name == 's'
 	assert member.member == 'c'
 	assert member.offset == 4
@@ -1031,13 +1086,14 @@ fn test_a_member_is_read_at_the_offset_the_layout_puts_it_at() {
 
 // A member of a union starts at the beginning of the object, whatever its type.
 fn test_a_member_of_a_union_is_at_the_beginning_of_it() {
-	decl := first('union U { int a; char b; };\nint main() { union U u; return u.b; }')
-	body := decl.body
-	returned := body[1].expr or {
+	unit := first_unit('union U { int a; char b; };\nint main() { union U u; return u.b; }')
+	body := unit.decls[0].body
+	returned := body[1].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	member := returned as ast.Field
+	member := unit.arena.field(returned)
 	assert member.offset == 0
 	assert member.spelling == 'char'
 }
@@ -1046,24 +1102,26 @@ fn test_a_member_of_a_union_is_at_the_beginning_of_it() {
 // Field's base: the object of the second `->` in `p->next->v` is the first
 // member, which is a value rather than a place in the frame.
 fn test_a_member_read_from_an_expression_keeps_the_object_as_its_base() {
-	decl := first('struct N { int v; struct N *next; };\nint main() { struct N a; struct N *p = &a; return p->next->v; }')
-	body := decl.body
-	returned := body[2].expr or {
+	unit := first_unit('struct N { int v; struct N *next; };\nint main() { struct N a; struct N *p = &a; return p->next->v; }')
+	body := unit.decls[0].body
+	returned := body[2].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	outer := returned as ast.Field
+	outer := unit.arena.field(returned)
 	assert outer.member == 'v'
 	assert outer.through_pointer
-	base := outer.base or {
+	base := outer.base
+	if base.is_none() {
 		assert false
 		return
 	}
-	inner := base as ast.Field
+	inner := unit.arena.field(base)
 	assert inner.name == 'p'
 	assert inner.member == 'next'
 	assert inner.through_pointer
-	assert inner.base == none
+	assert inner.base.is_none()
 }
 
 // A member of an element whose object is not a name carries the element as its
@@ -1072,18 +1130,20 @@ fn test_a_member_read_from_an_expression_keeps_the_object_as_its_base() {
 fn test_a_member_of_an_element_of_an_expression_carries_the_element() {
 	result := checked('struct C { int v; };\nstruct Row { struct C chain[2]; };\nint main() { struct Row r; int i = 1; return r.chain[i].v; }')
 	body := result.unit.decls[0].body
-	returned := body[2].expr or {
+	returned := body[2].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	member := returned as ast.Field
+	member := result.unit.arena.field(returned)
 	assert member.member == 'v'
 	assert member.typ.same(types.int_type())
-	base := member.base or {
+	base := member.base
+	if base.is_none() {
 		assert false
 		return
 	}
-	element := base as ast.Index
+	element := result.unit.arena.index(base)
 	assert element.typ.kind == types.Kind.struct_
 }
 
@@ -1138,11 +1198,12 @@ fn test_a_member_is_read_from_the_tag_completed_after_the_pointer_was_read() {
 	result := parsed('struct S;\nstruct S *p;\nstruct S { int a; } v;\nint main(void) { p = &v; return p->a; }')
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
-	returned := body[1].expr or {
+	returned := body[1].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	read := returned as ast.Field
+	read := result.unit.arena.field(returned)
 	assert read.member == 'a'
 	assert read.through_pointer
 	assert read.typ.same(types.int_type())
@@ -1264,13 +1325,14 @@ fn test_an_array_of_aggregates_carries_the_stride_and_the_count() {
 // a byte further into the object and not a second object. `o` is four bytes of
 // struct O (`in` starts at zero and holds one int), and `in.a` sits at zero of it.
 fn test_a_member_of_a_member_is_one_field_at_the_sum_of_the_offsets() {
-	decl := first('struct I { int a; char c; };\nstruct O { int n; struct I in; };\nint main() { struct O o; return o.in.c; }')
-	body := decl.body
-	returned := body[1].expr or {
+	unit := first_unit('struct I { int a; char c; };\nstruct O { int n; struct I in; };\nint main() { struct O o; return o.in.c; }')
+	body := unit.decls[0].body
+	returned := body[1].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	member := returned as ast.Field
+	member := unit.arena.field(returned)
 	assert member.name == 'o'
 	// The path is spelled the way it was written, so a diagnostic about the
 	// member names `in.c` and not just `c`.
@@ -1284,13 +1346,14 @@ fn test_a_member_of_a_member_is_one_field_at_the_sum_of_the_offsets() {
 // pointer names, so the Field says the address comes from the pointer's value and
 // the offset is the member's place in the pointed-at type.
 fn test_a_member_read_through_a_pointer_is_a_field_that_says_so() {
-	decl := first('struct S { int a; int b; };\nint main() { struct S s; struct S *p = &s; return p->b; }')
-	body := decl.body
-	returned := body[2].expr or {
+	unit := first_unit('struct S { int a; int b; };\nint main() { struct S s; struct S *p = &s; return p->b; }')
+	body := unit.decls[0].body
+	returned := body[2].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	member := returned as ast.Field
+	member := unit.arena.field(returned)
 	assert member.name == 'p'
 	assert member.member == 'b'
 	assert member.offset == 4
@@ -1302,13 +1365,14 @@ fn test_a_member_read_through_a_pointer_is_a_field_that_says_so() {
 // pointer's value. `p->in.c` is one Field at the sum of the offsets, and the
 // pointer's value is what the offsets are added to, not the frame.
 fn test_a_member_path_through_a_pointer_stays_through_the_pointer() {
-	decl := first('struct I { int a; char c; };\nstruct O { int n; struct I in; };\nint main() { struct O o; struct O *p = &o; return p->in.c; }')
-	body := decl.body
-	returned := body[2].expr or {
+	unit := first_unit('struct I { int a; char c; };\nstruct O { int n; struct I in; };\nint main() { struct O o; struct O *p = &o; return p->in.c; }')
+	body := unit.decls[0].body
+	returned := body[2].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	member := returned as ast.Field
+	member := unit.arena.field(returned)
 	assert member.name == 'p'
 	assert member.member == 'in.c'
 	assert member.offset == 8
@@ -1454,24 +1518,26 @@ fn test_a_floating_constant_is_typed_as_the_double_it_is() {
 	// 6.4.4.2 makes the spelling decide the class and the class decides the type:
 	// a decimal constant with a point or an exponent is a floating one, and a
 	// double is the one floating type this back end has instructions for.
-	decl := first('double half(void) { return 1.5; }')
-	assert decl.ret_type.same(types.double_type())
-	returned := decl.body[0].expr or {
+	unit := first_unit('double half(void) { return 1.5; }')
+	assert unit.decls[0].ret_type.same(types.double_type())
+	returned := unit.decls[0].body[0].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	half := returned as ast.FloatLit
+	half := unit.arena.float_lit(returned)
 	assert half.value == 1.5
 	assert half.text == '1.5'
 	assert half.typ.same(types.double_type())
 	// An exponent is a floating constant with no point in it at all, and its
 	// value is the one the exponent names rather than the digits before it.
-	exponent := first('double big(void) { return 1e3; }')
-	numeric := exponent.body[0].expr or {
+	exponent := first_unit('double big(void) { return 1e3; }')
+	numeric := exponent.decls[0].body[0].expr
+	if numeric.is_none() {
 		assert false
 		return
 	}
-	assert (numeric as ast.FloatLit).value == 1000.0
+	assert exponent.arena.float_lit(numeric).value == 1000.0
 }
 
 fn test_a_floating_suffix_names_the_type_and_the_value_it_has() {
@@ -1482,31 +1548,39 @@ fn test_a_floating_suffix_names_the_type_and_the_value_it_has() {
 	// This test replaces the one that asserted the suffix was refused, because
 	// the behaviour it asserted is gone: the reader reads the suffix now, and
 	// what is checked is the type and the value it produced.
-	narrow := first('int main(void) { return 1.5f; }')
-	half := narrow.body[0].expr or {
+	narrow := first_unit('int main(void) { return 1.5f; }')
+	narrow_expr := narrow.decls[0].body[0].expr
+	if narrow_expr.is_none() {
 		assert false
 		return
-	} as ast.FloatLit
+	}
+	half := narrow.arena.float_lit(narrow_expr)
 	assert half.typ.same(types.float_type())
 	assert half.value == 1.5
 	assert half.text == '1.5f'
 	// The capital spelling is the same suffix.
-	upper := first('int main(void) { return 1.5F; }')
-	assert (upper.body[0].expr or {
+	upper := first_unit('int main(void) { return 1.5F; }')
+	upper_expr := upper.decls[0].body[0].expr
+	if upper_expr.is_none() {
 		assert false
 		return
-	} as ast.FloatLit).typ.same(types.float_type())
+	}
+	assert upper.arena.float_lit(upper_expr).typ.same(types.float_type())
 	// An exponent may carry a suffix, and one that does not is still a double.
-	exponent := first('int main(void) { return 1e10f; }')
-	assert (exponent.body[0].expr or {
+	exponent := first_unit('int main(void) { return 1e10f; }')
+	exponent_expr := exponent.decls[0].body[0].expr
+	if exponent_expr.is_none() {
 		assert false
 		return
-	} as ast.FloatLit).typ.same(types.float_type())
-	wide := first('int main(void) { return 1e10; }')
-	assert (wide.body[0].expr or {
+	}
+	assert exponent.arena.float_lit(exponent_expr).typ.same(types.float_type())
+	wide := first_unit('int main(void) { return 1e10; }')
+	wide_expr := wide.decls[0].body[0].expr
+	if wide_expr.is_none() {
 		assert false
 		return
-	} as ast.FloatLit).typ.same(types.double_type())
+	}
+	assert wide.arena.float_lit(wide_expr).typ.same(types.double_type())
 }
 
 fn test_an_imaginary_constant_is_the_complex_value_6_4_4_2_names() {
@@ -1516,26 +1590,33 @@ fn test_an_imaginary_constant_is_the_complex_value_6_4_4_2_names() {
 	// 16.2.1: `1.0if`, `1.0iF` and `1.0Fi` are all `float _Complex`, and `1.0i`
 	// is `double _Complex`. `_Complex_I` in <complex.h> is `1.0if`, so the
 	// suffix-before-suffix order is the one the header writes.
-	single := first('int main(void) { float _Complex z = 1.0if; return 0; }')
-	single_lit := single.body[0].initializer() or {
+	single := first_unit('int main(void) { float _Complex z = 1.0if; return 0; }')
+	single_expr := single.decls[0].body[0].initializer()
+	if single_expr.is_none() {
 		assert false
 		return
-	} as ast.ComplexLit
+	}
+	single_lit := single.arena.complex_lit(single_expr)
 	assert single_lit.typ.same(types.complex_float_type())
 	assert single_lit.value == 1.0
 	assert single_lit.text == '1.0if'
 	// The capital spelling and the other order are the same constant.
-	assert (first('int main(void) { float _Complex z = 1.0Fi; return 0; }').body[0].initializer() or {
+	capital := first_unit('int main(void) { float _Complex z = 1.0Fi; return 0; }')
+	capital_expr := capital.decls[0].body[0].initializer()
+	if capital_expr.is_none() {
 		assert false
 		return
-	} as ast.ComplexLit).typ.same(types.complex_float_type())
+	}
+	assert capital.arena.complex_lit(capital_expr).typ.same(types.complex_float_type())
 	// No floating suffix is a double complex, and `j` is the other spelling of
 	// the imaginary suffix.
-	wide := first('int main(void) { double _Complex z = 2.0j; return 0; }')
-	wide_lit := wide.body[0].initializer() or {
+	wide := first_unit('int main(void) { double _Complex z = 2.0j; return 0; }')
+	wide_expr := wide.decls[0].body[0].initializer()
+	if wide_expr.is_none() {
 		assert false
 		return
-	} as ast.ComplexLit
+	}
+	wide_lit := wide.arena.complex_lit(wide_expr)
 	assert wide_lit.typ.same(types.complex_double_type())
 	assert wide_lit.value == 2.0
 	// `l` names a `long double _Complex`, which is read at its own width: the
@@ -1545,10 +1626,13 @@ fn test_an_imaginary_constant_is_the_complex_value_6_4_4_2_names() {
 	// value take.
 	long_imaginary := parsed('int main(void) { float _Complex z = 1.0il; return 0; }')
 	assert long_imaginary.diagnostics.len == 0
-	long_lit := first('int main(void) { long double _Complex z = 1.0il; return 0; }').body[0].initializer() or {
+	long_unit := first_unit('int main(void) { long double _Complex z = 1.0il; return 0; }')
+	long_expr := long_unit.decls[0].body[0].initializer()
+	if long_expr.is_none() {
 		assert false
 		return
-	} as ast.ComplexLit
+	}
+	long_lit := long_unit.arena.complex_lit(long_expr)
 	assert long_lit.typ.same(types.complex_long_double_type())
 	assert long_lit.value == 0.0
 	assert long_lit.long_value != none
@@ -1559,20 +1643,24 @@ fn test_a_float_constant_is_not_the_double_of_the_same_digits() {
 	// that the four bytes are real and not a double relabelled. Measured on gcc
 	// 16.2.1: `0.1f == 0.1` is 0 and `1.5f == 1.5` is 1, because 1.5 is exact
 	// in both widths and 0.1 is not.
-	tenth := first('int main(void) { return 0.1f; }')
-	value := (tenth.body[0].expr or {
+	tenth := first_unit('int main(void) { return 0.1f; }')
+	tenth_expr := tenth.decls[0].body[0].expr
+	if tenth_expr.is_none() {
 		assert false
 		return
-	} as ast.FloatLit).value
+	}
+	value := tenth.arena.float_lit(tenth_expr).value
 	assert value == f64(f32(0.1))
 	assert value != 0.1
 	// 1.5 is exact in both widths, so the two spellings carry the same value
 	// even though they are two types.
-	exact := first('int main(void) { return 1.5f; }')
-	assert (exact.body[0].expr or {
+	exact := first_unit('int main(void) { return 1.5f; }')
+	exact_expr := exact.decls[0].body[0].expr
+	if exact_expr.is_none() {
 		assert false
 		return
-	} as ast.FloatLit).value == 1.5
+	}
+	assert exact.arena.float_lit(exact_expr).value == 1.5
 }
 
 fn test_the_long_double_suffix_names_the_extended_type() {
@@ -1581,12 +1669,13 @@ fn test_the_long_double_suffix_names_the_extended_type() {
 	// and the value it keeps is the extended one rather than a rounded double.
 	// A hexadecimal constant carries the same suffix and gets the same reader,
 	// while the `f` suffix on one is a float, which is a different type.
-	decl := first('double f(void) { return 1.5L; }')
-	returned := decl.body[0].expr or {
+	unit := first_unit('double f(void) { return 1.5L; }')
+	returned := unit.decls[0].body[0].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	wide := returned as ast.FloatLit
+	wide := unit.arena.float_lit(returned)
 	assert wide.typ.same(types.long_double_type())
 	assert wide.text == '1.5L'
 	held := wide.long_value or {
@@ -1598,12 +1687,13 @@ fn test_the_long_double_suffix_names_the_extended_type() {
 	assert held.mantissa == 0xc000000000000000
 	assert held.exponent() == 0
 	// 0x1.8p3 is 12.0: the same significand, three powers of two up.
-	hex := first('double f(void) { return 0x1.8p3L; }')
-	from_hex := hex.body[0].expr or {
+	hex := first_unit('double f(void) { return 0x1.8p3L; }')
+	from_hex := hex.decls[0].body[0].expr
+	if from_hex.is_none() {
 		assert false
 		return
 	}
-	twelve := from_hex as ast.FloatLit
+	twelve := hex.arena.float_lit(from_hex)
 	assert twelve.typ.same(types.long_double_type())
 	hex_value := twelve.long_value or {
 		assert false
@@ -1620,17 +1710,18 @@ fn test_a_mixed_operation_is_a_double_on_both_sides() {
 	// node keeps it: what the emitter reads is the node's own class, which is
 	// what keeps a long chain from having to be walked one term at a time.
 	result := checked('double f(void) { int n = 2; return n + 1e3; }')
-	returned := result.unit.decls[0].body[1].expr or {
+	returned := result.unit.decls[0].body[1].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	sum := returned as ast.Binary
+	sum := result.unit.arena.binary(returned)
 	assert sum.op == '+'
 	assert sum.typ.same(types.double_type())
 	// The int operand keeps the type it was declared with, and the conversion to
 	// a double is what the emitter makes of the operation.
-	assert (sum.left as ast.Ident).typ.same(types.int_type())
-	assert (sum.right as ast.FloatLit).typ.same(types.double_type())
+	assert result.unit.arena.ident(sum.left).typ.same(types.int_type())
+	assert result.unit.arena.float_lit(sum.right).typ.same(types.double_type())
 }
 
 // The 128-bit type written in a parameter list and as a return type: the node
@@ -1664,13 +1755,14 @@ fn test_the_128_bit_type_is_a_parameter_and_a_return_carrying_both_its_spellings
 fn test_a_parameter_and_a_local_of_the_128_bit_type_are_typed_as_the_declaration_wrote_them() {
 	// The parameter is a name in the body's scope with the type the declaration
 	// gave it, so a use of it is a value of that type.
-	decl := first('__int128 same(__int128 v) { return v; }')
-	assert decl.ret_type.same(types.int128_type())
-	returned := decl.body[0].expr or {
+	unit := first_unit('__int128 same(__int128 v) { return v; }')
+	assert unit.decls[0].ret_type.same(types.int128_type())
+	returned := unit.decls[0].body[0].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	assert (returned as ast.Ident).typ.same(types.int128_type())
+	assert unit.arena.ident(returned).typ.same(types.int128_type())
 	// A local of the type is storage of sixteen bytes, which is the width the
 	// model gives it rather than a width the spelling carries.
 	local := checked('__int128 make(void) { __int128 r = 1; return r; }')
@@ -1686,23 +1778,25 @@ fn test_a_call_to_a_function_the_128_bit_type_is_written_on_is_read_against_its_
 	result := checked('int take(__int128 v);\nint main(void) { __int128 x = 3; return take(x); }')
 	statement := result.unit.decls[1].body[1]
 	assert statement.kind == .return_stmt
-	returned := statement.expr or {
+	returned := statement.expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	call := returned as ast.Call
+	call := result.unit.arena.call(returned)
 	assert call.name == 'take'
 	assert call.typ.same(types.int_type())
 	assert call.args.len == 1
-	assert (call.args[0] as ast.Ident).typ.same(types.int128_type())
+	assert result.unit.arena.ident(call.args[0]).typ.same(types.int128_type())
 	// The other direction: a call to a function that returns the type is a value
 	// of that type, which is what a declaration initialized from it reads.
 	wide := checked('__int128 give(void);\nint main(void) { __int128 y = give(); return 0; }')
-	initializer := wide.unit.decls[1].body[0].initializer() or {
+	initializer := wide.unit.decls[1].body[0].initializer()
+	if initializer.is_none() {
 		assert false
 		return
 	}
-	assert (initializer as ast.Call).typ.same(types.int128_type())
+	assert wide.unit.arena.call(initializer).typ.same(types.int128_type())
 }
 
 // The star inside the parentheses is the whole difference between the two
@@ -1809,13 +1903,14 @@ fn test_a_two_dimensional_declarator_is_an_array_of_arrays() {
 // align at four, so the union starts four bytes in, after `tag`, and `i` sits at
 // its beginning.
 fn test_a_member_of_an_anonymous_union_is_read_from_the_enclosing_object() {
-	decl := first('struct S { int tag; union { int i; char d; }; };\nint main() { struct S s; return s.i; }')
-	body := decl.body
-	returned := body[1].expr or {
+	unit := first_unit('struct S { int tag; union { int i; char d; }; };\nint main() { struct S s; return s.i; }')
+	body := unit.decls[0].body
+	returned := body[1].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	member := returned as ast.Field
+	member := unit.arena.field(returned)
 	assert member.name == 's'
 	assert member.member == 'i'
 	assert member.offset == 4
@@ -1827,13 +1922,14 @@ fn test_a_member_of_an_anonymous_union_is_read_from_the_enclosing_object() {
 // and `y` is an int eight bytes in, so a read of `y` has to answer the second
 // member at its own offset and with its own type rather than `x`'s.
 fn test_a_member_of_an_anonymous_struct_is_read_at_its_own_offset() {
-	decl := first('struct T { int a; struct { char x; int y; }; };\nint main() { struct T t; return t.y; }')
-	body := decl.body
-	returned := body[1].expr or {
+	unit := first_unit('struct T { int a; struct { char x; int y; }; };\nint main() { struct T t; return t.y; }')
+	body := unit.decls[0].body
+	returned := body[1].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	member := returned as ast.Field
+	member := unit.arena.field(returned)
 	assert member.member == 'y'
 	assert member.offset == 8
 	assert member.typ.same(types.int_type())
@@ -1845,13 +1941,14 @@ fn test_a_member_of_an_anonymous_struct_is_read_at_its_own_offset() {
 // The union starts after `head`, and `b` is the second int of the anonymous
 // struct that shares the union's storage.
 fn test_an_anonymous_union_inside_an_anonymous_struct_is_read_through_both() {
-	decl := first('struct N { int head; union { struct { int a; int b; }; int both[2]; }; };\nint main() { struct N n; return n.b; }')
-	body := decl.body
-	returned := body[1].expr or {
+	unit := first_unit('struct N { int head; union { struct { int a; int b; }; int both[2]; }; };\nint main() { struct N n; return n.b; }')
+	body := unit.decls[0].body
+	returned := body[1].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	member := returned as ast.Field
+	member := unit.arena.field(returned)
 	assert member.member == 'b'
 	assert member.offset == 8
 	assert member.typ.same(types.int_type())
@@ -1862,13 +1959,14 @@ fn test_an_anonymous_union_inside_an_anonymous_struct_is_read_through_both() {
 // four bytes in, so a lookup that confused it with the anonymous one beside it
 // would answer the wrong offset.
 fn test_a_named_union_beside_an_anonymous_one_is_reached_through_its_name() {
-	decl := first('struct R { int ok; union { int err; } named; union { int value; }; };\nint main() { struct R r; return r.named.err; }')
-	body := decl.body
-	returned := body[1].expr or {
+	unit := first_unit('struct R { int ok; union { int err; } named; union { int value; }; };\nint main() { struct R r; return r.named.err; }')
+	body := unit.decls[0].body
+	returned := body[1].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	member := returned as ast.Field
+	member := unit.arena.field(returned)
 	assert member.member == 'named.err'
 	assert member.offset == 4
 	assert member.typ.same(types.int_type())

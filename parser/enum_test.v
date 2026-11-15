@@ -24,12 +24,13 @@ fn enum_use(definitions string, name string) i64 {
 	result := enum_read('${definitions}
 int main(void) { return ${name}; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return 0
 	}
-	assert expr is ast.IntLit
-	return (expr as ast.IntLit).value
+	assert expr.kind == .int_lit
+	return result.unit.arena.int_lit(expr).value
 }
 
 fn test_an_enum_with_no_values_counts_from_zero() {
@@ -102,11 +103,12 @@ fn test_a_use_of_an_enumerator_is_a_constant() {
 	result := enum_read('enum { ROWS = 2, COLS = 3 };
 int main(void) { int column[COLS]; return ROWS; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[1].expr or {
+	expr := result.unit.decls[0].body[1].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert (expr as ast.IntLit).value == 2
+	assert result.unit.arena.int_lit(expr).value == 2
 }
 
 // A name that is not an enumeration constant is left alone: an ordinary object is
@@ -114,11 +116,12 @@ int main(void) { int column[COLS]; return ROWS; }')
 fn test_an_ordinary_name_is_not_an_enumeration_constant() {
 	result := enum_read('int main(void) { int x = 1; return x; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[1].expr or {
+	expr := result.unit.decls[0].body[1].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Ident
+	assert expr.kind == .ident
 }
 
 // A value the reader cannot compute is refused by name rather than guessed, so a
@@ -184,10 +187,11 @@ fn test_a_use_of_an_enumerator_carries_the_wider_type() {
 int main(void) { unsigned long n = H; return 0; }')
 	assert result.diagnostics.len == 0
 	stmt := result.unit.decls[0].body[0]
-	initializer := stmt.initializer() or {
+	initializer := stmt.initializer()
+	if initializer.is_none() {
 		assert false
 		return
 	}
-	assert initializer is ast.IntLit
-	assert (initializer as ast.IntLit).typ.describe() == 'unsigned long'
+	assert initializer.kind == .int_lit
+	assert result.unit.arena.int_lit(initializer).typ.describe() == 'unsigned long'
 }

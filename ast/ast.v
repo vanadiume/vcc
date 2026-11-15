@@ -8,6 +8,12 @@ import types
 // and integer constant expressions. Every node carries the location it came
 // from, because a diagnostic without one is a diagnostic nobody can act on.
 //
+// The nodes live in the arena (`arena.v`), and an expression is a position in it
+// rather than a box of its own: eight bytes of shape and offset, one flat stream
+// of payloads, and one allocation per stream chunk instead of one per node. A
+// statement is still a value in a list, because it is what a reader walks and a
+// body is a slice of statements.
+//
 // Every node also carries the type clause 6 resolves it to, in the field named
 // `typ` on an expression and `resolved` on a declaration. It is filled while the
 // parser reads, by the type model in `types/`, and a node the model could not
@@ -37,6 +43,10 @@ pub:
 	// kept apart from `globals` because a definition is storage and a
 	// declaration is not.
 	extern_objects []Global
+	// arena holds every expression node this unit built, and every box a
+	// statement refers to. The tree refers to a node by its position in the
+	// arena, so the two travel together.
+	arena Arena
 }
 
 pub struct FnDecl {
@@ -308,7 +318,7 @@ pub:
 	kind StmtKind
 	// expr is the returned expression of a return statement, none for a bare
 	// `return;` or for a statement that returns nothing.
-	expr ?Expr
+	expr Expr
 	// extra is what a statement carries only when it is one of the statements
 	// that has one: everything a declaration carries, the operator of a
 	// compound assignment, the bound and the stride of a variable-length
@@ -336,12 +346,12 @@ pub:
 	// and the value lives in the heap, which is where it was going to end up
 	// anyway the moment it was read.
 	target string
-	index  ?Expr
+	index  Expr
 	field  ?&Field
 	// cond is the controlling expression of an if, a while or a switch: what
 	// has to be true for the branch to be taken, or for the loop to go round
 	// again.
-	cond ?Expr
+	cond Expr
 	// body is the contents of a block, or the body of a loop.
 	body []Stmt
 	line int
@@ -367,7 +377,7 @@ pub:
 	decl_type  string
 	decl_count int
 	// init is the initializer of a declaration, and none for `int x;`.
-	init ?Expr
+	init Expr
 	// compound is the arithmetic operator of a compound assignment: `+` for
 	// `+=`, `-` for `-=`, and the empty string for a plain `=`. The reader
 	// expands the spelling into the assignment it means in `expr` as well, and
@@ -403,7 +413,7 @@ pub:
 	// constant, which is what the frame reserves for every other object. The
 	// type's vla flag says which declaration this is; a vla declaration without
 	// this expression is not emitted.
-	decl_vla_size ?Expr
+	decl_vla_size Expr
 	// decl_stride is the size of one element of an array declaration: what an
 	// index scales by and what the frame reserves a count of. For an array of
 	// arrays it is the whole row, which is the size of the element's own type
@@ -416,12 +426,12 @@ pub:
 	// expression that gives it, a Unary whose operand is the pointer. It is
 	// none for an assignment to a name, and target is empty for one written
 	// through a dereference.
-	deref ?Expr
+	deref Expr
 	// subscript is the element an assignment writes to when its base is not a
 	// name the target fields can address, which is what `3[p] = 9` and
 	// `p[3] = 9` for a pointer p are. The element node is carried whole because
 	// the address it is stored through is computed from the base's value.
-	subscript ?Expr
+	subscript Expr
 	// case_value is the integer constant a case label names, as written. C
 	// converts it to the type of the controlling expression, and that
 	// conversion is made where the label is placed. When the label wrote a
@@ -442,7 +452,7 @@ pub:
 	// the ordinary `goto name;` form, whose target is in label. A computed
 	// goto jumps to the address the expression is worth, so no label name is
 	// involved and label is empty for it.
-	goto_expr ?Expr
+	goto_expr Expr
 	// assembly is the whole of a statement-level GNU asm, held by pointer from
 	// the statements that are one. It is 257 bytes of the extra part for a
 	// construct that most translation units do not write at all, and a
@@ -576,11 +586,11 @@ pub fn (stmt Stmt) decl_count() int {
 // for a declaration that gave none. It is the field the tree calls `init`,
 // under a name a statement can answer without hiding anything.
 @[inline]
-pub fn (stmt Stmt) initializer() ?Expr {
+pub fn (stmt Stmt) initializer() Expr {
 	if extra := stmt.extra {
 		return extra.init
 	}
-	return none
+	return Expr{}
 }
 
 // compound is the arithmetic operator a compound assignment was written with,
@@ -624,11 +634,11 @@ pub fn (stmt Stmt) else_body() []Stmt {
 }
 
 @[inline]
-pub fn (stmt Stmt) decl_vla_size() ?Expr {
+pub fn (stmt Stmt) decl_vla_size() Expr {
 	if extra := stmt.extra {
 		return extra.decl_vla_size
 	}
-	return none
+	return Expr{}
 }
 
 @[inline]
@@ -663,19 +673,19 @@ pub fn (stmt Stmt) storage_name() string {
 }
 
 @[inline]
-pub fn (stmt Stmt) deref() ?Expr {
+pub fn (stmt Stmt) deref() Expr {
 	if extra := stmt.extra {
 		return extra.deref
 	}
-	return none
+	return Expr{}
 }
 
 @[inline]
-pub fn (stmt Stmt) subscript() ?Expr {
+pub fn (stmt Stmt) subscript() Expr {
 	if extra := stmt.extra {
 		return extra.subscript
 	}
-	return none
+	return Expr{}
 }
 
 @[inline]
@@ -711,11 +721,11 @@ pub fn (stmt Stmt) label() string {
 }
 
 @[inline]
-pub fn (stmt Stmt) goto_expr() ?Expr {
+pub fn (stmt Stmt) goto_expr() Expr {
 	if extra := stmt.extra {
 		return extra.goto_expr
 	}
-	return none
+	return Expr{}
 }
 
 @[inline]
@@ -841,30 +851,49 @@ pub fn (stmt Stmt) nested_fn() ?&FnDecl {
 	return none
 }
 
-// Expr is one of the expression shapes the stub understands. A call is parsed
-// so that the diagnostic can say calls are not implemented yet, rather than the
-// parser failing on a token it did not expect.
+// ExprKind names the shape of an expression node. An expression is not a boxed
+// value in this tree: it is the shape it has and its position in the arena's
+// array for that shape. The tag and the position are the whole node header, and
+// a child link is one of those headers, so a binary operator costs two of them
+// and not two heap boxes.
 //
-// Every one of them carries `typ`, the type the expression has: a literal the
-// type of the constant, a name the type it was declared with, an operator the
-// type its operands convert to. Where the model has no answer the clause is
-// unresolved, and the printer says nothing about it.
-pub type Expr = Binary
-	| Unary
-	| Cast
-	| IntLit
-	| FloatLit
-	| ComplexLit
-	| Ident
-	| Call
-	| StrLit
-	| Index
-	| Field
-	| IncDec
-	| Conditional
-	| Assign
-	| Comma
-	| StmtExpr
+// `.none` is the zero value, and it is what a field that holds no expression
+// holds. That is why a field of this tree is not an Option of an expression: an
+// Option of a node is twenty-four bytes, and a statement holds three by itself.
+pub enum ExprKind {
+	none
+	binary
+	unary
+	cast
+	int_lit
+	float_lit
+	complex_lit
+	ident
+	call
+	str_lit
+	index
+	field
+	inc_dec
+	conditional
+	assign
+	comma
+	stmt_expr
+}
+
+// Expr is one expression: the shape it is and where its payload sits in the
+// arena. A reader that has the arena asks it for the node, and the payload
+// structs are the ones this file already had.
+pub struct Expr {
+pub:
+	kind ExprKind
+	idx  u32
+}
+
+// is_none says this position holds no expression.
+@[inline]
+pub fn (e Expr) is_none() bool {
+	return e.kind == .none
+}
 
 // ComplexLit is one imaginary constant, `1.0i` or `1.0if`. 6.4.4.2 gives a
 // floating constant written with an `i` or `j` suffix an imaginary part of the
@@ -909,7 +938,7 @@ pub:
 pub struct StmtExpr {
 pub:
 	body  []Stmt
-	value ?Expr
+	value Expr
 	typ   types.Type
 	line  int
 	col   int
@@ -1013,7 +1042,7 @@ pub:
 	// `m[i]` is `c * sizeof(int)`, which is a value and not a constant. It is
 	// none where the stride is a constant, and the emitter then sizes the
 	// element from its type as it always did.
-	vla_stride ?Expr
+	vla_stride Expr
 	line       int
 	col        int
 }
@@ -1040,12 +1069,12 @@ pub:
 	// is read from the address the expression is worth, or, when
 	// through_pointer is set, from the pointer value it is worth. It is none
 	// for an object named by a name, which is the shape `x.a` and `p->a` keep.
-	base ?Expr
+	base Expr
 	// index is set when the object is one element of an array, which is what
 	// `s[i].a` writes: the member is read from the element the index names, so
 	// the address of the object is the address of that element and the stride
 	// between elements is the size of one element's type.
-	index    ?Expr
+	index    Expr
 	member   string
 	offset   int
 	spelling string
@@ -1067,21 +1096,6 @@ pub:
 	through_pointer bool
 	line            int
 	col             int
-}
-
-// boxed is a member in the heap, where a statement keeps one. A statement holds
-// the member it writes through by pointer, because an Option holds its value
-// inline and a Field is the size of the type clause inside it: written as a
-// value it made every statement 1224 bytes. The address of a parameter or a
-// local is the frame it was read in, so a value that has to outlive the reader
-// is written into the heap here rather than pointed at where it lies.
-@[inline]
-pub fn (field Field) boxed() &Field {
-	mut box := &Field{}
-	unsafe {
-		*box = field
-	}
-	return box
 }
 
 pub struct IntLit {
@@ -1182,7 +1196,7 @@ pub:
 	// written to a name, which is what a function definition or an undeclared
 	// library function is called by, and some(expression) otherwise. A call with
 	// a callee is an indirect call: the expression's value is the address.
-	callee ?Expr
+	callee Expr
 	args   []Expr
 	typ    types.Type
 	line   int

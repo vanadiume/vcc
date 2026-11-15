@@ -167,52 +167,65 @@ pub fn parts_of(members []Member, params []Param, tag string) &TypeParts {
 // has no members, which is what a reader that asks every type gets.
 @[inline]
 pub fn (t Type) members() []Member {
-	if isnil(t.parts) {
+	parts := t.parts()
+	if isnil(parts) {
 		return []Member{}
 	}
-	return t.parts.members
+	return parts.members
 }
 
 // params answers the parameters of a function type, in the order they were
 // written, and the empty list for a type that is not a function.
 @[inline]
 pub fn (t Type) params() []Param {
-	if isnil(t.parts) {
+	parts := t.parts()
+	if isnil(parts) {
 		return []Param{}
 	}
-	return t.parts.params
+	return parts.params
 }
 
 // tag is the name an aggregate, an enum or an opaque type was written with, and
 // empty for one written without a name.
 @[inline]
 pub fn (t Type) tag() string {
-	if isnil(t.parts) {
+	parts := t.parts()
+	if isnil(parts) {
 		return ''
 	}
-	return t.parts.tag
+	return parts.tag
 }
 
-// Type is one type. A derived type holds the type it is derived from, and the
-// reference is what lets a type contain itself: `char **` is a pointer to a
-// pointer to a char, and a value cannot hold that chain.
-pub struct Type {
+// TypeInfo is what a type carries only when it is one of the shapes that has
+// more than a kind and a derivation: the parts of an aggregate, enum, function
+// or opaque type, the layout a completed aggregate was given, and the handle to
+// the bound of a variable-length array. Most types are none of those, and a
+// Type is carried by value in every expression node in the tree, so the three
+// live behind one pointer: a type that needs none of them pays eight bytes and
+// a nil check, where the fields themselves were twenty-four bytes on every type
+// in the tree.
+//
+// A Type is copied by value everywhere and its info is shared by every copy
+// rather than copied with it. That is what the tree wants: the members of a
+// struct are read once, before any copy of the type is made, and every copy is
+// the same aggregate.
+pub struct TypeInfo {
 pub mut:
-	kind Kind
-	// base is the type a pointer points at, the element type of an array, or
-	// the type a function returns.
-	base &Type = unsafe { nil }
-	// count is how many elements an array has, and -1 when no size was written:
-	// `int a[]`, or an array whose bound was not a constant this reader could
-	// read. It means nothing for any other kind.
-	count int
-	// vla says an array's bound was written and is computed at run time rather
-	// than read as a constant: `int a[n]`, and a type a typedef gave that shape.
-	// count is -1 for one, so vla is what tells a variable-length array from an
-	// array whose size was simply not written; indexing and sizeof both need the
-	// distinction, because each of them has to reach the bound as a value instead
-	// of reading count. It is false for every other kind.
-	vla bool
+	// parts is what an aggregate, an enum and a function type carry and no
+	// other type does: the members of a struct or union in the order they were
+	// written, the parameters of a function in the order they were written, and
+	// the tag a named aggregate, enum or opaque type was written with.
+	parts &TypeParts = unsafe { nil }
+	// layout is the object layout of a completed aggregate, worked out once
+	// when the aggregate is read and kept here. The size of an object of the
+	// type, the boundary it starts on and the offset of each member are all
+	// pure functions of the member list, and the reader asks those questions
+	// over and over: without this, each question walks the whole member list
+	// again, and a struct holding a struct walks the inner one for every outer
+	// question. It stays nil for a type that is not an aggregate, and for one
+	// whose layout no description could answer, so an unanswerable question
+	// still refuses exactly as it did before.
+	layout &Layout = unsafe { nil }
 	// vla_id is where the bound's expression is kept. The model is imported by
 	// the tree and cannot hold one of its nodes, so the reader that made the
 	// type keeps the bound in a table of its own and writes the handle here. It
@@ -221,6 +234,47 @@ pub mut:
 	// the tree carries the expression to the back end, and the handle is only
 	// how a later use inside the reader finds it again.
 	vla_id int
+}
+
+// Type is one type. A derived type holds the type it is derived from, and the
+// reference is what lets a type contain itself: `char **` is a pointer to a
+// pointer to a char, and a value cannot hold that chain.
+//
+// The eight-byte fields come first and the flags last, because a C compiler
+// lays a struct out in the order written: the five flags and the three
+// qualifier bytes together are eight bytes, and putting them after the pointers
+// is what keeps a Type forty bytes rather than fifty-six.
+pub struct Type {
+pub mut:
+	kind Kind
+	// underlying is the integer type an enumerated type has: the kind its
+	// enumerators require. 6.7.2.2p4 makes it implementation-defined and asks
+	// only that every enumerator be representable; measured, gcc 16.2.1 gives
+	// an enum with no negative enumerator unsigned int when every value fits
+	// unsigned int and unsigned long when one does not, and an enum with a
+	// negative enumerator int or long the same way, so the kind is one of
+	// those four. It is .unknown for a tag whose body has not been read and
+	// for every type that is not an enum.
+	underlying Kind
+	// count is how many elements an array has, and -1 when no size was written:
+	// `int a[]`, or an array whose bound was not a constant this reader could
+	// read. It means nothing for any other kind.
+	count int
+	// base is the type a pointer points at, the element type of an array, or
+	// the type a function returns.
+	base &Type = unsafe { nil }
+	// info is the parts of an aggregate, enum, function or opaque type, the
+	// layout a completed aggregate was given, and the handle a VLA bound is
+	// kept under. It is nil for a type that has none of them, which is most of
+	// the types the tree carries.
+	info &TypeInfo = unsafe { nil }
+	// vla says an array's bound was written and is computed at run time rather
+	// than read as a constant: `int a[n]`, and a type a typedef gave that shape.
+	// count is -1 for one, so vla is what tells a variable-length array from an
+	// array whose size was simply not written; indexing and sizeof both need the
+	// distinction, because each of them has to reach the bound as a value instead
+	// of reading count. It is false for every other kind.
+	vla bool
 	// vector says an array is a GNU vector type, the one a declaration wrote
 	// `__attribute__((vector_size(N)))` for: it holds count elements of base
 	// in N bytes, and it is an array for storage, sizeof and subscripting.
@@ -229,19 +283,6 @@ pub mut:
 	// which the parser and the emitter implement separately. It is false for
 	// every array that is not one and for every other kind.
 	vector bool
-	// parts is what an aggregate, an enum and a function type carry and no
-	// other type does: the members of a struct or a union, the parameters of a
-	// function, and the tag an aggregate, an enum or an opaque type was written
-	// with. Those are 120 bytes, and a Type is carried by value in every
-	// expression node in the tree, where most types are none of the three. A
-	// type that is none of them leaves the pointer nil and pays eight bytes for
-	// it; a type that is one of them allocates what it has.
-	//
-	// A Type is copied by value everywhere and the parts are shared by every
-	// copy rather than copied with it. That is what the tree wants: the members
-	// of a struct are read once, before any copy of the type is made, and every
-	// copy is the same aggregate.
-	parts &TypeParts = unsafe { nil }
 	// prototyped says the list a function was written with is a prototype:
 	// `int f()` names no parameters at all and says nothing about the call
 	// either.
@@ -253,26 +294,62 @@ pub mut:
 	// declared and never defined is not complete, and nothing may be laid out
 	// in it.
 	complete bool
-	// underlying is the integer type an enumerated type has: the kind its
-	// enumerators require. 6.7.2.2p4 makes it implementation-defined and asks
-	// only that every enumerator be representable; measured, gcc 16.2.1 gives
-	// an enum with no negative enumerator unsigned int when every value fits
-	// unsigned int and unsigned long when one does not, and an enum with a
-	// negative enumerator int or long the same way, so the kind is one of
-	// those four. It is .unknown for a tag whose body has not been read and
-	// for every type that is not an enum.
-	underlying Kind
-	quals      Qualifiers
-	// layout is the object layout of a completed aggregate, worked out once
-	// when the aggregate is read and kept here. The size of an object of the
-	// type, the boundary it starts on and the offset of each member are all
-	// pure functions of the member list, and the reader asks those questions
-	// over and over: without this, each question walks the whole member list
-	// again, and a struct holding a struct walks the inner one for every outer
-	// question. It stays nil for a type that is not an aggregate, and for one
-	// whose layout no description could answer, so an unanswerable question
-	// still refuses exactly as it did before.
-	layout &Layout = unsafe { nil }
+	quals    Qualifiers
+}
+
+// parts is the parts of an aggregate, enum, function or opaque type, and nil
+// for a type that has none.
+@[inline]
+pub fn (t Type) parts() &TypeParts {
+	if isnil(t.info) {
+		return unsafe { nil }
+	}
+	return t.info.parts
+}
+
+// layout is the layout a completed aggregate was given, and nil for a type that
+// is not one or whose layout no description could answer.
+@[inline]
+pub fn (t Type) layout() &Layout {
+	if isnil(t.info) {
+		return unsafe { nil }
+	}
+	return t.info.layout
+}
+
+// vla_id is the handle a variable-length array's bound is kept under, and zero
+// for a type that is not one.
+@[inline]
+pub fn (t Type) vla_id() int {
+	if isnil(t.info) {
+		return 0
+	}
+	return t.info.vla_id
+}
+
+// set_parts gives a type its parts. The info is allocated the first time one of
+// the three is written, and a type that is not given any never allocates one.
+pub fn (mut t Type) set_parts(parts &TypeParts) {
+	if isnil(t.info) {
+		t.info = &TypeInfo{}
+	}
+	t.info.parts = parts
+}
+
+// set_layout gives a completed aggregate its layout.
+pub fn (mut t Type) set_layout(layout &Layout) {
+	if isnil(t.info) {
+		t.info = &TypeInfo{}
+	}
+	t.info.layout = layout
+}
+
+// set_vla_id writes the handle a variable-length array's bound is kept under.
+pub fn (mut t Type) set_vla_id(id int) {
+	if isnil(t.info) {
+		t.info = &TypeInfo{}
+	}
+	t.info.vla_id = id
 }
 
 // Member is one member of a struct or a union. bitfield says the member was
@@ -1088,8 +1165,8 @@ pub fn opaque_type(name string) Type {
 		}
 	} else {
 		Type{
-			kind:  .opaque
-			parts: parts_of([]Member{}, []Param{}, name)
+			kind: .opaque
+			info: &TypeInfo{ parts: parts_of([]Member{}, []Param{}, name) }
 		}
 	}
 }
@@ -1134,11 +1211,13 @@ pub fn vector_of(base Type, count int) Type {
 // handle on the bound expression, which lives in a table the reader keeps.
 pub fn vla_array_of(base Type, id int) Type {
 	return Type{
-		kind:   .array
-		base:   &Type{ ...base }
-		count:  -1
-		vla:    true
-		vla_id: id
+		kind:  .array
+		base:  &Type{ ...base }
+		count: -1
+		vla:   true
+		info:  &TypeInfo{
+			vla_id: id
+		}
 	}
 }
 
@@ -1172,7 +1251,7 @@ pub fn function_type(ret Type, params []Param, variadic bool, prototyped bool) T
 	return Type{
 		kind:       .function
 		base:       &Type{ ...ret }
-		parts:      parts_of([]Member{}, adjusted, '')
+		info:       &TypeInfo{ parts: parts_of([]Member{}, adjusted, '') }
 		variadic:   variadic
 		prototyped: prototyped
 		complete:   true
@@ -1209,7 +1288,7 @@ pub fn adjust_parameter(t Type) Type {
 pub fn struct_type(tag string, members []Member) Type {
 	return Type{
 		kind:     .struct_
-		parts:    parts_of(promote_anonymous(members), []Param{}, tag)
+		info:     &TypeInfo{ parts: parts_of(promote_anonymous(members), []Param{}, tag) }
 		complete: true
 	}
 }
@@ -1217,7 +1296,7 @@ pub fn struct_type(tag string, members []Member) Type {
 pub fn union_type(tag string, members []Member) Type {
 	return Type{
 		kind:     .union_
-		parts:    parts_of(promote_anonymous(members), []Param{}, tag)
+		info:     &TypeInfo{ parts: parts_of(promote_anonymous(members), []Param{}, tag) }
 		complete: true
 	}
 }
@@ -1351,8 +1430,8 @@ fn reject_ambiguous_names(members []Member) []Member {
 // keyword the declaration wrote.
 pub fn incomplete_tag(kind Kind, tag string) Type {
 	return Type{
-		kind:  kind
-		parts: parts_of([]Member{}, []Param{}, tag)
+		kind: kind
+		info: &TypeInfo{ parts: parts_of([]Member{}, []Param{}, tag) }
 	}
 }
 
@@ -1363,7 +1442,7 @@ pub fn incomplete_tag(kind Kind, tag string) Type {
 pub fn enum_type(tag string, underlying Kind) Type {
 	return Type{
 		kind:       .enum_
-		parts:      parts_of([]Member{}, []Param{}, tag)
+		info:       &TypeInfo{ parts: parts_of([]Member{}, []Param{}, tag) }
 		complete:   true
 		underlying: underlying
 	}

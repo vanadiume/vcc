@@ -493,11 +493,12 @@ fn literal_returned_by(source string) ast.FloatLit {
 	result := parse(tokenize.lex(source).tokens)
 	assert result.diagnostics.len == 0
 	assert result.unit.decls.len == 1
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return ast.FloatLit{}
 	}
-	return expr as ast.FloatLit
+	return *result.unit.arena.float_lit(expr)
 }
 
 // A decimal constant's type is the format its suffix named, which is what the
