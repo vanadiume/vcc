@@ -1117,6 +1117,52 @@ fn test_a_character_constant_may_name_its_encoding_in_an_if() {
 	assert processed(chained) == ['int', 'b', ';']
 }
 
+fn test_a_character_constant_with_a_numeric_escape_is_read_in_an_if() {
+	// C99 6.10.1p4 evaluates a character constant in a condition as 6.4.4.4
+	// does, and the reader is the parser's now instead of a second copy with a
+	// shorter escape list. gcc 16.2.1 on x86-64 gives 65 for '\x41', 127 for
+	// '\177', -63 for '\301', -128 for '\200' and -1 for '\377', so these are
+	// the arms it picks. `'A' == '\301'` is SQLite's EBCDIC probe, which stopped
+	// its build before the first declaration.
+	assert processed("${hash}if 'A' == '\\301'\nint a;\n${hash}else\nint b;\n${hash}endif\n") == [
+		'int',
+		'b',
+		';',
+	]
+	assert processed("${hash}if '\\x41' == 'A'\nint a;\n${hash}else\nint b;\n${hash}endif\n") == [
+		'int',
+		'a',
+		';',
+	]
+	assert processed("${hash}if '\\177' == 127\nint a;\n${hash}else\nint b;\n${hash}endif\n") == [
+		'int',
+		'a',
+		';',
+	]
+	assert processed("${hash}if '\\377' == -1\nint a;\n${hash}else\nint b;\n${hash}endif\n") == [
+		'int',
+		'a',
+		';',
+	]
+	assert processed("${hash}if '\\200' == -128\nint a;\n${hash}else\nint b;\n${hash}endif\n") == [
+		'int',
+		'a',
+		';',
+	]
+	// The named escapes keep their values: 0, 10, 92 and 39 add to 141.
+	assert processed("${hash}if '\\0' + '\\n' + '\\\\' + '\\'' == 141\nint a;\n${hash}else\nint b;\n${hash}endif\n") == [
+		'int',
+		'a',
+		';',
+	]
+	// A multi-character constant is still refused, as it is in an expression
+	// here. gcc reads 'ab' as 24930 and takes it in an #if under a warning, so
+	// this is the one value the reader does not agree with gcc on.
+	multi := diagnostics_of("${hash}if 'ab' == 24930\nint a;\n${hash}endif\n")
+	assert multi.len == 1
+	assert multi[0].contains('not a character constant')
+}
+
 fn test_a_diagnostic_about_an_if_names_where_the_construct_is() {
 	// The expression is the rest of the directive's line, so a construct in it is at the
 	// line and column it holds in the file, and not at line 1 column 1 of a copy of part
