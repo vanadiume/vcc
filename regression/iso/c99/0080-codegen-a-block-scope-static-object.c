@@ -84,6 +84,19 @@ static int *address(void)
     return &storage;
 }
 
+static int call_counter(void)
+{
+    return counter();
+}
+
+static int loop_counter(int turns)
+{
+    int last = 0;
+    for (int i = 0; i < turns; i++)
+        last = counter();
+    return last;
+}
+
 int main(void)
 {
     int total = 0;
@@ -126,6 +139,10 @@ int main(void)
 
     /* An initializer that is an address constant. */
     CHECK(message()[0] == 's' && message()[5] == 'c' && message()[6] == 0);
+
+    /* The same object through another function and through a loop. */
+    CHECK(call_counter() == 29);
+    CHECK(loop_counter(2) == 31);
 
     return 0;
 }
