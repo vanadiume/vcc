@@ -20,7 +20,7 @@ import types
 // larger than two of them, which is the case this compiler does not hand over.
 // first_floating and second_floating say which file carries each of the first two
 // eightbytes: the floating-point one when every member the eightbyte covers is a
-// double, and the general one otherwise.
+// float or a double, and the general one otherwise.
 pub struct Class {
 pub:
 	bytes           int
@@ -77,6 +77,20 @@ pub fn class_of(r types.Representation, declared types.Type) Class {
 		first_floating:  eightbyte_is_floating(r, declared, 0)
 		second_floating: count == 2 && eightbyte_is_floating(r, declared, 1)
 	}
+}
+
+// ordinal is which register of its own class carries the eightbyte at `which`
+// of an object: the number of eightbytes of that class before it. The two
+// sequences are numbered apart, so the first general eightbyte of a return is
+// the first general result register even when a floating eightbyte lies before
+// it. Measured on gcc 16.2.1: `struct { double d; long i; }` comes back with d
+// in xmm0 and i in rax, and `struct { long i; double d; }` with i in rax and d
+// in xmm0.
+pub fn (c Class) ordinal(which int) int {
+	if which == 0 || c.first_floating != c.second_floating {
+		return 0
+	}
+	return 1
 }
 
 // The extended floating type does not travel in a register file at all, which
@@ -188,7 +202,7 @@ fn object_bytes(r types.Representation, declared types.Type) int {
 
 // EightbyteCover is what a byte range of an object covers: whether a member of the
 // object has bytes in the range at all, and whether a member in it is anything but
-// a double.
+// a float or a double.
 struct EightbyteCover {
 mut:
 	covered bool
@@ -197,12 +211,12 @@ mut:
 
 // eightbyte_is_floating says whether a register of the floating-point file carries
 // the eightbyte that starts at `which` eightbytes into an object: every member that
-// eightbyte covers is a double, and a member covers it.
+// eightbyte covers is a float or a double, and a member covers it.
 //
-// An eightbyte carrying a member that is not a double is carried by the general
+// An eightbyte carrying a member that is neither is carried by the general
 // file, which is what the convention says for an eightbyte that is both; so is an
-// eightbyte no member covers, because the padding bytes in it are not a double and
-// a register of the general file carries anything this compiler lays out.
+// eightbyte no member covers, because the padding bytes in it are not a float or a
+// double and a register of the general file carries anything this compiler lays out.
 fn eightbyte_is_floating(r types.Representation, declared types.Type, which int) bool {
 	mut cover := EightbyteCover{}
 	note_eightbyte(r, declared, 0, which * 8, which * 8 + 8, mut cover)
@@ -260,7 +274,13 @@ fn note_member(r types.Representation, typ types.Type, start int, low int, high 
 		return
 	}
 	cover.covered = true
-	if typ.kind != .double && !typ.kind.is_decimal() {
+	if typ.kind !in [.float, .double] && !typ.kind.is_decimal() {
+		// A float is an SSE class the way a double is, so an eightbyte that
+		// covers only floats travels in the floating-point file. Measured on
+		// gcc 16.2.1 across two translation units: a struct of one float
+		// arrives in the low four bytes of xmm0, and a struct of two floats
+		// arrives packed in one eightbyte of xmm0.
+		//
 		// A decimal floating type is an SSE class the way a double is, so an
 		// eightbyte that covers only decimals travels in the floating-point
 		// file. Measured on gcc 16.2.1, which passes a struct of one
