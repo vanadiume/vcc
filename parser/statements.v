@@ -19,7 +19,7 @@ const statement_keywords = ['switch', 'case', 'default', 'goto']
 // declares an object. __extension__ is the one word that can open either a
 // declaration or an expression - glibc writes it in front of both - so a
 // leading run of the marker is skipped and the word after it decides.
-fn (p Parser) starts_a_statement_declaration() bool {
+fn (mut p Parser) starts_a_statement_declaration() bool {
 	mut i := p.pos
 	for i < p.tokens.len && p.tokens[i].kind == .identifier && p.tokens[i].text == '__extension__' {
 		i++
@@ -219,7 +219,7 @@ fn (mut p Parser) comma_continuation(stmt ast.Stmt) !ast.Stmt {
 	for p.at_punct(',') {
 		comma := p.next()
 		right := p.parse_assignment_expression()!
-		expr = ast.Expr(ast.Comma{
+		expr = p.arena.put_comma(ast.Comma{
 			left:  expr
 			right: right
 			typ:   p.value_type(right)
@@ -350,7 +350,7 @@ fn (mut p Parser) parse_asm_statement() []ast.Stmt {
 	}
 	return [ast.Stmt{
 		kind:  .asm_stmt
-		extra: &ast.StmtExtra{
+		extra: p.arena.box_extra(ast.StmtExtra{
 			assembly: &ast.StmtAsm{
 				text:            text
 				spelling:        spelling
@@ -362,7 +362,7 @@ fn (mut p Parser) parse_asm_statement() []ast.Stmt {
 				is_goto:         is_goto
 				goto_labels:     goto_labels
 			}
-		}
+		})
 		line:  start.line
 		col:   start.col
 	}]
@@ -411,7 +411,7 @@ fn (mut p Parser) parse_asm_goto_labels() ![]string {
 // the template, or one of the qualifier words that come before it. A name
 // followed by anything else - `asm = 1;`, `asm [2];` - is left to the
 // expression reader, which is what reads it where asm is not reserved.
-fn (p Parser) asm_is_a_statement() bool {
+fn (mut p Parser) asm_is_a_statement() bool {
 	if p.peek().kind != .identifier || p.peek().text != 'asm' {
 		return false
 	}
@@ -560,14 +560,14 @@ fn (mut p Parser) parse_expression_statement() !ast.Stmt {
 	// element node itself is carried instead. This is read before the
 	// dereference below, because an element is one of the shapes that reader
 	// refuses.
-	if p.peek().kind == .punct && p.peek().text in assignment_operators && expr is ast.Index {
-		return p.parse_subscript_assignment(expr as ast.Index)!
+	if p.peek().kind == .punct && p.peek().text in assignment_operators && expr.kind == .index {
+		return p.parse_subscript_assignment(p.arena.index(expr))!
 	}
 	// A member whose object is an expression rather than a name is the same
 	// shape: `s[i].m = v` and `p->m->n = v` write through a member the back
 	// end addresses from the object, so the member node is carried whole.
-	if p.peek().kind == .punct && p.peek().text in assignment_operators && expr is ast.Field {
-		return p.parse_member_assignment(expr as ast.Field)!
+	if p.peek().kind == .punct && p.peek().text in assignment_operators && expr.kind == .field {
+		return p.parse_member_assignment(p.arena.field(expr))!
 	}
 	// An assignment whose target is not a name. The expression reader reads
 	// `*p` as the value at an address and stops at the operator, because an
@@ -591,7 +591,7 @@ fn (mut p Parser) parse_expression_statement() !ast.Stmt {
 // statement is not one. A compound spelling is one too, so the reader below is
 // the one that says which targets a compound assignment writes and which it
 // does not.
-fn (p Parser) assignment_operator() ?tokenize.Token {
+fn (mut p Parser) assignment_operator() ?tokenize.Token {
 	t := p.peek()
 	if t.kind == .punct && t.text in assignment_operators {
 		return t
@@ -616,78 +616,77 @@ fn (p Parser) assignment_operator() ?tokenize.Token {
 // Anything else the expression reader left in front of an assignment operator
 // is not a place a value can be written, and is refused by name.
 fn (mut p Parser) parse_deref_assignment(start tokenize.Token, target ast.Expr, op tokenize.Token) !ast.Stmt {
-	match target {
-		ast.Unary {
-			if target.op == '__real__' || target.op == '__imag__' {
-				// `__real__ z` for a complex z is the lvalue one component of
-				// the pair, and gcc writes through it: measured on 16.2.1,
-				// `__real__ z = 5.0` leaves 5.0 in the real part. This compiler
-				// has no store that writes one component, so the statement is
-				// refused by name rather than read as a write to the whole
-				// object, which is a value the source did not ask for.
-				p.error_at(op, 'unsupported: ${target.op} names one part of a complex value, and this compiler has no store that writes a part; it writes a whole object')
-				return error('assignment to a complex part')
-			}
-			if target.op != '*' {
-				p.error_at(op, 'unsupported: the target of an assignment is ${describe_operand(target)}, and this compiler writes to a name, an element, a member or a dereference')
-				return error('assignment target is not a dereference')
-			}
-			value := p.parse_assignment_expression()!
-			if op.text != '=' {
-				// `*p op= v` is the compound assignment through a dereference.
-				// The pointer's value is the address, and the statement carries
-				// the operator in `compound` so the back end computes that
-				// address once and both reads and writes through it. Written
-				// as `*p = *p + v` the pointer expression would be evaluated
-				// twice, which is a different program whenever it has a side
-				// effect.
-				arithmetic := p.compound_operator(op)!
-				deref := ast.Expr(target)
-				return ast.Stmt{
-					kind:  .assign
-					expr:  p.compound_expansion(op, arithmetic, deref, value)
-					extra: &ast.StmtExtra{
-						compound: arithmetic
-						deref:    deref
-					}
-					line:  start.line
-					col:   start.col
-				}
-			}
-			// The object written to is the one the pointer points at, so the
-			// value converts to the pointed-at type the same way it does into
-			// a name.
-			written := p.converted_into(target.typ, value)
-			p.check_assignment(target.typ, written, op)
+	if target.kind == .unary {
+		unary := p.arena.unary(target)
+		if unary.op == '__real__' || unary.op == '__imag__' {
+			// `__real__ z` for a complex z is the lvalue one component of
+			// the pair, and gcc writes through it: measured on 16.2.1,
+			// `__real__ z = 5.0` leaves 5.0 in the real part. This compiler
+			// has no store that writes one component, so the statement is
+			// refused by name rather than read as a write to the whole
+			// object, which is a value the source did not ask for.
+			p.error_at(op, 'unsupported: ${unary.op} names one part of a complex value, and this compiler has no store that writes a part; it writes a whole object')
+			return error('assignment to a complex part')
+		}
+		if unary.op != '*' {
+			p.error_at(op, 'unsupported: the target of an assignment is ${describe_operand(target, &p.arena)}, and this compiler writes to a name, an element, a member or a dereference')
+			return error('assignment target is not a dereference')
+		}
+		// The type is read before the value: the arena may grow while the
+		// value is read, and a node's address is only good until then.
+		target_type := unary.typ
+		value := p.parse_assignment_expression()!
+		if op.text != '=' {
+			// `*p op= v` is the compound assignment through a dereference.
+			// The pointer's value is the address, and the statement carries
+			// the operator in `compound` so the back end computes that
+			// address once and both reads and writes through it. Written
+			// as `*p = *p + v` the pointer expression would be evaluated
+			// twice, which is a different program whenever it has a side
+			// effect.
+			arithmetic := p.compound_operator(op)!
 			return ast.Stmt{
 				kind:  .assign
-				expr:  written
-				extra: &ast.StmtExtra{
-					deref: ast.Expr(target)
-				}
+				expr:  p.compound_expansion(op, arithmetic, target, value)
+				extra: p.arena.box_extra(ast.StmtExtra{
+					compound: arithmetic
+					deref:    target
+				})
 				line:  start.line
 				col:   start.col
 			}
 		}
-		else {
-			p.error_at(op, 'unsupported: the target of an assignment is ${describe_operand(target)}, and this compiler writes to a name, an element, a member or a dereference')
-			return error('assignment target is not an lvalue')
+		// The object written to is the one the pointer points at, so the
+		// value converts to the pointed-at type the same way it does into
+		// a name.
+		written := p.converted_into(target_type, value)
+		p.check_assignment(target_type, written, op)
+		return ast.Stmt{
+			kind:  .assign
+			expr:  written
+			extra: p.arena.box_extra(ast.StmtExtra{
+				deref: target
+			})
+			line:  start.line
+			col:   start.col
 		}
 	}
+	p.error_at(op, 'unsupported: the target of an assignment is ${describe_operand(target, &p.arena)}, and this compiler writes to a name, an element, a member or a dereference')
+	return error('assignment target is not an lvalue')
 }
 
 // starts_assignment says whether the tokens at the cursor are `name = ...`. It
 // is a lookahead and not a reading, because `x = 1;` and `x(1);` start the same
 // way and only the second token tells them apart. `==` is a token of its own,
 // so an expression like `x == 1;` is not an assignment.
-fn (p Parser) starts_assignment() bool {
+fn (mut p Parser) starts_assignment() bool {
 	return p.starts_assignment_at(0)
 }
 
 // starts_assignment_at asks the same question from `at` tokens ahead, which is
 // what a transparent prefix word in front of the name needs: `__real__ x = 1`
 // writes x, so the statement reader has to see the assignment one token in.
-fn (p Parser) starts_assignment_at(at int) bool {
+fn (mut p Parser) starts_assignment_at(at int) bool {
 	if p.peek_at(at).kind != .identifier {
 		return false
 	}
@@ -744,7 +743,7 @@ fn (p Parser) starts_assignment_at(at int) bool {
 // for the object, and a complex target is one part of a pair; both come back
 // false and are left to the expression reader, which carries a real member as the
 // member the back end writes and refuses a complex one by name.
-fn (p Parser) real_part_assignment_writes_the_name() bool {
+fn (mut p Parser) real_part_assignment_writes_the_name() bool {
 	if p.peek_at(1).kind != .identifier {
 		return false
 	}
@@ -771,7 +770,7 @@ fn (p Parser) real_part_assignment_writes_the_name() bool {
 // `.<name>` or `-><name>` pairs followed by an assignment operator. It is a
 // lookahead and not a reading: a member path is one name per step, and the
 // operator after the last step is what says the statement writes through it.
-fn (p Parser) assignment_after(at int) bool {
+fn (mut p Parser) assignment_after(at int) bool {
 	mut ahead := at
 	for {
 		head := p.peek_at(ahead)
@@ -827,8 +826,8 @@ fn (mut p Parser) parse_assignment() !ast.Stmt {
 	// assignment writes.
 	if member := field {
 		if p.at_punct('.') || p.at_punct('->') {
-			chain := p.parse_member_chain(ast.Expr(*member))!
-			return p.parse_member_assignment(chain as ast.Field)!
+			chain := p.parse_member_chain(p.arena.put_field(*member))!
+			return p.parse_member_assignment(p.arena.field(chain))!
 		}
 	}
 	op := p.next() // = or a compound spelling
@@ -843,7 +842,7 @@ fn (mut p Parser) parse_assignment() !ast.Stmt {
 			declared := p.resolve(t.text)
 			if declared.is_pointer() {
 				element := declared.pointee() or { types.Type{} }
-				base := ast.Expr(ast.Ident{
+				base := p.arena.put_ident(ast.Ident{
 					name: t.text
 					typ:  declared
 					line: t.line
@@ -854,15 +853,15 @@ fn (mut p Parser) parse_assignment() !ast.Stmt {
 				return ast.Stmt{
 					kind:  .assign
 					expr:  value
-					extra: &ast.StmtExtra{
-						subscript: ast.Expr(ast.Index{
+					extra: p.arena.box_extra(ast.StmtExtra{
+						subscript: p.arena.put_index(ast.Index{
 							base:  base
 							index: subscript
 							typ:   element
 							line:  t.line
 							col:   t.col
 						})
-					}
+					})
 					line:  t.line
 					col:   t.col
 				}
@@ -874,7 +873,7 @@ fn (mut p Parser) parse_assignment() !ast.Stmt {
 		return ast.Stmt{
 			kind:   .assign
 			target: t.text
-			index:  index
+			index:  index or { ast.Expr{} }
 			field:  field
 			expr:   value
 			line:   t.line
@@ -897,18 +896,21 @@ fn (mut p Parser) parse_assignment() !ast.Stmt {
 // same, which is why it goes through the compound assignment the element reader
 // already builds rather than a second path.
 fn (mut p Parser) parse_member_compound_assignment(op tokenize.Token, member &ast.Field) !ast.Stmt {
+	// The member is copied before the value is read: the node an accessor
+	// answers with lives in the arena, which may grow under it.
+	node := *member
 	arithmetic := p.compound_operator(op)!
 	right := p.parse_assignment_expression()!
-	left := ast.Expr(*member)
+	left := p.arena.put_field(node)
 	return ast.Stmt{
 		kind:  .assign
-		field: member
+		field: p.arena.box_field(node)
 		expr:  p.compound_expansion(op, arithmetic, left, right)
-		extra: &ast.StmtExtra{
+		extra: p.arena.box_extra(ast.StmtExtra{
 			compound: arithmetic
-		}
-		line:  member.line
-		col:   member.col
+		})
+		line:  node.line
+		col:   node.col
 	}
 }
 
@@ -941,7 +943,7 @@ fn (mut p Parser) compound_expansion(op tokenize.Token, arithmetic string, left 
 	// a real one is complex: `n += z` on an int writes the real part of
 	// `n + z`, which is the conversion 6.3.1.7 defines for the assignment the
 	// expansion stands for.
-	return p.converted_into(p.value_type(left), ast.Expr(ast.Binary{
+	return p.converted_into(p.value_type(left), p.arena.put_binary(ast.Binary{
 		op:    arithmetic
 		left:  left
 		right: right
@@ -956,22 +958,25 @@ fn (mut p Parser) compound_expansion(op tokenize.Token, arithmetic string, left 
 // element node is carried whole so the back end can compute the address the value
 // is stored through. A compound spelling is refused by name: `E1[E2] += v` reads
 // the element twice and this tree has no shape for that target yet.
-fn (mut p Parser) parse_subscript_assignment(index ast.Index) !ast.Stmt {
+fn (mut p Parser) parse_subscript_assignment(index &ast.Index) !ast.Stmt {
+	// The element is copied before the value is read, for the same reason the
+	// member is: the arena may grow while the value is read.
+	node := *index
 	op := p.next()
 	if op.text != '=' {
 		p.error_at(op, 'unsupported: the compound assignment ${op.text} to an element is not implemented')
 		return error('compound assignment to an element')
 	}
-	value := p.converted_into(index.typ, p.parse_assignment_expression()!)
-	p.check_assignment(index.typ, value, op)
+	value := p.converted_into(node.typ, p.parse_assignment_expression()!)
+	p.check_assignment(node.typ, value, op)
 	return ast.Stmt{
 		kind:  .assign
 		expr:  value
-		extra: &ast.StmtExtra{
-			subscript: ast.Expr(index)
-		}
-		line:  index.line
-		col:   index.col
+		extra: p.arena.box_extra(ast.StmtExtra{
+			subscript: p.arena.put_index(node)
+		})
+		line:  node.line
+		col:   node.col
 	}
 }
 
@@ -983,31 +988,34 @@ fn (mut p Parser) parse_subscript_assignment(index ast.Index) !ast.Stmt {
 // that operator so the back end computes the member's address once and reads and
 // writes through it, rather than reading the object - which may be a call or a
 // dereference - twice.
-fn (mut p Parser) parse_member_assignment(member ast.Field) !ast.Stmt {
+fn (mut p Parser) parse_member_assignment(member &ast.Field) !ast.Stmt {
+	// The member is copied before the value is read: the node an accessor
+	// answers with lives in the arena, which may grow under it.
+	node := *member
 	op := p.next()
 	if op.text != '=' {
 		arithmetic := p.compound_operator(op)!
 		right := p.parse_assignment_expression()!
-		left := ast.Expr(member)
+		left := p.arena.put_field(node)
 		return ast.Stmt{
 			kind:  .assign
-			field: member.boxed()
+			field: p.arena.box_field(node)
 			expr:  p.compound_expansion(op, arithmetic, left, right)
-			extra: &ast.StmtExtra{
+			extra: p.arena.box_extra(ast.StmtExtra{
 				compound: arithmetic
-			}
-			line:  member.line
-			col:   member.col
+			})
+			line:  node.line
+			col:   node.col
 		}
 	}
-	value := p.converted_into(member.typ, p.parse_assignment_expression()!)
-	p.check_assignment(member.typ, value, op)
+	value := p.converted_into(node.typ, p.parse_assignment_expression()!)
+	p.check_assignment(node.typ, value, op)
 	return ast.Stmt{
 		kind:  .assign
-		field: member.boxed()
+		field: p.arena.box_field(node)
 		expr:  value
-		line:  member.line
-		col:   member.col
+		line:  node.line
+		col:   node.col
 	}
 }
 
@@ -1016,7 +1024,7 @@ fn (mut p Parser) parse_member_assignment(member ast.Field) !ast.Stmt {
 // written with a subscript. A name no declaration describes answers with the zero
 // type, and the constraint below takes no position on that: the name is what the
 // check at the end of the unit is for.
-fn (p Parser) assignment_target_type(name string, index ?ast.Expr, field ?&ast.Field) types.Type {
+fn (mut p Parser) assignment_target_type(name string, index ?ast.Expr, field ?&ast.Field) types.Type {
 	// A member is written at an offset into an object, and what the value written
 	// there converts to is the type of the member, which the reader worked out
 	// when it read the member.
@@ -1074,7 +1082,8 @@ fn (mut p Parser) check_initializer(to types.Type, init ast.Expr) {
 	problem := types.assignment_problem(to, p.value_type(init), p.is_null_constant(init)) or {
 		return
 	}
-	p.problem_span(init.line, init.col, problem)
+	span := p.arena.span(init)
+	p.problem_span(span.line, span.col, problem)
 }
 
 // parse_compound_assignment reads `name += expr` and every other compound
@@ -1105,15 +1114,15 @@ fn (mut p Parser) parse_compound_assignment(target tokenize.Token, op tokenize.T
 	// spelling names, not the spelling itself, and it is the same token with that
 	// text.
 	target_type := p.assignment_target_type(target.text, index, none)
-	mut left := ast.Expr(ast.Ident{
+	mut left := p.arena.put_ident(ast.Ident{
 		name: target.text
 		typ:  target_type
 		line: target.line
 		col:  target.col
 	})
 	if subscript := index {
-		left = ast.Expr(ast.Index{
-			base:  ast.Expr(left)
+		left = p.arena.put_index(ast.Index{
+			base:  left
 			index: subscript
 			typ:   target_type
 			line:  target.line
@@ -1124,11 +1133,11 @@ fn (mut p Parser) parse_compound_assignment(target tokenize.Token, op tokenize.T
 	return ast.Stmt{
 		kind:   .assign
 		target: target.text
-		index:  index
+		index:  index or { ast.Expr{} }
 		expr:   value
-		extra:  &ast.StmtExtra{
+		extra:  p.arena.box_extra(ast.StmtExtra{
 			compound: arithmetic
-		}
+		})
 		line:   target.line
 		col:    target.col
 	}
@@ -1175,10 +1184,10 @@ fn (mut p Parser) parse_if_statement() ![]ast.Stmt {
 	return [ast.Stmt{
 		kind:  .if_stmt
 		cond:  cond
-		extra: &ast.StmtExtra{
+		extra: p.arena.box_extra(ast.StmtExtra{
 			then_body: then_body
 			else_body: else_body
-		}
+		})
 		line:  t.line
 		col:   t.col
 	}]
@@ -1326,9 +1335,9 @@ fn (mut p Parser) parse_label_statement(name tokenize.Token) ![]ast.Stmt {
 	p.next() // :
 	mut out := [ast.Stmt{
 		kind:  .label_stmt
-		extra: &ast.StmtExtra{
+		extra: p.arena.box_extra(ast.StmtExtra{
 			label: name.text
-		}
+		})
 		line:  name.line
 		col:   name.col
 	}]
@@ -1373,9 +1382,9 @@ fn (mut p Parser) parse_goto_statement() ![]ast.Stmt {
 		}
 		return [ast.Stmt{
 			kind:  .goto_stmt
-			extra: &ast.StmtExtra{
+			extra: p.arena.box_extra(ast.StmtExtra{
 				goto_expr: expr
-			}
+			})
 			line:  t.line
 			col:   t.col
 		}]
@@ -1397,9 +1406,9 @@ fn (mut p Parser) parse_goto_statement() ![]ast.Stmt {
 	}
 	return [ast.Stmt{
 		kind:  .goto_stmt
-		extra: &ast.StmtExtra{
+		extra: p.arena.box_extra(ast.StmtExtra{
 			label: name.text
-		}
+		})
 		line:  t.line
 		col:   t.col
 	}]
@@ -1554,11 +1563,11 @@ fn (mut p Parser) parse_case_label() ![]ast.Stmt {
 	}
 	mut out := [ast.Stmt{
 		kind:  .case_stmt
-		extra: &ast.StmtExtra{
+		extra: p.arena.box_extra(ast.StmtExtra{
 			case_value:      value
 			case_value_high: high
 			case_is_range:   is_range
-		}
+		})
 		line:  t.line
 		col:   t.col
 	}]
@@ -1572,7 +1581,7 @@ fn (mut p Parser) parse_case_label() ![]ast.Stmt {
 // is checked against that set and against the ranges already read, so the work
 // is in the number of labels the switch has written and never in the number of
 // values a range names.
-fn (p Parser) case_duplicate(low i64, high i64) bool {
+fn (mut p Parser) case_duplicate(low i64, high i64) bool {
 	top := p.case_values.len - 1
 	if low == high {
 		if p.case_values[top][low] {
@@ -1636,16 +1645,15 @@ fn (mut p Parser) parse_default_label() ![]ast.Stmt {
 fn (mut p Parser) case_constant(expr ast.Expr) ?i64 {
 	mut operators := []string{}
 	mut node := expr
-	for node is ast.Unary {
-		unary := node as ast.Unary
+	for node.kind == .unary {
+		unary := p.arena.unary(node)
 		operators << unary.op
 		node = unary.expr
 	}
-	if node !is ast.IntLit {
+	if node.kind != .int_lit {
 		return none
 	}
-	written := node as ast.IntLit
-	mut value := written.value
+	mut value := p.arena.int_lit(node).value
 	for i := operators.len - 1; i >= 0; i-- {
 		match operators[i] {
 			'-' {
@@ -1720,7 +1728,7 @@ fn (mut p Parser) parse_for_statement() ![]ast.Stmt {
 			return []ast.Stmt{}
 		}
 	}
-	mut cond := ast.Expr(ast.IntLit{
+	mut cond := p.arena.put_int_lit(ast.IntLit{
 		value: 1
 		text:  '1'
 		line:  t.line
@@ -1759,9 +1767,9 @@ fn (mut p Parser) parse_for_statement() ![]ast.Stmt {
 	// body would jump over a statement written inside the body.
 	mut extra := ?&ast.StmtExtra(none)
 	if step.len > 0 {
-		extra = &ast.StmtExtra{
+		extra = p.arena.box_extra(ast.StmtExtra{
 			step: step
-		}
+		})
 	}
 	loop := ast.Stmt{
 		kind:  .while_stmt
@@ -2046,7 +2054,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 								union_first = first
 							}
 						} else {
-							init = zero_initializer(d.name_at)
+							init = p.zero_initializer(d.name_at)
 						}
 					} else {
 						// A written size smaller than the list is the same
@@ -2069,7 +2077,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 				// below.
 				if literal := p.read_array_string_literal() {
 					if array_takes_string(declared, literal) {
-						init = ast.Expr(literal)
+						init = p.arena.put_str_lit(literal)
 					}
 				}
 			} else {
@@ -2085,7 +2093,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 				// the declaration recorded the name, so a later use of it is
 				// typed by the initializer rather than by the word auto.
 				if initializer := init {
-					declared = auto_deduced_type(initializer)
+					declared = p.auto_deduced_type(initializer)
 					if declared.kind == .unknown {
 						p.error_at(d.name_at, 'unsupported: ${spec.auto_spelling} takes the type of ${d.name} from its initializer, and this compiler did not resolve it')
 					} else {
@@ -2111,7 +2119,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 					converted := p.converted_into(first.typ, initializer)
 					init = converted
 					p.check_initializer(first.typ, converted)
-				} else if !(declared.is_array() && initializer is ast.StrLit) {
+				} else if !(declared.is_array() && initializer.kind == .str_lit) {
 					converted := p.converted_into(declared, initializer)
 					init = converted
 					p.check_initializer(declared, converted)
@@ -2134,15 +2142,17 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// refuses, reported at the literal.
 		mut from_string := false
 		if initializer := init {
-			if initializer is ast.StrLit {
-				if array_takes_string(declared, initializer) {
+			if initializer.kind == .str_lit {
+				node := p.arena.str_lit(initializer)
+				literal := *node
+				if array_takes_string(declared, literal) {
 					from_string = true
-					elements = string_elements_at(initializer, d.name_at)
+					elements = p.string_elements_at(literal, d.name_at)
 					characters := elements.len - 1
 					if array_sized && array_count < characters {
 						// `char c[2] = "abc"` holds two and writes four, and
 						// `char c[0] = "abc"` is the same refusal into none.
-						p.error_span(initializer.line, initializer.col, 'a constraint violation: ${d.name} holds ${array_count} elements and its initializer writes ${elements.len} characters')
+						p.error_span(literal.line, literal.col, 'a constraint violation: ${d.name} holds ${array_count} elements and its initializer writes ${elements.len} characters')
 						p.skip_declaration()
 						return stmts
 					}
@@ -2276,8 +2286,8 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		if !spec.is_typedef && !(spec.is_extern && !has_initializer) {
 			stmts << ast.Stmt{
 				kind:  .var_decl
-				extra: &ast.StmtExtra{
-					init:          decl_init
+				extra: p.arena.box_extra(ast.StmtExtra{
+					init:          decl_init or { ast.Expr{} }
 					decl_name:     d.name
 					decl_type:     if spec.auto_deduced {
 						declared.describe()
@@ -2286,7 +2296,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 					}
 					decl_count:    count
 					decl_stride:   vla_stride
-					decl_vla_size: vla_size
+					decl_vla_size: vla_size or { ast.Expr{} }
 					// The declarator decides whether the object is the aggregate or
 					// something derived from it: `struct S x;` is the object, and
 					// `struct S *p;` is one word holding an address, which the back end
@@ -2299,7 +2309,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 					// calls with this object's address when the block ends. It is
 					// empty for a declaration that asked for none.
 					cleanup:       cleanup
-				}
+				})
 				line:  d.name_at.line
 				col:   d.name_at.col
 			}
@@ -2314,7 +2324,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 				stmts << ast.Stmt{
 					kind:   .assign
 					target: d.name
-					field:  &ast.Field{
+					field:  p.arena.box_field(ast.Field{
 						name:       d.name
 						member:     first.name
 						offset:     0
@@ -2330,7 +2340,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 						}
 						line:       d.name_at.line
 						col:        d.name_at.col
-					}
+					})
 					expr:   initializer
 					line:   d.name_at.line
 					col:    d.name_at.col
@@ -2354,7 +2364,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 				stmts << ast.Stmt{
 					kind:   .assign
 					target: d.name
-					field:  &ast.Field{
+					field:  p.arena.box_field(ast.Field{
 						name:       d.name
 						member:     member.name
 						offset:     layout.offsets[at]
@@ -2370,7 +2380,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 						}
 						line:       d.name_at.line
 						col:        d.name_at.col
-					}
+					})
 					expr:   p.constant_expr(struct_values[i].number or { NumberConstant{} })
 					line:   d.name_at.line
 					col:    d.name_at.col
@@ -2382,7 +2392,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 				stmts << ast.Stmt{
 					kind:   .assign
 					target: d.name
-					field:  &ast.Field{
+					field:  p.arena.box_field(ast.Field{
 						name:       d.name
 						member:     member.name
 						offset:     layout.offsets[at]
@@ -2398,8 +2408,8 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 						}
 						line:       d.name_at.line
 						col:        d.name_at.col
-					}
-					expr:   ast.Expr(ast.IntLit{
+					})
+					expr:   p.arena.put_int_lit(ast.IntLit{
 						value: 0
 						text:  '0'
 						typ:   types.int_type()
@@ -2462,7 +2472,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 				mut leaves := brace_writes()
 				p.collect_leaves(general_target, 0, mut leaves)
 				for leaf in leaves {
-					stmts << p.store_a_leaf(d.name, d.name_at, leaf, zero_initializer(d.name_at),
+					stmts << p.store_a_leaf(d.name, d.name_at, leaf, p.zero_initializer(d.name_at),
 						array, object_bytes, element_width, general_target)
 				}
 				unsafe { leaves.free() }
@@ -2475,7 +2485,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 					} else if number := write.element.number {
 						p.constant_expr(number)
 					} else {
-						zero_initializer(d.name_at)
+						p.zero_initializer(d.name_at)
 					}
 					stmts << p.store_a_leaf(d.name, d.name_at, write, value, array, object_bytes,
 						element_width, general_target)
@@ -2493,7 +2503,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 				value := if i < elements.len {
 					elements[i]
 				} else {
-					ast.Expr(ast.IntLit{
+					p.arena.put_int_lit(ast.IntLit{
 						value: 0
 						text:  '0'
 						typ:   types.int_type()
@@ -2504,7 +2514,7 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 				stmts << ast.Stmt{
 					kind:   .assign
 					target: d.name
-					index:  ast.Expr(ast.IntLit{
+					index:  p.arena.put_int_lit(ast.IntLit{
 						value: i64(i)
 						text:  '${i}'
 						typ:   types.int_type()
@@ -2557,14 +2567,14 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 // live rather than leaked: V lays an ast.Expr out as a pointer to a heap variant,
 // so every expression is one allocation and the tree holds all of them. The
 // number moves with the node's size and not with a missing free.
-fn zero_initializer(at tokenize.Token) ast.Expr {
+fn (mut p Parser) zero_initializer(at tokenize.Token) ast.Expr {
 	// TODO: this builds one IntLit box per zeroed subobject, 41.6 MB of the
 	// compiler's own generated C at the peak: a brace list that writes one of a
 	// struct's four members zeroes the other three, and each zero is its own
 	// node. One node shared by every zero store is the change, and it is a
 	// contract one: the node carries the line and column of its own use, so the
 	// shared node reports the first zero it was built for.
-	return ast.Expr(ast.IntLit{
+	return p.arena.put_int_lit(ast.IntLit{
 		value: 0
 		text:  '0'
 		typ:   types.int_type()
@@ -2593,18 +2603,19 @@ fn (mut p Parser) vector_initializer_stores(declared types.Type, name string, in
 	if count <= 0 {
 		return false
 	}
-	if initializer is ast.Binary {
-		if !initializer.typ.is_vector() || initializer.op != '+' {
+	if initializer.kind == .binary {
+		binary := *p.arena.binary(initializer)
+		if !binary.typ.is_vector() || binary.op != '+' {
 			return false
 		}
-		if !p.vector_lvalue(initializer.left) || !p.vector_lvalue(initializer.right) {
+		if !p.vector_lvalue(binary.left) || !p.vector_lvalue(binary.right) {
 			p.error_at(at, 'unsupported: the element-wise sum assigned to the vector ${name} is lowered one component at a time, and an operand that is not a name, an element or a member would be read once per component')
 			return false
 		}
 		for i in 0 .. count {
-			left := p.vector_lane(initializer.left, element, i, at)
-			right := p.vector_lane(initializer.right, element, i, at)
-			sum := ast.Expr(ast.Binary{
+			left := p.vector_lane(binary.left, element, i, at)
+			right := p.vector_lane(binary.right, element, i, at)
+			sum := p.arena.put_binary(ast.Binary{
 				op:    '+'
 				left:  left
 				right: right
@@ -2616,8 +2627,8 @@ fn (mut p Parser) vector_initializer_stores(declared types.Type, name string, in
 		}
 		return true
 	}
-	if initializer is ast.Ident {
-		if !initializer.typ.is_vector() {
+	if initializer.kind == .ident {
+		if !p.arena.typ(initializer).is_vector() {
 			return false
 		}
 		for i in 0 .. count {
@@ -2633,16 +2644,16 @@ fn (mut p Parser) vector_initializer_stores(declared types.Type, name string, in
 // needs. A name, an element of one and a member of one all do; a call and every
 // other effectful expression do not.
 fn (mut p Parser) vector_lvalue(expr ast.Expr) bool {
-	return expr is ast.Ident || expr is ast.Index || expr is ast.Field
+	return expr.kind == .ident || expr.kind == .index || expr.kind == .field
 }
 
 // vector_lane is `base[i]` for one component of a vector: the element type is
 // the component type, so the subscript the emitter reads scales and loads it the
 // way it reads an element of an array, which is how a vector is stored.
 fn (mut p Parser) vector_lane(base ast.Expr, element types.Type, i int, at tokenize.Token) ast.Expr {
-	return ast.Expr(ast.Index{
+	return p.arena.put_index(ast.Index{
 		base:  base
-		index: ast.Expr(ast.IntLit{
+		index: p.arena.put_int_lit(ast.IntLit{
 			value: i64(i)
 			text:  '${i}'
 			typ:   types.int_type()
@@ -2661,7 +2672,7 @@ fn (mut p Parser) vector_store(name string, i int, value ast.Expr, at tokenize.T
 	return ast.Stmt{
 		kind:   .assign
 		target: name
-		index:  ast.Expr(ast.IntLit{
+		index:  p.arena.put_int_lit(ast.IntLit{
 			value: i64(i)
 			text:  '${i}'
 			typ:   types.int_type()
@@ -2696,7 +2707,7 @@ fn declaration_stride(declared types.Type, representation types.Representation) 
 // expression the path is built on and `typ` its array type; none is answered
 // when the offset does not land on an element boundary or the bottom is not a
 // scalar.
-fn (p Parser) array_element_path(base ast.Expr, typ types.Type, offset int, at tokenize.Token) ?ast.Expr {
+fn (mut p Parser) array_element_path(base ast.Expr, typ types.Type, offset int, at tokenize.Token) ?ast.Expr {
 	if typ.kind != .array {
 		return none
 	}
@@ -2707,9 +2718,9 @@ fn (p Parser) array_element_path(base ast.Expr, typ types.Type, offset int, at t
 	}
 	index := offset / stride
 	remainder := offset % stride
-	here := ast.Expr(ast.Index{
+	here := p.arena.put_index(ast.Index{
 		base:  base
-		index: ast.Expr(ast.IntLit{
+		index: p.arena.put_int_lit(ast.IntLit{
 			value: i64(index)
 			text:  '${index}'
 			typ:   types.int_type()
@@ -2740,11 +2751,11 @@ fn (p Parser) array_element_path(base ast.Expr, typ types.Type, offset int, at t
 // of such an array is a row: `int a[2][3]` is written as `a[i][j]` and its
 // element stride is the whole row. Every other shape is the store
 // store_a_brace_write writes.
-fn (p Parser) store_a_leaf(name string, at tokenize.Token, write BraceWrite, value ast.Expr, array bool, object_bytes int, element_width int, general_target types.Type) ast.Stmt {
+fn (mut p Parser) store_a_leaf(name string, at tokenize.Token, write BraceWrite, value ast.Expr, array bool, object_bytes int, element_width int, general_target types.Type) ast.Stmt {
 	if array && object_bytes == 0 {
 		element := general_target.element() or { types.Type{} }
 		if element.kind == .array {
-			base := ast.Expr(ast.Ident{
+			base := p.arena.put_ident(ast.Ident{
 				name: name
 				typ:  general_target
 				line: at.line
@@ -2754,16 +2765,16 @@ fn (p Parser) store_a_leaf(name string, at tokenize.Token, write BraceWrite, val
 				return ast.Stmt{
 					kind:  .assign
 					expr:  value
-					extra: &ast.StmtExtra{
+					extra: p.arena.box_extra(ast.StmtExtra{
 						subscript: path
-					}
+					})
 					line:  at.line
 					col:   at.col
 				}
 			}
 		}
 	}
-	return store_a_brace_write(name, at, write, value, array, object_bytes, element_width)
+	return p.store_a_brace_write(name, at, write, value, array, object_bytes, element_width)
 }
 
 // store_a_brace_write is the store a body's initializer makes for one scalar
@@ -2773,13 +2784,13 @@ fn (p Parser) store_a_leaf(name string, at tokenize.Token, write BraceWrite, val
 // array whose elements are scalars is written one element at a time, so the
 // subobject is the element at its index and the index scales by the width of one
 // element. A scalar object is the one value, written into the name.
-fn store_a_brace_write(name string, at tokenize.Token, write BraceWrite, value ast.Expr, array bool, object_bytes int, element_width int) ast.Stmt {
+fn (mut p Parser) store_a_brace_write(name string, at tokenize.Token, write BraceWrite, value ast.Expr, array bool, object_bytes int, element_width int) ast.Stmt {
 	if object_bytes == 0 && array {
 		index := if element_width > 0 { write.offset / element_width } else { 0 }
 		return ast.Stmt{
 			kind:   .assign
 			target: name
-			index:  ast.Expr(ast.IntLit{
+			index:  p.arena.put_int_lit(ast.IntLit{
 				value: i64(index)
 				text:  '${index}'
 				typ:   types.int_type()
@@ -2807,7 +2818,7 @@ fn store_a_brace_write(name string, at tokenize.Token, write BraceWrite, value a
 	return ast.Stmt{
 		kind:   .assign
 		target: name
-		field:  &ast.Field{
+		field:  p.arena.box_field(ast.Field{
 			name:       name
 			member:     write.spelling
 			offset:     write.offset
@@ -2819,7 +2830,7 @@ fn store_a_brace_write(name string, at tokenize.Token, write BraceWrite, value a
 			unit_width: write.unit_width
 			line:       at.line
 			col:        at.col
-		}
+		})
 		expr:   value
 		line:   at.line
 		col:    at.col
@@ -2926,15 +2937,11 @@ fn (mut p Parser) parse_nested_function(spec DeclSpec, d Declarator) ?ast.Stmt {
 		line:     at.line
 		col:      at.col
 	}
-	mut held := &ast.FnDecl{}
-	unsafe {
-		*held = decl
-	}
 	return ast.Stmt{
 		kind:  .nested_function
-		extra: &ast.StmtExtra{
-			nested_fn: held
-		}
+		extra: p.arena.box_extra(ast.StmtExtra{
+			nested_fn: p.arena.box_function(decl)
+		})
 		line:  at.line
 		col:   at.col
 	}

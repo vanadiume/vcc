@@ -14,10 +14,10 @@ fn test_a_statement_with_no_extra_answers_the_zero_value_of_every_field() {
 	}
 	assert stmt.resolved().kind == .unknown
 	assert stmt.bytes() == 0
-	assert stmt.decl_vla_size() == none
+	assert stmt.decl_vla_size().is_none()
 	assert stmt.decl_stride() == 0
-	assert stmt.deref() == none
-	assert stmt.subscript() == none
+	assert stmt.deref().is_none()
+	assert stmt.subscript().is_none()
 	assert stmt.case_value() == 0
 	assert stmt.label() == ''
 	assert stmt.asm_text() == ''
@@ -41,7 +41,7 @@ fn test_a_statement_with_an_extra_answers_what_the_extra_holds() {
 	assert stmt.decl_stride() == 4
 	// The fields the extra did not set are still the zero value: one answer per
 	// field and not one answer for the pointer.
-	assert stmt.decl_vla_size() == none
+	assert stmt.decl_vla_size().is_none()
 	assert stmt.label() == ''
 }
 
@@ -55,7 +55,7 @@ fn test_an_extra_that_sets_nothing_answers_the_zero_value() {
 	assert stmt.case_value() == 0
 	assert stmt.label() == ''
 	assert stmt.resolved().kind == .unknown
-	assert stmt.deref() == none
+	assert stmt.deref().is_none()
 	assert stmt.asm_clobbers().len == 0
 }
 
@@ -109,24 +109,22 @@ fn test_the_asm_accessors_read_the_text_the_counts_and_the_clobbers() {
 }
 
 fn test_the_deref_and_the_subscript_of_an_assignment_are_carried() {
+	mut arena := new_arena()
 	stmt := Stmt{
 		kind:  .assign
-		extra: &StmtExtra{
-			deref: Unary{
+		extra: arena.box_extra(StmtExtra{
+			deref: arena.put_unary(Unary{
 				op:   '*'
-				expr: Expr(Ident{
+				expr: arena.put_ident(Ident{
 					name: 'p'
 				})
-			}
-		}
+			})
+		})
 	}
-	deref := stmt.deref() or {
-		assert false
-		return
-	}
-	assert deref is Unary
-	assert (deref as Unary).op == '*'
-	assert stmt.subscript() == none
+	deref := stmt.deref()
+	assert deref.kind == .unary
+	assert arena.unary(deref).op == '*'
+	assert stmt.subscript().is_none()
 	// A statement that carries one dereference still answers zero for every
 	// field it does not carry.
 	assert stmt.bytes() == 0
@@ -134,23 +132,21 @@ fn test_the_deref_and_the_subscript_of_an_assignment_are_carried() {
 }
 
 fn test_the_vla_size_and_the_stride_are_read_off_the_extra() {
-	size := Expr(IntLit{
+	mut arena := new_arena()
+	size := arena.put_int_lit(IntLit{
 		value: 12
 		text:  '12'
 	})
 	stmt := Stmt{
 		kind:  .var_decl
-		extra: &StmtExtra{
+		extra: arena.box_extra(StmtExtra{
 			decl_vla_size: size
 			decl_stride:   4
-		}
+		})
 	}
-	vla := stmt.decl_vla_size() or {
-		assert false
-		return
-	}
-	assert vla is IntLit
-	assert (vla as IntLit).value == 12
+	vla := stmt.decl_vla_size()
+	assert vla.kind == .int_lit
+	assert arena.int_lit(vla).value == 12
 	assert stmt.decl_stride() == 4
 }
 
@@ -163,13 +159,14 @@ fn test_a_boxed_field_is_a_copy_in_the_heap_and_not_an_alias() {
 		name:   'a'
 		offset: 8
 	}
-	mut box := field.boxed()
+	mut arena := new_arena()
+	mut box := arena.box_field(field)
 	assert box.name == 'a'
 	assert box.offset == 8
 	// A second box holds the same content; the two are separate allocations,
 	// which is the shape that lets each one outlive the frame the field was read
 	// in rather than both pointing at where the local lies.
-	other := field.boxed()
+	other := arena.box_field(field)
 	assert other.offset == 8
 	assert other.name == 'a'
 	unsafe {
@@ -178,9 +175,10 @@ fn test_a_boxed_field_is_a_copy_in_the_heap_and_not_an_alias() {
 }
 
 fn test_a_boxed_field_keeps_the_base_expression_and_the_bit_widths() {
+	mut arena := new_arena()
 	field := Field{
 		name:            'm'
-		base:            Expr(Ident{
+		base:            arena.put_ident(Ident{
 			name: 's'
 		})
 		bitfield:        true
@@ -189,14 +187,11 @@ fn test_a_boxed_field_keeps_the_base_expression_and_the_bit_widths() {
 		unit_width:      4
 		through_pointer: true
 	}
-	box := field.boxed()
+	box := arena.box_field(field)
 	assert box.bitfield && box.bit_offset == 3 && box.bit_width == 5
 	assert box.unit_width == 4
 	assert box.through_pointer
-	base := box.base or {
-		assert false
-		return
-	}
-	assert base is Ident
-	assert (base as Ident).name == 's'
+	base := box.base
+	assert base.kind == .ident
+	assert arena.ident(base).name == 's'
 }

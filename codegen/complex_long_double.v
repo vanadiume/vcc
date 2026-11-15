@@ -48,7 +48,7 @@ fn (e Emitter) returns_a_complex_long_double(call ast.Call) bool {
 // or not this file wrote the body, and none of the two tables a call reads for a
 // parameter type names it as a system this back end can carry alone.
 fn (e Emitter) complex_long_double_parameter(call ast.Call, position int) bool {
-	if parameter := call_parameter(call, position) {
+	if parameter := e.call_parameter(call, position) {
 		return parameter.kind == .complex_long_double
 	}
 	if kinds := e.complex_long_double_params[call.name] {
@@ -69,7 +69,7 @@ fn (e Emitter) complex_long_double_argument(call ast.Call, position int, arg ast
 	if e.complex_long_double_parameter(call, position) {
 		return true
 	}
-	if parameter := call_parameter(call, position) {
+	if parameter := e.call_parameter(call, position) {
 		// The callee names its parameters and none of them is this type, so the
 		// argument is converted to whatever the parameter is and not handed over
 		// as an extended complex value.
@@ -81,7 +81,7 @@ fn (e Emitter) complex_long_double_argument(call ast.Call, position int, arg ast
 			return kinds[position]
 		}
 	}
-	return arg.typ.kind == .complex_long_double
+	return e.expr_type(arg).kind == .complex_long_double
 }
 
 // complex_long_double_argument_address leaves in the accumulator the address of
@@ -90,8 +90,8 @@ fn (e Emitter) complex_long_double_argument(call ast.Call, position int, arg ast
 // into a complex value with a zero imaginary part first, which is 6.3.2.2 and
 // what makes `csqrtl(4.0L)` hand over `4.0L + 0.0Li`.
 fn (mut e Emitter) complex_long_double_argument_address(arg ast.Expr, depth int) !void {
-	line := expr_line(arg)
-	col := expr_col(arg)
+	line := e.expr_line(arg)
+	col := e.expr_col(arg)
 	destination := types.complex_long_double_type()
 	object := e.complex_object_as(arg, destination, depth)!
 	frame := e.frame_pointer(line, col)!
@@ -104,47 +104,49 @@ fn (mut e Emitter) complex_long_double_argument_address(arg ast.Expr, depth int)
 // whose components are the extended format and whose arithmetic is the x87
 // stack's rather than one instruction per component in the floating file.
 fn (mut e Emitter) emit_long_double_complex_into(dest Slot, expr ast.Expr, depth int) !void {
-	line := expr_line(expr)
-	col := expr_col(expr)
-	if expr.typ.is_arithmetic() && !expr.typ.kind.is_complex() {
+	line := e.expr_line(expr)
+	col := e.expr_col(expr)
+	typ := e.expr_type(expr)
+	if typ.is_arithmetic() && !typ.kind.is_complex() {
 		return e.emit_real_into_complex_long_double(dest, expr, depth)
 	}
-	if !expr.typ.kind.is_complex() {
-		e.diagnostics << problem(line, col, 'unsupported: a value of type ${expr.typ.describe()} is not converted to ${types.complex_long_double_type().describe()}')
+	if !typ.kind.is_complex() {
+		e.diagnostics << problem(line, col, 'unsupported: a value of type ${typ.describe()} is not converted to ${types.complex_long_double_type().describe()}')
 		return error('not a complex conversion')
 	}
-	if expr.typ.kind != .complex_long_double {
+	if typ.kind != .complex_long_double {
 		// A complex value of the other width converted to this one: each
 		// component is widened to the extended format on the x87 stack.
-		source := e.complex_object_as(expr, expr.typ, depth + 1)!
-		return e.convert_complex_to_extended(dest, source, expr.typ, line, col)
+		source := e.complex_object_as(expr, typ, depth + 1)!
+		return e.convert_complex_to_extended(dest, source, typ, line, col)
 	}
-	if expr is ast.Ident {
-		if local := e.lookup(expr.name) {
+	if expr.kind == .ident {
+		if local := e.lookup(e.unit.arena.ident(expr).name) {
 			if local.complex {
 				return e.copy_complex_frame(local, dest, dest.width, line, col)
 			}
 		}
 	}
-	if expr is ast.Binary {
-		return e.emit_long_double_complex_arithmetic(dest, expr, depth)
+	if expr.kind == .binary {
+		return e.emit_long_double_complex_arithmetic(dest, *e.unit.arena.binary(expr), depth)
 	}
-	if expr is ast.Call {
-		return e.emit_complex_call(dest, expr, depth)
+	if expr.kind == .call {
+		return e.emit_complex_call(dest, *e.unit.arena.call(expr), depth)
 	}
-	if expr is ast.Cast {
-		return e.emit_long_double_complex_into(dest, expr.expr, depth)
+	if expr.kind == .cast {
+		return e.emit_long_double_complex_into(dest, e.unit.arena.cast(expr).expr, depth)
 	}
-	if expr is ast.Unary {
-		if expr.op == '-' {
-			return e.emit_long_double_complex_negation(dest, expr, depth)
+	if expr.kind == .unary {
+		node := e.unit.arena.unary(expr)
+		if node.op == '-' {
+			return e.emit_long_double_complex_negation(dest, *node, depth)
 		}
-		if expr.op == '+' {
-			source := e.complex_object(expr.expr, depth + 1)!
+		if node.op == '+' {
+			source := e.complex_object(node.expr, depth + 1)!
 			return e.copy_complex_frame(source, dest, dest.width, line, col)
 		}
 	}
-	if expr is ast.Ident || expr is ast.Field || expr is ast.Index {
+	if expr.kind == .ident || expr.kind == .field || expr.kind == .index {
 		e.address_of_object(expr, depth + 1)!
 		source_address := e.value_slot(depth + 1)
 		e.store_accumulator(source_address, line, col)!
@@ -156,10 +158,10 @@ fn (mut e Emitter) emit_long_double_complex_into(dest Slot, expr ast.Expr, depth
 		return e.copy_address_object(source_address, destination_address, complex_long_double_bytes,
 			line, col)
 	}
-	if expr is ast.ComplexLit {
+	if expr.kind == .complex_lit {
 		// An imaginary constant of this type: the real part is a zero of the
 		// extended format and the coefficient is the component above it.
-		return e.store_long_double_imaginary_constant(dest, expr)
+		return e.store_long_double_imaginary_constant(dest, *e.unit.arena.complex_lit(expr))
 	}
 	e.diagnostics << problem(line, col, 'unsupported: a value of type ${types.complex_long_double_type().describe()} written as this expression is not one this back end computes')
 	return error('unsupported long double complex value')
@@ -192,8 +194,8 @@ fn (mut e Emitter) store_long_double_imaginary_constant(dest Slot, expr ast.Comp
 // and the imaginary part is +0.0 of it. The zero is written rather than left
 // alone, because the object is storage that may have held something else.
 fn (mut e Emitter) emit_real_into_complex_long_double(dest Slot, expr ast.Expr, depth int) !void {
-	line := expr_line(expr)
-	col := expr_col(expr)
+	line := e.expr_line(expr)
+	col := e.expr_col(expr)
 	if e.is_a_pointer(expr) {
 		e.diagnostics << problem(line, col, 'unsupported: a pointer is not converted to ${types.complex_long_double_type().describe()}')
 		return error('pointer to complex')

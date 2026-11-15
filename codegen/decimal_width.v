@@ -470,12 +470,12 @@ fn (mut e Emitter) emit_decimal_address(expr ast.Expr, depth int) !void {
 		return e.emit_address(ast.Unary{
 			op:   '&'
 			expr: expr
-			typ:  expr.typ
-			line: expr_line(expr)
-			col:  expr_col(expr)
+			typ:  e.expr_type(expr)
+			line: e.expr_line(expr)
+			col:  e.expr_col(expr)
 		}, depth + 1)
 	}
-	e.diagnostics << problem(expr.line, expr.col, 'unsupported: a ${expr.typ.describe()} value is used where a decimal object is needed, and this back end reads a decimal only where it lives')
+	e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: a ${e.expr_type(expr).describe()} value is used where a decimal object is needed, and this back end reads a decimal only where it lives')
 	return error('decimal value')
 }
 
@@ -487,7 +487,7 @@ fn (mut e Emitter) emit_decimal_to_decimal(slot Slot, expr ast.Cast, depth int) 
 		e.diagnostics << problem(expr.line, expr.col, 'internal: the target has no register a decimal conversion needs')
 		return error('decimal registers')
 	}
-	src := expr.expr.typ.kind.decimal_format()
+	src := e.expr_type(expr.expr).kind.decimal_format()
 	dst := expr.typ.kind.decimal_format()
 	e.emit_decimal_address(expr.expr, depth)!
 	e.append(e.target.move_register64(g.rsi, e.accumulator(expr.line, expr.col)!)!)
@@ -531,39 +531,41 @@ fn (mut e Emitter) emit_decimal_copy(slot Slot, expr ast.Expr, line int, col int
 // something else. The negation of an object is not one of these: the arithmetic
 // lane's routine writes it, and this file's own routine for it is gone.
 fn (mut e Emitter) store_decimal_converted(slot Slot, expr ast.Expr, line int, col int, depth int) !bool {
-	if expr is ast.Cast {
-		if !expr.typ.kind.is_decimal() {
+	if expr.kind == .cast {
+		cast := e.unit.arena.cast(expr)
+		if !cast.typ.kind.is_decimal() {
 			return false
 		}
-		if expr.expr.typ.kind.is_decimal() {
-			if expr.expr.typ.kind.decimal_format() == expr.typ.kind.decimal_format()
-				&& e.names_an_object(expr.expr) {
+		if e.expr_type(cast.expr).kind.is_decimal() {
+			if e.expr_type(cast.expr).kind.decimal_format() == cast.typ.kind.decimal_format()
+				&& e.names_an_object(cast.expr) {
 				// A cast that names the width the value already has changes
 				// nothing, so the object is copied.
-				e.emit_decimal_copy(slot, expr.expr, line, col, depth)!
+				e.emit_decimal_copy(slot, cast.expr, line, col, depth)!
 				return true
 			}
-			e.emit_decimal_to_decimal(slot, expr, depth)!
+			e.emit_decimal_to_decimal(slot, *cast, depth)!
 			return true
 		}
-		if _ := decimal_integer_bytes(expr.expr.typ.kind) {
-			e.emit_decimal_from_integer(slot, expr, depth)!
+		if _ := decimal_integer_bytes(e.expr_type(cast.expr).kind) {
+			e.emit_decimal_from_integer(slot, *cast, depth)!
 			return true
 		}
-		if expr.expr.typ.kind in [.double, .float] {
-			e.emit_decimal_from_binary(slot, expr, depth)!
-			return true
-		}
-		return false
-	}
-	if expr is ast.Unary {
-		if expr.op == '+' && expr.expr.typ.kind.is_decimal() && e.names_an_object(expr.expr) {
-			e.emit_decimal_copy(slot, expr.expr, line, col, depth)!
+		if e.expr_type(cast.expr).kind in [.double, .float] {
+			e.emit_decimal_from_binary(slot, *cast, depth)!
 			return true
 		}
 		return false
 	}
-	if expr.typ.kind.is_decimal() && e.names_an_object(expr) {
+	if expr.kind == .unary {
+		node := e.unit.arena.unary(expr)
+		if node.op == '+' && e.expr_type(node.expr).kind.is_decimal() && e.names_an_object(node.expr) {
+			e.emit_decimal_copy(slot, node.expr, line, col, depth)!
+			return true
+		}
+		return false
+	}
+	if e.expr_type(expr).kind.is_decimal() && e.names_an_object(expr) {
 		e.emit_decimal_copy(slot, expr, line, col, depth)!
 		return true
 	}
@@ -600,14 +602,14 @@ fn (mut e Emitter) emit_decimal_from_integer(slot Slot, expr ast.Cast, depth int
 		e.diagnostics << problem(expr.line, expr.col, 'internal: the target has no register a decimal conversion needs')
 		return error('decimal registers')
 	}
-	size := decimal_integer_bytes(expr.expr.typ.kind) or {
-		e.diagnostics << problem(expr.line, expr.col, 'unsupported: ${expr.expr.typ.describe()} is converted to ${expr.typ.describe()}, and only a 32- or 64-bit integer is')
+	size := decimal_integer_bytes(e.expr_type(expr.expr).kind) or {
+		e.diagnostics << problem(expr.line, expr.col, 'unsupported: ${e.expr_type(expr.expr).describe()} is converted to ${expr.typ.describe()}, and only a 32- or 64-bit integer is')
 		return error('decimal integer')
 	}
 	e.emit_address(ast.Unary{
 		op:   '&'
 		expr: expr.expr
-		typ:  expr.expr.typ
+		typ:  e.expr_type(expr.expr)
 		line: expr.line
 		col:  expr.col
 	}, depth + 1)!
@@ -615,7 +617,7 @@ fn (mut e Emitter) emit_decimal_from_integer(slot Slot, expr ast.Cast, depth int
 	e.leave_address(slot, expr.line, expr.col)!
 	e.append(e.target.move_register64(g.rdi, e.accumulator(expr.line, expr.col)!)!)
 	e.append(e.target.move_register64(g.rax, g.rsi)!)
-	name := decimal_from_integer_name(size, expr.expr.typ.kind.is_unsigned(), expr.typ.kind.decimal_format())
+	name := decimal_from_integer_name(size, e.expr_type(expr.expr).kind.is_unsigned(), expr.typ.kind.decimal_format())
 	e.decimal_convert_used[name] = true
 	e.reference(e.target.call_near(0), .call_local, name, '')
 }
@@ -712,17 +714,17 @@ fn (e Emitter) emit_decimal_is_zero_routine(mut r DecimalRoutine, src decimal.Fo
 // is never materialised in a register.
 fn (mut e Emitter) emit_decimal_is_zero_test(unary ast.Unary, depth int) !void {
 	if !e.names_an_object(unary.expr) {
-		e.diagnostics << problem(unary.line, unary.col, 'unsupported: a decimal logical negation reads its operand where it lies, and a ${unary.expr.typ.describe()} result does not lie anywhere')
+		e.diagnostics << problem(unary.line, unary.col, 'unsupported: a decimal logical negation reads its operand where it lies, and a ${e.expr_type(unary.expr).describe()} result does not lie anywhere')
 		return error('decimal object')
 	}
 	e.emit_address(ast.Unary{
 		op:   '&'
 		expr: unary.expr
-		typ:  unary.expr.typ
+		typ:  e.expr_type(unary.expr)
 		line: unary.line
 		col:  unary.col
 	}, depth + 1)!
-	name := decimal_is_zero_name(unary.expr.typ.kind.decimal_format())
+	name := decimal_is_zero_name(e.expr_type(unary.expr).kind.decimal_format())
 	e.decimal_convert_used[name] = true
 	e.reference(e.target.call_near(0), .call_local, name, '')
 }

@@ -26,20 +26,22 @@ import types
 // reader can evaluate: a decimal constant, or one with a sign in front of it.
 // The reader keeps `-1.5df` as the negation of the constant rather than a
 // constant with a negative sign, so the sign is taken off here.
-fn decimal_constant_value(expr ast.Expr) ?types.Decimal {
-	match expr {
-		ast.FloatLit {
-			if expr.decimal_value.kind.is_decimal() && expr.typ.kind.is_decimal() {
-				return expr.decimal_value
+fn (p Parser) decimal_constant_value(expr ast.Expr) ?types.Decimal {
+	match expr.kind {
+		.float_lit {
+			node := p.arena.float_lit(expr)
+			if node.decimal_value.kind.is_decimal() && node.typ.kind.is_decimal() {
+				return node.decimal_value
 			}
 			return none
 		}
-		ast.Unary {
-			if expr.op != '-' && expr.op != '+' {
+		.unary {
+			node := p.arena.unary(expr)
+			if node.op != '-' && node.op != '+' {
 				return none
 			}
-			inner := decimal_constant_value(expr.expr) or { return none }
-			if expr.op == '+' {
+			inner := p.decimal_constant_value(node.expr) or { return none }
+			if node.op == '+' {
 				return inner
 			}
 			mut negated := inner
@@ -90,9 +92,9 @@ fn decimal_ideal(op string, a decimal.Value, b decimal.Value) int {
 // expression that is not one, so the operation stays in the tree and the back
 // end refuses it by name, which is what it does with every decimal value it has
 // no form for.
-fn (p Parser) fold_decimal_binary(binary ast.Binary) ?ast.Expr {
-	a := decimal_constant_value(binary.left) or { return none }
-	b := decimal_constant_value(binary.right) or { return none }
+fn (mut p Parser) fold_decimal_binary(binary ast.Binary) ?ast.Expr {
+	a := p.decimal_constant_value(binary.left) or { return none }
+	b := p.decimal_constant_value(binary.right) or { return none }
 	if !a.kind.is_decimal() || a.kind != b.kind {
 		return none
 	}
@@ -101,7 +103,7 @@ fn (p Parser) fold_decimal_binary(binary ast.Binary) ?ast.Expr {
 	vb := decimal_stored(b.value(), f) or { return none }
 	if binary.op in ['==', '!=', '<', '<=', '>', '>='] {
 		answer := decimal_compare(va, vb, binary.op)
-		return ast.Expr(ast.IntLit{
+		return p.arena.put_int_lit(ast.IntLit{
 			value: answer
 			text:  '${answer}'
 			typ:   types.int_type()
@@ -120,7 +122,7 @@ fn (p Parser) fold_decimal_binary(binary ast.Binary) ?ast.Expr {
 		exponent: result.exponent
 		special:  result.special
 	}
-	return ast.Expr(ast.FloatLit{
+	return p.arena.put_float_lit(ast.FloatLit{
 		decimal_value: value
 		text:          value.text()
 		typ:           binary.typ

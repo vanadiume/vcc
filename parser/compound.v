@@ -97,14 +97,14 @@ fn (mut p Parser) build_compound_literal(spec DeclSpec, d Declarator, at tokeniz
 		// for the scope; the stores are wrapped in a statement expression at the
 		// literal's position and the comma is worth the object they wrote.
 		p.compound_pending[p.compound_pending.len - 1] << stmts[0..1]
-		return ast.Expr(ast.Comma{
-			left:  ast.Expr(ast.StmtExpr{
+		return p.arena.put_comma(ast.Comma{
+			left:  p.arena.put_stmt_expr(ast.StmtExpr{
 				body: stmts[1..].clone()
 				typ:  types.void_type()
 				line: at.line
 				col:  at.col
 			})
-			right: ast.Expr(ast.Ident{
+			right: p.arena.put_ident(ast.Ident{
 				name: name
 				typ:  target
 				line: at.line
@@ -116,7 +116,7 @@ fn (mut p Parser) build_compound_literal(spec DeclSpec, d Declarator, at tokeniz
 		})
 	}
 	p.compound_pending[p.compound_pending.len - 1] << stmts
-	return ast.Expr(ast.Ident{
+	return p.arena.put_ident(ast.Ident{
 		name: name
 		typ:  target
 		line: at.line
@@ -238,7 +238,7 @@ fn (mut p Parser) compound_literal_object(name string, spec DeclSpec, d Declarat
 		col:   at.col
 	}
 	for leaf in leaves {
-		stmts << p.store_a_leaf(name, at, leaf, zero_initializer(at), array, bytes, element_width,
+		stmts << p.store_a_leaf(name, at, leaf, p.zero_initializer(at), array, bytes, element_width,
 			target)
 	}
 	for write in writes {
@@ -247,7 +247,7 @@ fn (mut p Parser) compound_literal_object(name string, spec DeclSpec, d Declarat
 		} else if number := write.element.number {
 			p.constant_expr(number)
 		} else {
-			zero_initializer(at)
+			p.zero_initializer(at)
 		}
 		stmts << p.store_a_leaf(name, at, write, value, array, bytes, element_width, target)
 	}
@@ -276,7 +276,7 @@ fn (mut p Parser) compound_literal_size(spec DeclSpec, d Declarator, list BraceL
 // parenthesis can tell it from a conversion. The parenthesis are matched
 // without reading anything, because the answer decides which reader runs and a
 // reader that guessed would have to be undone.
-fn (p Parser) looks_like_compound_literal() bool {
+fn (mut p Parser) looks_like_compound_literal() bool {
 	if !p.at_punct('(') || !p.starts_type_name(p.peek_at(1)) {
 		return false
 	}

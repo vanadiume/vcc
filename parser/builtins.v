@@ -182,7 +182,7 @@ fn (mut p Parser) parse_types_compatible(at tokenize.Token) !ast.Expr {
 		return error('unclosed __builtin_types_compatible_p')
 	}
 	same := types.unqualified(left.typ).same(types.unqualified(right.typ))
-	return ast.Expr(ast.IntLit{
+	return p.arena.put_int_lit(ast.IntLit{
 		value: if same { 1 } else { 0 }
 		text:  '__builtin_types_compatible_p(${left.spelling}, ${right.spelling})'
 		typ:   types.int_type()
@@ -262,7 +262,7 @@ fn (mut p Parser) parse_offsetof(at tokenize.Token) !ast.Expr {
 	if !p.expect_punct(')') {
 		return error('unclosed __builtin_offsetof')
 	}
-	return ast.Expr(ast.IntLit{
+	return p.arena.put_int_lit(ast.IntLit{
 		value: i64(offset)
 		text:  '__builtin_offsetof(${start.spelling})'
 		typ:   types.unsigned_long_type()
@@ -354,11 +354,11 @@ fn (mut p Parser) parse_member_offset(declared types.Type) !int {
 // cannot find again has nowhere to put either.
 fn (mut p Parser) list_argument(at tokenize.Token, spelling string) !ast.Expr {
 	list := p.parse_expression()!
-	if list !is ast.Ident {
-		p.error_at(at, 'unsupported: ${spelling} writes the argument list it is given, and ${describe_operand(list)} is not one this compiler can write through')
+	if list.kind != .ident {
+		p.error_at(at, 'unsupported: ${spelling} writes the argument list it is given, and ${describe_operand(list, &p.arena)} is not one this compiler can write through')
 		return error('not an argument list name')
 	}
-	return ast.Expr(list)
+	return list
 }
 
 fn (mut p Parser) parse_va_start(at tokenize.Token) !ast.Expr {
@@ -375,7 +375,7 @@ fn (mut p Parser) parse_va_start(at tokenize.Token) !ast.Expr {
 		p.error_at(at, 'unclosed __builtin_va_start')
 		return error('unclosed __builtin_va_start')
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: '__builtin_va_start'
 		args: [list]
 		typ:  types.void_type()
@@ -401,7 +401,7 @@ fn (mut p Parser) parse_va_arg(at tokenize.Token) !ast.Expr {
 		p.error_at(at, 'unclosed __builtin_va_arg')
 		return error('unclosed __builtin_va_arg')
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: '__builtin_va_arg'
 		args: [list]
 		typ:  read.typ
@@ -417,7 +417,7 @@ fn (mut p Parser) parse_va_end(at tokenize.Token) !ast.Expr {
 		p.error_at(at, 'unclosed __builtin_va_end')
 		return error('unclosed __builtin_va_end')
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: '__builtin_va_end'
 		args: [list]
 		typ:  types.void_type()
@@ -438,7 +438,7 @@ fn (mut p Parser) parse_va_copy(at tokenize.Token) !ast.Expr {
 		p.error_at(at, 'unclosed __builtin_va_copy')
 		return error('unclosed __builtin_va_copy')
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: '__builtin_va_copy'
 		args: [destination, source]
 		typ:  types.void_type()
@@ -467,12 +467,12 @@ fn (mut p Parser) parse_va_copy(at tokenize.Token) !ast.Expr {
 // else is refused by name rather than read at the width of something smaller.
 fn (mut p Parser) atomic_target(at tokenize.Token, spelling string, expr ast.Expr) ?types.Type {
 	if p.is_unresolved(expr) {
-		p.error_at(at, 'unsupported: ${spelling} reads through ${describe_operand(expr)}, and this compiler did not resolve the type it points at')
+		p.error_at(at, 'unsupported: ${spelling} reads through ${describe_operand(expr, &p.arena)}, and this compiler did not resolve the type it points at')
 		return none
 	}
 	pointer := p.value_type(expr)
 	pointee := pointer.pointee() or {
-		p.error_at(at, 'unsupported: ${spelling} operates through a pointer, and ${describe_operand(expr)} is ${pointer.describe()}')
+		p.error_at(at, 'unsupported: ${spelling} operates through a pointer, and ${describe_operand(expr, &p.arena)} is ${pointer.describe()}')
 		return none
 	}
 	kind := pointee.enum_underlying()
@@ -490,7 +490,7 @@ fn (mut p Parser) atomic_target(at tokenize.Token, spelling string, expr ast.Exp
 // relaxed, release and sequentially consistent.
 fn (mut p Parser) atomic_order(at tokenize.Token, spelling string, expr ast.Expr, storing bool) ?ast.Expr {
 	value := p.constant_value(expr) or {
-		p.error_at(at, 'unsupported: ${spelling} asks for a memory order, and ${describe_operand(expr)} is not a constant this compiler can read')
+		p.error_at(at, 'unsupported: ${spelling} asks for a memory order, and ${describe_operand(expr, &p.arena)} is not a constant this compiler can read')
 		return none
 	}
 	if value < 0 || value > 5 {
@@ -501,7 +501,7 @@ fn (mut p Parser) atomic_order(at tokenize.Token, spelling string, expr ast.Expr
 		p.error_at(at, 'unsupported: ${spelling} stores with memory order ${value}, and a store is relaxed, release or sequentially consistent')
 		return none
 	}
-	return integer_constant(value, '${value}', at, types.Kind.int_)
+	return p.integer_constant(value, '${value}', at, types.Kind.int_)
 }
 
 // parse_atomic_builtin reads the seven atomic operations the back end emits an
@@ -522,7 +522,7 @@ fn (mut p Parser) parse_atomic_builtin(at tokenize.Token) !ast.Expr {
 			order := p.atomic_order(at, at.text, args[1], false) or {
 				return error('the memory order of __atomic_load_n')
 			}
-			return ast.Expr(ast.Call{
+			return p.arena.put_call(ast.Call{
 				name: at.text
 				args: [args[0], order]
 				typ:  target
@@ -541,7 +541,7 @@ fn (mut p Parser) parse_atomic_builtin(at tokenize.Token) !ast.Expr {
 			order := p.atomic_order(at, at.text, args[2], true) or {
 				return error('the memory order of __atomic_store_n')
 			}
-			return ast.Expr(ast.Call{
+			return p.arena.put_call(ast.Call{
 				name: at.text
 				args: [args[0], args[1], order]
 				typ:  types.void_type()
@@ -560,7 +560,7 @@ fn (mut p Parser) parse_atomic_builtin(at tokenize.Token) !ast.Expr {
 			order := p.atomic_order(at, at.text, args[2], false) or {
 				return error('the memory order of ${at.text}')
 			}
-			return ast.Expr(ast.Call{
+			return p.arena.put_call(ast.Call{
 				name: at.text
 				args: [args[0], args[1], order]
 				typ:  target
@@ -585,7 +585,7 @@ fn (mut p Parser) parse_atomic_builtin(at tokenize.Token) !ast.Expr {
 			_ = p.atomic_order(at, at.text, args[5], false) or {
 				return error('the failure memory order of __atomic_compare_exchange_n')
 			}
-			return ast.Expr(ast.Call{
+			return p.arena.put_call(ast.Call{
 				name: at.text
 				args: args
 				typ:  types.bool_type()
@@ -601,7 +601,7 @@ fn (mut p Parser) parse_atomic_builtin(at tokenize.Token) !ast.Expr {
 			order := p.atomic_order(at, at.text, args[0], false) or {
 				return error('the memory order of __atomic_thread_fence')
 			}
-			return ast.Expr(ast.Call{
+			return p.arena.put_call(ast.Call{
 				name: at.text
 				args: [order]
 				typ:  types.void_type()
@@ -637,11 +637,11 @@ fn (mut p Parser) parse_bit_count(at tokenize.Token) !ast.Expr {
 			} else {
 				'trailing'
 			}
-			p.error_at(at, 'unsupported: ${at.text} counts the ${zeros} zeros of an integer, and ${describe_operand(args[0])} is ${operand.describe()}')
+			p.error_at(at, 'unsupported: ${at.text} counts the ${zeros} zeros of an integer, and ${describe_operand(args[0], &p.arena)} is ${operand.describe()}')
 			return error('the operand of ${at.text}')
 		}
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: at.text
 		args: args
 		typ:  types.int_type()
@@ -689,7 +689,7 @@ fn (mut p Parser) parse_library_builtin(at tokenize.Token) !ast.Expr {
 			types.int_type()
 		}
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: at.text
 		args: args
 		typ:  typ
@@ -732,11 +732,11 @@ fn (mut p Parser) parse_first_set(at tokenize.Token) !ast.Expr {
 	if !p.is_unresolved(args[0]) {
 		operand := p.value_type(args[0])
 		if operand.kind != .unknown && !operand.kind.is_integer() {
-			p.error_at(at, 'unsupported: ${at.text} finds the lowest set bit of an integer, and ${describe_operand(args[0])} is ${operand.describe()}')
+			p.error_at(at, 'unsupported: ${at.text} finds the lowest set bit of an integer, and ${describe_operand(args[0], &p.arena)} is ${operand.describe()}')
 			return error('the operand of ${at.text}')
 		}
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: at.text
 		args: args
 		typ:  types.int_type()
@@ -768,7 +768,7 @@ fn (mut p Parser) parse_assume_aligned(at tokenize.Token) !ast.Expr {
 			return error('the arguments of ${at.text}')
 		}
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: at.text
 		args: args
 		typ:  typ
@@ -793,7 +793,7 @@ fn (mut p Parser) parse_constant_p(at tokenize.Token) !ast.Expr {
 		return error('unclosed __builtin_constant_p')
 	}
 	answer := if _ := p.constant_value(operand) { i64(1) } else { i64(0) }
-	return integer_constant(answer, '${at.text}(${describe_operand(operand)})', at, types.Kind.int_)
+	return p.integer_constant(answer, '${at.text}(${describe_operand(operand, &p.arena)}, &p.arena)', at, types.Kind.int_)
 }
 
 // parse_object_size answers `__builtin_object_size(ptr, type)`, which is a
@@ -833,10 +833,10 @@ fn (mut p Parser) parse_object_size(at tokenize.Token) !ast.Expr {
 		return error('the type of the answer is out of range')
 	}
 	if p.is_unresolved(operand) {
-		p.error_at(at, 'unsupported: __builtin_object_size asks how many bytes ${describe_operand(operand)} names, and this compiler did not resolve its type')
+		p.error_at(at, 'unsupported: __builtin_object_size asks how many bytes ${describe_operand(operand, &p.arena)} names, and this compiler did not resolve its type')
 		return error('no type for the operand')
 	}
-	mut subject := operand.typ
+	mut subject := p.arena.typ(operand)
 	// The object the answer is about. `&name` names the object itself, so the answer
 	// is the size of what the operand is the address of, which is what gcc reads:
 	// `__builtin_object_size(&arr, 0)` for `int arr[10]` is 40 and not the eight a
@@ -849,11 +849,10 @@ fn (mut p Parser) parse_object_size(at tokenize.Token) !ast.Expr {
 	// reader answers -1, which is the answer the construct has for an object it
 	// cannot state. A number that is not the object's size would be worse than the
 	// unknown.
-	if operand is ast.Unary {
-		if operand.op == '&' {
-			if operand.expr is ast.Ident {
-				subject = operand.expr.typ
-			}
+	if operand.kind == .unary {
+		node := p.arena.unary(operand)
+		if node.op == '&' && node.expr.kind == .ident {
+			subject = p.arena.ident(node.expr).typ
 		}
 	}
 	mut size := i64(-1)
@@ -867,7 +866,7 @@ fn (mut p Parser) parse_object_size(at tokenize.Token) !ast.Expr {
 	if size < 0 && kind >= 2 {
 		size = 0
 	}
-	return integer_constant(size, '${at.text}(${describe_operand(operand)}, ${kind})', at, types.Kind.unsigned_long)
+	return p.integer_constant(size, '${at.text}(${describe_operand(operand, &p.arena)}, ${kind}, &p.arena)', at, types.Kind.unsigned_long)
 }
 
 // parse_return_address reads `__builtin_return_address(level)`, which is the
@@ -893,7 +892,7 @@ fn (mut p Parser) parse_return_address(at tokenize.Token) !ast.Expr {
 		p.error_at(at, 'unsupported: __builtin_return_address reads the return address of a caller ${level} frames up, and this compiler answers level 0 only')
 		return error('a level above zero')
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: '__builtin_return_address'
 		args: []
 		typ:  types.pointer_to(types.void_type())
@@ -913,7 +912,7 @@ fn (mut p Parser) parse_no_argument_builtin(at tokenize.Token) !ast.Expr {
 		p.error_at(at, 'unsupported: ${at.text} takes no arguments')
 		return error('the arguments of ${at.text}')
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: at.text
 		args: []
 		typ:  types.void_type()
@@ -937,7 +936,7 @@ fn (mut p Parser) parse_byte_swap(at tokenize.Token) !ast.Expr {
 	if !p.is_unresolved(args[0]) {
 		operand := p.value_type(args[0])
 		if operand.kind != .unknown && !operand.kind.is_integer() {
-			p.error_at(at, 'unsupported: ${at.text} reverses the bytes of an integer, and ${describe_operand(args[0])} is ${operand.describe()}')
+			p.error_at(at, 'unsupported: ${at.text} reverses the bytes of an integer, and ${describe_operand(args[0], &p.arena)} is ${operand.describe()}')
 			return error('the operand of ${at.text}')
 		}
 	}
@@ -948,7 +947,7 @@ fn (mut p Parser) parse_byte_swap(at tokenize.Token) !ast.Expr {
 		'__builtin_bswap64' { types.unsigned_long_long_type() }
 		else { types.unsigned_int_type() }
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: at.text
 		args: args
 		typ:  typ
@@ -972,11 +971,11 @@ fn (mut p Parser) parse_bit_operation(at tokenize.Token) !ast.Expr {
 	if !p.is_unresolved(args[0]) {
 		operand := p.value_type(args[0])
 		if operand.kind != .unknown && !operand.kind.is_integer() {
-			p.error_at(at, 'unsupported: ${at.text} counts the one bits of an integer, and ${describe_operand(args[0])} is ${operand.describe()}')
+			p.error_at(at, 'unsupported: ${at.text} counts the one bits of an integer, and ${describe_operand(args[0], &p.arena)} is ${operand.describe()}')
 			return error('the operand of ${at.text}')
 		}
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: at.text
 		args: args
 		typ:  types.int_type()
@@ -1019,11 +1018,11 @@ fn (mut p Parser) parse_overflow(at tokenize.Token) !ast.Expr {
 	if !p.is_unresolved(args[2]) {
 		pointer := p.value_type(args[2])
 		pointee := pointer.pointee() or {
-			p.error_at(at, 'unsupported: ${at.text} stores its result through the third argument, and ${describe_operand(args[2])} is ${pointer.describe()}')
+			p.error_at(at, 'unsupported: ${at.text} stores its result through the third argument, and ${describe_operand(args[2], &p.arena)} is ${pointer.describe()}')
 			return error('the result pointer of ${at.text}')
 		}
 		if !pointee.kind.is_integer() {
-			p.error_at(at, 'unsupported: ${at.text} stores an integer result, and ${describe_operand(args[2])} points at ${pointee.describe()}')
+			p.error_at(at, 'unsupported: ${at.text} stores an integer result, and ${describe_operand(args[2], &p.arena)} points at ${pointee.describe()}')
 			return error('the result pointer of ${at.text}')
 		}
 		result = pointee
@@ -1053,7 +1052,7 @@ fn (mut p Parser) parse_overflow(at tokenize.Token) !ast.Expr {
 			}
 		}
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: at.text
 		args: args
 		typ:  types.int_type()
@@ -1077,11 +1076,11 @@ fn (mut p Parser) parse_alloc(at tokenize.Token) !ast.Expr {
 	if !p.is_unresolved(args[0]) {
 		size := p.value_type(args[0])
 		if size.kind != .unknown && !size.kind.is_integer() {
-			p.error_at(at, 'unsupported: ${at.text} takes a size in bytes, and ${describe_operand(args[0])} is ${size.describe()}')
+			p.error_at(at, 'unsupported: ${at.text} takes a size in bytes, and ${describe_operand(args[0], &p.arena)} is ${size.describe()}')
 			return error('the size of ${at.text}')
 		}
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		name: '__builtin_alloca'
 		args: args
 		typ:  types.pointer_to(types.void_type())
@@ -1114,13 +1113,13 @@ fn (mut p Parser) parse_value_builtin(at tokenize.Token) !ast.Expr {
 		if !p.expect_punct(')') {
 			return error('a NaN call')
 		}
-		return float_constant(math.nan(), builtin_width(at.text), '${at.text}("")', at)
+		return p.float_constant(math.nan(), builtin_width(at.text), '${at.text}("")', at)
 	}
 	p.next() // (
 	if !p.expect_punct(')') {
 		return error('a call with no argument')
 	}
-	return float_constant(math.inf(1), builtin_width(at.text), '${at.text}()', at)
+	return p.float_constant(math.inf(1), builtin_width(at.text), '${at.text}()', at)
 }
 
 // builtin_width is the type a floating builtin answers with, read off the
@@ -1155,12 +1154,12 @@ fn (mut p Parser) parse_signbit(at tokenize.Token) !ast.Expr {
 	if !p.expect_punct(')') {
 		return error('a value')
 	}
-	if value := constant_double(operand) {
-		return integer_constant(if math.signbit(value) { 1 } else { 0 },
-			'${at.text}(${describe_operand(operand)})', at, types.Kind.int_)
+	if value := p.constant_double(operand) {
+		return p.integer_constant(if math.signbit(value) { 1 } else { 0 },
+			'${at.text}(${describe_operand(operand, &p.arena)}, &p.arena)', at, types.Kind.int_)
 	}
-	zero := float_constant(0.0, types.double_type(), '0.0', at)
-	one := float_constant(1.0, types.double_type(), '1.0', at)
+	zero := p.float_constant(0.0, types.double_type(), '0.0', at)
+	one := p.float_constant(1.0, types.double_type(), '1.0', at)
 	negative := p.builtin_binary('<', operand, zero, at)
 	reciprocal := p.builtin_binary('/', one, operand, at)
 	underflow := p.builtin_binary('<', reciprocal, zero, at)
@@ -1182,15 +1181,15 @@ fn (mut p Parser) parse_isinf_sign(at tokenize.Token) !ast.Expr {
 	if !p.expect_punct(')') {
 		return error('a value')
 	}
-	if value := constant_double(operand) {
-		return integer_constant(isinf_sign_of(value), '${at.text}(${describe_operand(operand)})', at, types.Kind.int_)
+	if value := p.constant_double(operand) {
+		return p.integer_constant(isinf_sign_of(value), '${at.text}(${describe_operand(operand, &p.arena)}, &p.arena)', at, types.Kind.int_)
 	}
-	positive := float_constant(math.inf(1), types.double_type(), '__builtin_huge_val()', at)
-	negative := float_constant(-math.inf(1), types.double_type(), '-__builtin_huge_val()', at)
+	positive := p.float_constant(math.inf(1), types.double_type(), '__builtin_huge_val()', at)
+	negative := p.float_constant(-math.inf(1), types.double_type(), '-__builtin_huge_val()', at)
 	positive_answer := p.builtin_conditional(p.builtin_binary('==', operand, positive, at),
-		integer_constant(1, '1', at, types.Kind.int_), integer_constant(0, '0', at, types.Kind.int_), at)
+		p.integer_constant(1, '1', at, types.Kind.int_), p.integer_constant(0, '0', at, types.Kind.int_), at)
 	return p.builtin_conditional(p.builtin_binary('==', operand, negative, at),
-		integer_constant(-1, '-1', at, types.Kind.int_), positive_answer, at)
+		p.integer_constant(-1, '-1', at, types.Kind.int_), positive_answer, at)
 }
 
 // isinf_sign_of is gcc's answer for a constant: 1 at positive infinity, -1 at
@@ -1222,14 +1221,14 @@ fn (mut p Parser) parse_classify_type(at tokenize.Token) !ast.Expr {
 	}
 	typ := p.value_type(operand)
 	if p.is_unresolved(operand) || typ.kind == .unknown {
-		p.error_at(at, 'unsupported: ${at.text} asks about ${describe_operand(operand)}, and this compiler did not resolve its type')
+		p.error_at(at, 'unsupported: ${at.text} asks about ${describe_operand(operand, &p.arena)}, and this compiler did not resolve its type')
 		return error('no type for the operand')
 	}
 	number := type_class(typ) or {
 		p.error_at(at, 'unsupported: ${at.text} has no number for ${typ.describe()}, and gcc has none either')
 		return error('no class for the type')
 	}
-	return integer_constant(number, '${at.text}(${describe_operand(operand)})', at, types.Kind.int_)
+	return p.integer_constant(number, '${at.text}(${describe_operand(operand, &p.arena)}, &p.arena)', at, types.Kind.int_)
 }
 
 // type_class is the number gcc's `__builtin_classify_type` gives a type, or none
@@ -1262,14 +1261,15 @@ fn type_class(typ types.Type) ?i64 {
 // literal, and gcc folds it before it is asked for its sign, so the sign is taken
 // off the value here too. That is what makes `__builtin_signbit(-0.0)` the -0.0
 // gcc answers 1 for.
-fn constant_double(expr ast.Expr) ?f64 {
-	match expr {
-		ast.FloatLit {
-			return expr.value
+fn (p Parser) constant_double(expr ast.Expr) ?f64 {
+	match expr.kind {
+		.float_lit {
+			return p.arena.float_lit(expr).value
 		}
-		ast.Unary {
-			if expr.op == '-' {
-				if inner := constant_double(expr.expr) {
+		.unary {
+			node := p.arena.unary(expr)
+			if node.op == '-' {
+				if inner := p.constant_double(node.expr) {
 					return -inner
 				}
 			}
@@ -1289,9 +1289,9 @@ fn constant_double(expr ast.Expr) ?f64 {
 // the builtin computed. The node carries both: the double it holds, which the
 // folder reads, and the extended value, so the emitter is never handed a long
 // double literal with nothing of the extended type to write.
-fn float_constant(value f64, typ types.Type, text string, at tokenize.Token) ast.Expr {
+fn (mut p Parser) float_constant(value f64, typ types.Type, text string, at tokenize.Token) ast.Expr {
 	if typ.kind.is_extended() {
-		return ast.Expr(ast.FloatLit{
+		return p.arena.put_float_lit(ast.FloatLit{
 			value:      value
 			long_value: types.long_double_from_double(value)
 			text:       text
@@ -1300,7 +1300,7 @@ fn float_constant(value f64, typ types.Type, text string, at tokenize.Token) ast
 			col:        at.col
 		})
 	}
-	return ast.Expr(ast.FloatLit{
+	return p.arena.put_float_lit(ast.FloatLit{
 		value: value
 		text:  text
 		typ:   typ
@@ -1313,8 +1313,8 @@ fn float_constant(value f64, typ types.Type, text string, at tokenize.Token) ast
 // value and the kind a use of it has. An enumeration constant's kind is the one
 // its enum settled (see types.enum_constant_kind), and every other caller here
 // names an int, which is what a classifying builtin answers.
-fn integer_constant(value i64, text string, at tokenize.Token, kind types.Kind) ast.Expr {
-	return ast.Expr(ast.IntLit{
+fn (mut p Parser) integer_constant(value i64, text string, at tokenize.Token, kind types.Kind) ast.Expr {
+	return p.arena.put_int_lit(ast.IntLit{
 		value: value
 		text:  text
 		typ:   types.scalar(kind) or { types.int_type() }
@@ -1333,7 +1333,7 @@ fn (mut p Parser) builtin_binary(op string, left ast.Expr, right ast.Expr, at to
 		...at
 		text: op
 	}
-	return ast.Expr(ast.Binary{
+	return p.arena.put_binary(ast.Binary{
 		op:    op
 		left:  left
 		right: right
@@ -1348,7 +1348,7 @@ fn (mut p Parser) builtin_conditional(condition ast.Expr, then_expr ast.Expr, el
 		...at
 		text: '?'
 	}
-	return ast.Expr(ast.Conditional{
+	return p.arena.put_conditional(ast.Conditional{
 		cond:      condition
 		then_expr: then_expr
 		else_expr: else_expr

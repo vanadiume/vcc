@@ -54,7 +54,7 @@ fn (e Emitter) writes_a_long_double(written string) bool {
 // expression is the answer. Arithmetic between two of them is refused by name
 // below where the two formats would disagree.
 fn (e Emitter) long_double_of(expr ast.Expr) bool {
-	return expr.typ.kind.is_extended()
+	return e.expr_type(expr).kind.is_extended()
 }
 
 // global_is_long_double is the same question about a top-level object. An array
@@ -98,7 +98,7 @@ fn (e Emitter) returns_a_long_double(call ast.Call) bool {
 // argument's own type answers in that case, which is the same fallback
 // argument_is_double makes.
 fn (e Emitter) extended_parameter(call ast.Call, position int) ?bool {
-	if parameter := call_parameter(call, position) {
+	if parameter := e.call_parameter(call, position) {
 		return abi.travels_on_the_x87_stack(parameter)
 	}
 	if extendeds := e.extended_params[call.name] {
@@ -169,8 +169,8 @@ fn (mut e Emitter) emit_long_double_argument(expr ast.Expr, line int, col int, d
 // even where the reader left the call expression's own type unresolved, so the
 // question is asked the way returns_a_long_double asks it.
 fn (e Emitter) is_extended(expr ast.Expr) bool {
-	if expr is ast.Call {
-		return e.returns_a_long_double(expr)
+	if expr.kind == .call {
+		return e.returns_a_long_double(*e.unit.arena.call(expr))
 	}
 	return e.long_double_of(expr)
 }
@@ -361,14 +361,14 @@ fn (mut e Emitter) convert_value_to_extended(address Slot, expr ast.Expr, line i
 		e.diagnostics << problem(line, col, 'unsupported: the value is one this back end cannot size, so it cannot be converted to a long double')
 		return error('unknown width')
 	}
-	if expr.typ.kind.is_unsigned() && width == 8 {
+	if e.expr_type(expr).kind.is_unsigned() && width == 8 {
 		e.diagnostics << problem(line, col, 'unsupported: an unsigned eight-byte integer holds values at and above 2^63, and converting one to a long double needs a subtraction this back end does not compute')
 		return error('unsigned word to a long double')
 	}
 	// An unsigned value narrower than a word is zero-extended into the whole of
 	// the register already, so it is stored and loaded as an eight-byte integer
 	// and the sign bit the four-byte load would read is above it.
-	eight := width == 8 || expr.typ.kind.is_unsigned()
+	eight := width == 8 || e.expr_type(expr).kind.is_unsigned()
 	integer := e.accumulator(line, col)!
 	temporary := e.reserve(8)
 	e.append(e.target.store_slot(base, i32(temporary.offset), integer, if eight { 8 } else { 4 })!)
@@ -446,8 +446,8 @@ fn (e Emitter) extended_step(step ast.Binary) bool {
 // temporary, which is the conversion a mixed operation needs on either side.
 fn (mut e Emitter) extended_temp(expr ast.Expr, depth int) !Slot {
 	temporary := e.reserve(long_double_bytes)
-	line := expr_line(expr)
-	col := expr_col(expr)
+	line := e.expr_line(expr)
+	col := e.expr_col(expr)
 	base := e.frame_pointer(line, col)!
 	if e.is_extended(expr) {
 		e.emit_expr_at(expr, depth)!
