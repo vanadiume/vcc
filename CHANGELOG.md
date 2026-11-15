@@ -1071,3 +1071,7 @@ it owns the change, which is the same vocabulary the commits use.
 * types: a type clause is forty bytes (97b2f48)
 * ast: an expression is a position in one arena (12212d8)
 * docs: the tree lives in one arena, and the changelog says so (3e18efd)
+* ast: carry a block-scope declaration's static storage (4630eb1)
+* parser: read a block-scope static object into the image (28ee18e)
+* codegen: resolve a block-scope static name to its object in the image (7f24f93)
+* regression: a block-scope static object keeps its value across calls (9c80d64)
