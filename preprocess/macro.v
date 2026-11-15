@@ -23,7 +23,12 @@ pub:
 	// them the way the parameter list did, and the replacement writes that name
 	// exactly where it would have written __VA_ARGS__.
 	variadic_name string
-	body          []tokenize.Token
+	// has_va_opt says the replacement writes the C23 __VA_OPT__ operator, which
+	// a use has to expand before the rest of the substitution reads the body. It
+	// is recorded where the definition's body is already walked, so an ordinary
+	// macro use does not pay a second scan of it.
+	has_va_opt bool
+	body       []tokenize.Token
 	// file, line and col are where the definition was written, which is what a
 	// diagnostic about the macro has to point at.
 	file string

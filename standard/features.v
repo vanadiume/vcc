@@ -479,6 +479,26 @@ pub const features = [
 		pedantic:  'the _BitInt type'
 		status:    .implemented
 	},
+	// `__VA_OPT__` is C23's operator for a replacement token sequence that is
+	// there only when the variable arguments are: `printf(fmt __VA_OPT__(,)
+	// __VA_ARGS__)`. Measured on gcc 16.2.1, a strict mode before C23 takes the
+	// construct with no error and reports `'__VA_OPT__' is not available until
+	// C23` only under -pedantic, an error under -pedantic-errors, while gnu99
+	// and every later GNU dialect say nothing even with -pedantic-errors. So
+	// `since: .c23` with `gnu: true` and a pedantic message rather than
+	// `invalid`, the severity _Generic and _Static_assert carry; unlike typeof,
+	// a strict c99 run does not fail the construct. The reader is
+	// in `preprocess/`, which is where the operator is met: a macro replacement
+	// is expanded before the token stream this check walks exists, so
+	// `dialect_message` below asks the row for the reader instead of `uses`.
+	Feature{
+		spellings: ['__VA_OPT__']
+		since:     .c23
+		gnu:       true
+		extension: ''
+		pedantic:  'the __VA_OPT__ operator'
+		status:    .implemented
+	},
 	Feature{
 		spellings: ['_Complex']
 		since:     .c99
@@ -734,6 +754,29 @@ fn spelling_matches(spellings []string, text string, after string, has_after boo
 	return false
 }
 
+// message_for is the diagnostic one row gets from the selected mode, with the
+// words, class and severity in one place: `uses` raises it from the token stream
+// the check walks, and `dialect_message` raises the same one for a construct a
+// stage met in a list that stream does not hold.
+fn message_for(feature Feature, token tokenize.Token, question Question) tokenize.Diagnostic {
+	// A construct the mode does not have is reported as a diagnostic the
+	// compiler raises on its own account, which no flag silences, and one
+	// the mode merely does not allow is a pedantic message the flags
+	// decide the fate of. Both name the mode and the construct.
+	return tokenize.Diagnostic{
+		line:    token.line
+		col:     token.col
+		msg:     '${question.mode.standard_name()} forbids ${feature.pedantic}'
+		file:    token.file
+		warning: !feature.invalid
+		class:   if feature.invalid {
+			diagnostics.Class.cpp
+		} else {
+			diagnostics.Class.pedantic
+		}
+	}
+}
+
 // uses is the walk itself, over a table the caller hands in rather than over the
 // table above, which is how the rule an extension follows is checked before
 // there is an extension to check it with: the tests bring a table of their own.
@@ -767,25 +810,36 @@ fn uses(tokens []tokenize.Token, table []Feature, question Question) []tokenize.
 			if question.system_files[token.file] {
 				continue
 			}
-			// A construct the mode does not have is reported as a diagnostic the
-			// compiler raises on its own account, which no flag silences, and one
-			// the mode merely does not allow is a pedantic message the flags
-			// decide the fate of. Both name the mode and the construct.
-			out << tokenize.Diagnostic{
-				line:    token.line
-				col:     token.col
-				msg:     '${question.mode.standard_name()} forbids ${feature.pedantic}'
-				file:    token.file
-				warning: !feature.invalid
-				class:   if feature.invalid {
-					diagnostics.Class.cpp
-				} else {
-					diagnostics.Class.pedantic
-				}
-			}
+			out << message_for(feature, token, question)
 		}
 	}
 	return out
+}
+
+// dialect_message answers the diagnostic the selected mode gives the construct
+// `spelling` marks, or none when the mode takes it. It is for a reader that meets
+// the construct before the dialect check's token stream exists: the macro reader
+// meets `__VA_OPT__` inside a replacement list, and a replacement is expanded
+// before the stream is walked, so nothing is left for `uses` to find. The row
+// stays the one place the answer is written, and `message_for` builds the same
+// words and severity here as there.
+pub fn dialect_message(spelling string, token tokenize.Token, question Question) ?tokenize.Diagnostic {
+	if question.mode == .none || question.mode == .other {
+		return none
+	}
+	for feature in features {
+		if feature.status == .unimplemented || !feature.spellings.contains(spelling) {
+			continue
+		}
+		if allowed(feature, question) {
+			continue
+		}
+		if question.system_files[token.file] {
+			continue
+		}
+		return message_for(feature, token, question)
+	}
+	return none
 }
 
 // allowed says whether the selected mode takes the construct in: it is part of

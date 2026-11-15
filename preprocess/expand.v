@@ -395,6 +395,7 @@ fn (mut p Processor) substitute(macro Macro, arguments Arguments, site Piece) []
 	for index, param in macro.params {
 		args[param] = if index < lists.len { lists[index] } else { []Piece{} }
 	}
+	mut va_nonempty := false
 	if macro.variadic {
 		// __VA_ARGS__ is every argument from the variadic one on, with the
 		// commas between them, because that is what the caller wrote and that
@@ -420,17 +421,26 @@ fn (mut p Processor) substitute(macro Macro, arguments Arguments, site Piece) []
 			rest << lists[index]
 		}
 		args[va_name] = rest
+		// __VA_OPT__ asks whether __VA_ARGS__ holds a token, not whether an
+		// argument was written: measured on gcc 16.2.1, `V("a")` and `V("a",)`
+		// both expand the content to nothing, and `V("a", 1)` expands it.
+		va_nonempty = rest.len > 0
+	}
+	body := if macro.has_va_opt {
+		replacement_with_va_opt(macro.body, va_nonempty)
+	} else {
+		macro.body
 	}
 	mut out := expansion_pieces()
 	mut i := 0
-	for i < macro.body.len {
-		t := macro.body[i]
+	for i < body.len {
+		t := body[i]
 		if t.kind == .punct && t.text == '#' {
 			// # puts the argument in a string literal without expanding it,
 			// which is what makes a macro turn a name into a message.
-			if i + 1 < macro.body.len && macro.body[i + 1].kind == .identifier && macro.body[i + 1].text in args {
+			if i + 1 < body.len && body[i + 1].kind == .identifier && body[i + 1].text in args {
 				out << Piece{
-					tok: stringized(args[macro.body[i + 1].text], tok)
+					tok: stringized(args[body[i + 1].text], tok)
 				}
 				i += 2
 				continue
@@ -440,12 +450,12 @@ fn (mut p Processor) substitute(macro Macro, arguments Arguments, site Piece) []
 			continue
 		}
 		if t.kind == .punct && t.text == '##' {
-			if i + 1 >= macro.body.len {
+			if i + 1 >= body.len {
 				p.problem(tok, 'the ## at the end of the replacement of ${tok.text} has nothing to join')
 				i++
 				continue
 			}
-			next := macro.body[i + 1]
+			next := body[i + 1]
 			right := if next.kind == .identifier && next.text in args {
 				args[next.text]
 			} else {
@@ -498,7 +508,7 @@ fn (mut p Processor) substitute(macro Macro, arguments Arguments, site Piece) []
 			// An argument is expanded before it is put in place — unless it
 			// stands beside a # or a ##, where the tokens themselves are the
 			// point and the expansion would lose them.
-			beside_paste := (i + 1 < macro.body.len && is_paste(macro.body[i + 1])) || (i > 0 && is_paste(macro.body[i - 1]))
+			beside_paste := (i + 1 < body.len && is_paste(body[i + 1])) || (i > 0 && is_paste(body[i - 1]))
 			mut text := []Piece{cap: raw.len}
 			for argument in raw {
 				text << Piece{
@@ -529,6 +539,134 @@ fn (mut p Processor) substitute(macro Macro, arguments Arguments, site Piece) []
 		i++
 	}
 	return out
+}
+
+// replacement_with_va_opt is the replacement the rest of the substitution reads:
+// every `__VA_OPT__( content )` is the content when the variable arguments hold
+// at least one token and nothing when they do not. The content is spliced in
+// before the body is walked, so a #, a ## and a parameter inside it do the work
+// they would do anywhere else in the replacement, and the result is rescanned
+// with the rest of it.
+//
+// `nonempty` is whether __VA_ARGS__ holds a token, not whether an argument was
+// written. Measured on gcc 16.2.1, `V("a")` and `V("a",)` both expand the
+// content to nothing while `V("a", 1)` expands it.
+fn replacement_with_va_opt(body []tokenize.Token, nonempty bool) []tokenize.Token {
+	mut out := []tokenize.Token{cap: body.len}
+	mut i := 0
+	for i < body.len {
+		t := body[i]
+		if t.kind != .identifier || t.text != '__VA_OPT__' || i + 1 >= body.len
+			|| body[i + 1].kind != .punct || body[i + 1].text != '(' {
+			out << t
+			i++
+			continue
+		}
+		mut depth := 0
+		mut close := -1
+		for j := i + 1; j < body.len; j++ {
+			if body[j].kind != .punct {
+				continue
+			}
+			if body[j].text == '(' {
+				depth++
+			} else if body[j].text == ')' {
+				depth--
+				if depth == 0 {
+					close = j
+					break
+				}
+			}
+		}
+		if close < 0 {
+			// The shape was refused where the definition was read; keep the
+			// token so the rest of the replacement still has an answer.
+			out << t
+			i++
+			continue
+		}
+		if nonempty {
+			for j := i + 2; j < close; j++ {
+				out << body[j]
+			}
+		}
+		i = close + 1
+	}
+	return out
+}
+
+// check_replacement refuses the __VA_OPT__ shapes the standard does not allow and
+// asks the dialect table whether the selected mode takes the operator. It runs
+// where a replacement list is read rather than where it is used, because the
+// answer is a property of the definition: gcc 16.2.1 reports both the nested
+// form and the non-variadic one on the #define line, whether or not the macro is
+// ever called. Its answer says whether the body writes the operator at all, which
+// the macro records so a use does not have to scan the body again.
+fn (mut p Processor) check_replacement(at tokenize.Token, body []tokenize.Token, variadic bool) bool {
+	mut writes_va_opt := false
+	mut i := 0
+	for i < body.len {
+		t := body[i]
+		if t.kind != .identifier || t.text != '__VA_OPT__' {
+			i++
+			continue
+		}
+		writes_va_opt = true
+		if !variadic {
+			p.problem(at, "'__VA_OPT__' may only appear in the replacement list of a variadic macro")
+			i++
+			continue
+		}
+		if i + 1 >= body.len || body[i + 1].kind != .punct || body[i + 1].text != '(' {
+			p.problem(at, "'__VA_OPT__' is written as __VA_OPT__( content )")
+			i++
+			continue
+		}
+		mut depth := 0
+		mut close := -1
+		for j := i + 1; j < body.len; j++ {
+			if body[j].kind != .punct {
+				continue
+			}
+			if body[j].text == '(' {
+				depth++
+			} else if body[j].text == ')' {
+				depth--
+				if depth == 0 {
+					close = j
+					break
+				}
+			}
+		}
+		if close < 0 {
+			p.problem(at, "'__VA_OPT__' has no closing )")
+			break
+		}
+		for j := i + 2; j < close; j++ {
+			if body[j].kind == .identifier && body[j].text == '__VA_OPT__' {
+				p.problem(at, "'__VA_OPT__' may not appear inside a '__VA_OPT__'")
+				break
+			}
+		}
+		i = close + 1
+	}
+	if writes_va_opt && !p.in_system_file() {
+		// A directive token carries no file of its own: where it is to be
+		// reported is the frame's answer, the same one p.problem reads.
+		site := tokenize.Token{
+			kind: at.kind
+			text: at.text
+			line: at.line
+			col:  at.col
+			file: p.file_name(at)
+		}
+		if message := standard.dialect_message('__VA_OPT__', site, standard.Question{
+			mode: p.opts.dialect
+		}) {
+			p.diagnostics << message
+		}
+	}
+	return writes_va_opt
 }
 
 // paste joins two tokens into one by writing them together and reading the

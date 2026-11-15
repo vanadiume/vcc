@@ -220,6 +220,23 @@ fn test_the_rows_name_the_extensions_that_bring_them_down() {
 fn test_a_row_is_reachable_by_its_spelling() {
 	assert features.any(it.spellings.contains('__attribute__'))
 	assert features.any(it.spellings.contains('__asm__'))
+	assert features.any(it.spellings.contains('__VA_OPT__'))
+}
+
+fn test_va_opt_is_a_c23_construct_and_a_gnu_extension() {
+	// Measured on gcc 16.2.1: a strict c99 run takes the operator and reports
+	// "'__VA_OPT__' is not available until C23" only under -pedantic, an error
+	// under -pedantic-errors, while c23 and gnu99 say nothing. The row is a
+	// pedantic message in the strict mode and a GNU extension, so the reader in
+	// the preprocessor gets no message from c23, gnu99 or the default dialect.
+	at := token('__VA_OPT__')
+	message := dialect_message('__VA_OPT__', at, asking(.c99)) or { tokenize.Diagnostic{} }
+	assert message.msg == 'ISO C99 forbids the __VA_OPT__ operator'
+	assert message.warning
+	assert message.class == .pedantic
+	assert dialect_message('__VA_OPT__', at, asking(.c23)) == none
+	assert dialect_message('__VA_OPT__', at, asking(.gnu99)) == none
+	assert dialect_message('__VA_OPT__', at, asking(.none)) == none
 }
 
 fn test_a_gnu_construct_is_pedantic_in_a_strict_mode() {
