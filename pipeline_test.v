@@ -4043,6 +4043,59 @@ fn test_an_object_that_calls_the_c_library_links_and_runs() {
 	assert result.exit_code == 21
 }
 
+// An undefined weak import is the address zero in a link of objects, which is the
+// one thing an address needs from the link that a call does not: a call can go to
+// a stub and let the stub's slot answer, but the address itself has to be the
+// zero, and a distance to the name would be the stub's address instead. The
+// reference in the object is therefore a read of the global offset table's slot,
+// and the slot holds zero when nothing defines the name. The call behind the test
+// is compiled and never made, which is what a program asking whether an optional
+// interface is there does.
+fn test_an_undefined_weak_import_is_the_null_address_in_a_link_of_objects() {
+	first := scratch('weak_addr.o')
+	second := scratch('weak_null.o')
+	binary := scratch('weak_null_link')
+	source := 'extern int hook(void) __attribute__((weak));\n' +
+		'extern int slot __attribute__((weak));\n\n' +
+		'int hook_is_null(void) { return hook == 0; }\n\n' +
+		'int slot_is_null(void) { return &slot == 0; }\n\n' +
+		'int call_if_present(void) { if (hook) { return hook(); } return 42; }\n'
+	caller := 'int hook_is_null(void);\nint slot_is_null(void);\nint call_if_present(void);\n\n' +
+		'int main(void)\n{\n' +
+		'    if (!hook_is_null() || !slot_is_null() || call_if_present() != 42) { return 1; }\n' +
+		'    return 0;\n}\n'
+	os.write_file_array(first, object_of('weak_addr.c', source)) or { panic(err) }
+	os.write_file_array(second, object_of('weak_null.c', caller)) or { panic(err) }
+	opts := cli.parse([first, second, '-o', binary]) or { panic(err) }
+	link_inputs(opts)
+	assert os.exists(binary)
+	result := os.execute(os.quoted_path(binary))
+	// A signal is the failure the shape used to produce: the test read the call
+	// stub's address, the address was not null, and the call went to zero.
+	assert result.exit_code == 0
+}
+
+// The zero belongs to the weak symbol nothing defines, and not to a weak import a
+// library does define: a weak declaration is a promise that a missing definition
+// is not an error, not a promise that the name is missing. `getpid` is in the C
+// library the image names, so the call reaches it and the program runs.
+fn test_a_weak_import_a_library_defines_is_called() {
+	first := scratch('weak_lib.o')
+	second := scratch('weak_lib_caller.o')
+	binary := scratch('weak_lib_link')
+	os.write_file_array(first, object_of('weak_lib.c',
+		'extern int getpid(void) __attribute__((weak));\n\nint pid(void) { return getpid(); }\n')) or {
+		panic(err)
+	}
+	os.write_file_array(second, object_of('weak_lib_caller.c',
+		'int pid(void);\n\nint main(void) { return pid() > 0 ? 0 : 1; }\n')) or { panic(err) }
+	opts := cli.parse([first, second, '-o', binary]) or { panic(err) }
+	link_inputs(opts)
+	assert os.exists(binary)
+	result := os.execute(os.quoted_path(binary))
+	assert result.exit_code == 0
+}
+
 // A static library is an ar file of objects, and a link reads the members that
 // answer a name it still needs and no others. The caller's object reaches into
 // the archive for the one function it calls, and the program runs.

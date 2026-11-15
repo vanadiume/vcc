@@ -10740,9 +10740,10 @@ fn apply_constant(binary ast.Binary, left i64, right i64) ?i64 {
 // has its code here, so the address is a reference the layout fills in. One the
 // file only declares has its code somewhere the image is not, so its address is a
 // symbol the loader resolves: it is read out of the slot the loader fills, the same
-// slot a call to that function goes through, and in an object the reference is left
-// for the linker the way a call to a declared function is. The address is not known
-// while it is written, so it is filled in either way.
+// slot a call to that function goes through. A relocatable object has no slots of
+// its own, so it writes the read and names the table entry, and the link builds the
+// slot: the same instruction, the same slot, and the same answer at run time. The
+// address is not known while it is written, so it is filled in either way.
 fn (mut e Emitter) emit_function_address(name string, line int, col int) !void {
 	register := e.accumulator(line, col)!
 	if owner := e.nested_functions[name] {
@@ -10758,10 +10759,16 @@ fn (mut e Emitter) emit_function_address(name string, line int, col int) !void {
 	}
 	e.import_symbol(name)
 	if e.compile_only {
-		// An object has no slots and no loader: it leaves the reference for the
-		// linker to route, which is what a call to a symbol means in a
-		// relocatable file.
-		e.reference(e.target.address_of(register, 0), .import_address, name, e.target.name_of(register))
+		// An object has no slots and no loader of its own, so the reference is
+		// the one a linker builds the slot for: the instruction reads the
+		// slot, and the object writes the relocation that says the distance is
+		// to the table entry rather than to the name. A distance to the name
+		// is what a call stub answers with, and a stub's address is a place in
+		// the image and not the function's: an undefined weak symbol is zero
+		// (ELF), and a slot is the only field the loader can leave at zero. It
+		// is the reference this compiler's own image makes of the same code,
+		// and the one an undefined weak object already takes here.
+		e.reference(e.target.load_slot_value(register, 0), .got_address, name, e.target.name_of(register))
 	} else {
 		e.reference(e.target.load_slot_value(register, 0), .import_address, name, e.target.name_of(register))
 	}
