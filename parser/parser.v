@@ -55,6 +55,11 @@ struct IdentSpan {
 
 struct Parser {
 mut:
+	// arena holds every expression node this file builds and the boxes the
+	// statements read by pointer. A node is a position in it rather than a box
+	// of its own, so the tree the parser hands over owns one arena and not one
+	// allocation per node.
+	arena       ast.Arena
 	tokens      []tokenize.Token
 	pos         int
 	diagnostics []tokenize.Diagnostic
@@ -283,6 +288,7 @@ pub fn parse(tokens []tokenize.Token) Result {
 pub fn parse_for(tokens []tokenize.Token, target ?backend.Target) Result {
 	mut p := Parser{
 		tokens:          tokens
+		arena:           ast.new_arena()
 		scopes:          types.new_table()
 		representation:  representation_of(target)
 		declared:        map[string]bool{}
@@ -367,7 +373,7 @@ fn (mut p Parser) index_identifiers() {
 
 // is_type_name says whether a name is one this file has declared as a type
 // rather than as an object.
-fn (p Parser) is_type_name(name string) bool {
+fn (mut p Parser) is_type_name(name string) bool {
 	symbol := p.scopes.lookup(name) or { return false }
 	return symbol.is_typedef()
 }
@@ -375,7 +381,7 @@ fn (p Parser) is_type_name(name string) bool {
 // resolve is the one lookup the expression reader does, and it is the reason a
 // name declared later is not a name: this answers with what has been declared so
 // far, and the zero type for a name the reader has not met.
-fn (p Parser) resolve(name string) types.Type {
+fn (mut p Parser) resolve(name string) types.Type {
 	symbol := p.scopes.lookup(name) or { return types.Type{} }
 	return symbol.typ
 }
@@ -419,6 +425,7 @@ fn (mut p Parser) parse_unit() ast.TranslationUnit {
 		decls:          decls
 		globals:        p.globals
 		extern_objects: p.extern_objects
+		arena:          p.arena
 	}
 }
 
@@ -537,7 +544,7 @@ fn (mut p Parser) own_nested() {
 // statement from being copied once into a list of the block's own. That list is
 // built once, at the closing brace, from the lists the statements came back in:
 // see parse_block.
-fn (p Parser) resolve_declared_types(mut stmts []ast.Stmt) {
+fn (mut p Parser) resolve_declared_types(mut stmts []ast.Stmt) {
 	for i in 0 .. stmts.len {
 		stmt := stmts[i]
 		if stmt.kind != .var_decl {
@@ -624,33 +631,33 @@ fn (mut p Parser) check_undeclared_statements(stmts []ast.Stmt, mut reported map
 			// pointer it writes through is the expression below.
 			p.check_undeclared_name(stmt.target, stmt.line, stmt.col, mut reported)
 		}
-		if deref := stmt.deref() {
-			p.check_undeclared_expression(deref, mut reported)
+		if !stmt.deref().is_none() {
+			p.check_undeclared_expression(stmt.deref(), mut reported)
 		}
-		if expr := stmt.expr {
-			p.check_undeclared_expression(expr, mut reported)
+		if !stmt.expr.is_none() {
+			p.check_undeclared_expression(stmt.expr, mut reported)
 		}
-		if init := stmt.initializer() {
-			p.check_undeclared_expression(init, mut reported)
+		if !stmt.initializer().is_none() {
+			p.check_undeclared_expression(stmt.initializer(), mut reported)
 		}
 		// A variable-length array's size expression carries the names its
 		// bounds were written with, at the point the declaration runs.
-		if size := stmt.decl_vla_size() {
-			p.check_undeclared_expression(size, mut reported)
+		if !stmt.decl_vla_size().is_none() {
+			p.check_undeclared_expression(stmt.decl_vla_size(), mut reported)
 		}
-		if index := stmt.index {
-			p.check_undeclared_expression(index, mut reported)
+		if !stmt.index.is_none() {
+			p.check_undeclared_expression(stmt.index, mut reported)
 		}
-		if subscript := stmt.subscript() {
-			p.check_undeclared_expression(subscript, mut reported)
+		if !stmt.subscript().is_none() {
+			p.check_undeclared_expression(stmt.subscript(), mut reported)
 		}
-		if cond := stmt.cond {
-			p.check_undeclared_expression(cond, mut reported)
+		if !stmt.cond.is_none() {
+			p.check_undeclared_expression(stmt.cond, mut reported)
 		}
 		// A computed goto's operand is an expression, so the names it carries
 		// are uses like any other: `goto *table[i];` names table and i.
-		if target := stmt.goto_expr() {
-			p.check_undeclared_expression(target, mut reported)
+		if !stmt.goto_expr().is_none() {
+			p.check_undeclared_expression(stmt.goto_expr(), mut reported)
 		}
 		p.check_undeclared_statements(stmt.body, mut reported)
 		p.check_undeclared_statements(stmt.then_body(), mut reported)
@@ -663,109 +670,117 @@ fn (mut p Parser) check_undeclared_statements(stmts []ast.Stmt, mut reported map
 // name of a value, the name a call reaches, and the name of an array being
 // subscripted or assigned element by element.
 fn (mut p Parser) check_undeclared_expression(expr ast.Expr, mut reported map[string]bool) {
-	match expr {
-		ast.Ident {
-			p.check_undeclared_name(expr.name, expr.line, expr.col, mut reported)
+	match expr.kind {
+		.ident {
+			node := p.arena.ident(expr)
+			p.check_undeclared_name(node.name, node.line, node.col, mut reported)
 		}
-		ast.Call {
-			if callee := expr.callee {
-				// A call through an expression names nothing itself; the names
-				// are inside the expression the call is written to.
-				p.check_undeclared_expression(callee, mut reported)
-			} else {
+		.call {
+			node := p.arena.call(expr)
+			if node.callee.is_none() {
 				// A call to one of the argument-list operations, or to one of the
 				// machine builtins the back end answers with an instruction, is not
 				// a name the unit has to declare: the reader built the call itself,
 				// from a spelling in the compiler's own namespace, and there is no
 				// declaration any program could write for it. The builtin list in
 				// `builtins.v` is the one place those spellings are named.
-				if expr.name !in builtin_expression_names {
-					p.check_undeclared_name(expr.name, expr.line, expr.col, mut reported)
+				if node.name !in builtin_expression_names {
+					p.check_undeclared_name(node.name, node.line, node.col, mut reported)
 				}
+			} else {
+				// A call through an expression names nothing itself; the names
+				// are inside the expression the call is written to.
+				p.check_undeclared_expression(node.callee, mut reported)
 			}
-			for argument in expr.args {
+			for argument in node.args {
 				p.check_undeclared_expression(argument, mut reported)
 			}
 		}
-		ast.Index {
-			p.check_undeclared_expression(expr.base, mut reported)
-			p.check_undeclared_expression(expr.index, mut reported)
+		.index {
+			node := p.arena.index(expr)
+			p.check_undeclared_expression(node.base, mut reported)
+			p.check_undeclared_expression(node.index, mut reported)
 			// The stride of an element of an array whose bound is a value is an
 			// expression and carries the bound's names: `int m[r][c]` reaches
 			// `c` through the subscript and not through any other node.
-			if stride := expr.vla_stride {
-				p.check_undeclared_expression(stride, mut reported)
+			if !node.vla_stride.is_none() {
+				p.check_undeclared_expression(node.vla_stride, mut reported)
 			}
 		}
-		ast.Field {
+		.field {
 			// A member of an expression carries the object's own names inside
 			// the base; a member of a name is a use of that name.
-			if base := expr.base {
-				p.check_undeclared_expression(base, mut reported)
+			node := p.arena.field(expr)
+			if node.base.is_none() {
+				p.check_undeclared_name(node.name, node.line, node.col, mut reported)
 			} else {
-				p.check_undeclared_name(expr.name, expr.line, expr.col, mut reported)
+				p.check_undeclared_expression(node.base, mut reported)
 			}
 		}
-		ast.Unary {
-			if expr.op == '&&' {
+		.unary {
+			node := p.arena.unary(expr)
+			if node.op == '&&' {
 				// The operand of `&&` is a label name and not an object: the
 				// emitted jump resolves it against the function's labels, so
 				// there is no declaration for the walk to want.
 				return
 			}
-			p.check_undeclared_expression(expr.expr, mut reported)
+			p.check_undeclared_expression(node.expr, mut reported)
 		}
-		ast.Cast {
-			p.check_undeclared_expression(expr.expr, mut reported)
+		.cast {
+			p.check_undeclared_expression(p.arena.cast(expr).expr, mut reported)
 		}
-		ast.Binary {
+		.binary {
 			// An operator chain is one node deep in the grammar however many
 			// terms it has, so the left spine is walked with a loop and only
 			// genuinely nested expressions recurse: a chain of a few thousand
 			// terms is a size generated code reaches, and a call per term would
 			// take the stack out on it.
-			mut spine := []ast.Binary{}
-			mut node := ast.Expr(expr)
-			for node is ast.Binary {
-				step := node as ast.Binary
-				spine << step
-				node = step.left
+			mut spine := []ast.Expr{}
+			mut node := expr
+			for node.kind == .binary {
+				spine << node
+				node = p.arena.binary(node).left
 			}
 			p.check_undeclared_expression(node, mut reported)
 			for i := spine.len - 1; i >= 0; i-- {
-				p.check_undeclared_expression(spine[i].right, mut reported)
+				p.check_undeclared_expression(p.arena.binary(spine[i]).right, mut reported)
 			}
 		}
-		ast.IncDec {
+		.inc_dec {
 			// The object the operator steps is a use of it: `++missing;`
 			// names a missing declaration just as reading the name does.
-			p.check_undeclared_expression(expr.operand, mut reported)
+			p.check_undeclared_expression(p.arena.inc_dec(expr).operand, mut reported)
 		}
-		ast.Conditional {
+		.conditional {
 			// All three operands are read, because all three can name
 			// something: the condition as much as either arm.
-			p.check_undeclared_expression(expr.cond, mut reported)
-			p.check_undeclared_expression(expr.then_expr, mut reported)
-			p.check_undeclared_expression(expr.else_expr, mut reported)
+			node := p.arena.conditional(expr)
+			p.check_undeclared_expression(node.cond, mut reported)
+			p.check_undeclared_expression(node.then_expr, mut reported)
+			p.check_undeclared_expression(node.else_expr, mut reported)
 		}
-		ast.IntLit, ast.StrLit, ast.FloatLit, ast.ComplexLit {}
-		ast.Assign {
+		.int_lit, .str_lit, .float_lit, .complex_lit, .none {}
+		.assign {
 			// The target is a use of what it names, and the value is an
 			// expression of its own: both sides are walked.
-			p.check_undeclared_expression(expr.target, mut reported)
-			p.check_undeclared_expression(expr.value, mut reported)
+			node := p.arena.assign(expr)
+			p.check_undeclared_expression(node.target, mut reported)
+			p.check_undeclared_expression(node.value, mut reported)
 		}
-		ast.Comma {
-			p.check_undeclared_expression(expr.left, mut reported)
-			p.check_undeclared_expression(expr.right, mut reported)
+		.comma {
+			node := p.arena.comma(expr)
+			p.check_undeclared_expression(node.left, mut reported)
+			p.check_undeclared_expression(node.right, mut reported)
 		}
-		ast.StmtExpr {
+		.stmt_expr {
 			// The body is statements and the value is an expression of its
 			// own: both halves can name something, so each is walked the way
 			// it would be at the place it stands.
-			p.check_undeclared_statements(expr.body, mut reported)
-			if value := expr.value {
-				p.check_undeclared_expression(value, mut reported)
+			node := p.arena.stmt_expr(expr)
+			p.check_undeclared_statements(node.body, mut reported)
+			if !node.value.is_none() {
+				p.check_undeclared_expression(node.value, mut reported)
 			}
 		}
 	}
@@ -854,7 +869,7 @@ fn (mut p Parser) parse_comma_expression() !ast.Expr {
 	for p.at_punct(',') {
 		t := p.next()
 		right := p.parse_assignment_expression()!
-		left = ast.Expr(ast.Comma{
+		left = p.arena.put_comma(ast.Comma{
 			left:  left
 			right: right
 			typ:   p.value_type(right)
@@ -885,15 +900,15 @@ fn (mut p Parser) parse_assignment_expression() !ast.Expr {
 	left := p.parse_expression()!
 	op := p.assignment_operator() or { return left }
 	p.next()
-	if !is_a_place(left) {
-		p.error_at(op, 'unsupported: the left operand of ${op.text} is ${describe_operand(left)}, and an assignment writes to a name, an element, a member or a dereference')
+	if !is_a_place(left, &p.arena) {
+		p.error_at(op, 'unsupported: the left operand of ${op.text} is ${describe_operand(left, &p.arena)}, and an assignment writes to a name, an element, a member or a dereference')
 		return error('assignment target')
 	}
 	target_type := p.value_type(left)
 	if op.text == '=' {
 		value := p.converted_into(target_type, p.parse_assignment_expression()!)
 		p.check_assignment(target_type, value, op)
-		return ast.Expr(ast.Assign{
+		return p.arena.put_assign(ast.Assign{
 			op:     op.text
 			target: left
 			value:  value
@@ -907,8 +922,8 @@ fn (mut p Parser) parse_assignment_expression() !ast.Expr {
 		p.error_at(op, 'unsupported: the compound assignment ${op.text} is not implemented')
 		return error('compound assignment')
 	}
-	if !is_a_compound_target(left) {
-		p.error_at(op, 'unsupported: the compound assignment ${op.text} to ${describe_operand(left)} is not implemented')
+	if !is_a_compound_target(left, &p.arena) {
+		p.error_at(op, 'unsupported: the compound assignment ${op.text} to ${describe_operand(left, &p.arena)} is not implemented')
 		return error('compound assignment target')
 	}
 	right := p.parse_assignment_expression()!
@@ -916,16 +931,16 @@ fn (mut p Parser) parse_assignment_expression() !ast.Expr {
 		...op
 		text: arithmetic
 	}
-	value := p.converted_into(target_type, ast.Expr(ast.Binary{
+	value := p.converted_into(target_type, p.arena.put_binary(ast.Binary{
 		op:    arithmetic
 		left:  left
 		right: right
 		typ:   p.binary_type(operator, left, right)
-		line:  left.line
-		col:   left.col
+		line:  p.arena.span(left).line
+		col:   p.arena.span(left).col
 	}))
 	p.check_assignment(target_type, value, op)
-	return ast.Expr(ast.Assign{
+	return p.arena.put_assign(ast.Assign{
 		op:     op.text
 		target: left
 		value:  value
@@ -938,12 +953,11 @@ fn (mut p Parser) parse_assignment_expression() !ast.Expr {
 // is_a_place says whether an expression is one an assignment can write: a name,
 // an element, a member or a dereference. They are the shapes the back end has a
 // store for, and the same list the statement reader addresses.
-fn is_a_place(expr ast.Expr) bool {
-	return match expr {
-		ast.Ident, ast.Index, ast.Field { true }
-		ast.Unary { expr.op == '*' }
-		else { false }
+fn is_a_place(expr ast.Expr, arena &ast.Arena) bool {
+	if expr.kind == .ident || expr.kind == .index || expr.kind == .field {
+		return true
 	}
+	return expr.kind == .unary && arena.unary(expr).op == '*'
 }
 
 // is_a_compound_target says whether an expression is a place a compound
@@ -953,12 +967,12 @@ fn is_a_place(expr ast.Expr) bool {
 // be read twice, which is a different program whenever the pointer or the object
 // has a side effect, so those are refused by name rather than read as something
 // the source did not write.
-fn is_a_compound_target(expr ast.Expr) bool {
-	if expr is ast.Ident {
+fn is_a_compound_target(expr ast.Expr, arena &ast.Arena) bool {
+	if expr.kind == .ident {
 		return true
 	}
-	if expr is ast.Index {
-		return (expr as ast.Index).base is ast.Ident
+	if expr.kind == .index {
+		return arena.index(expr).base.kind == .ident
 	}
 	return false
 }
@@ -1008,7 +1022,7 @@ fn (mut p Parser) parse_conditional(condition ast.Expr) !ast.Expr {
 		}
 		p.compound_unstable--
 		p.depth--
-		return ast.Expr(ast.Conditional{
+		return p.arena.put_conditional(ast.Conditional{
 			cond:           cond
 			then_expr:      condition
 			else_expr:      else_expr
@@ -1048,7 +1062,7 @@ fn (mut p Parser) parse_conditional(condition ast.Expr) !ast.Expr {
 	}
 	p.compound_unstable--
 	p.depth--
-	return ast.Expr(ast.Conditional{
+	return p.arena.put_conditional(ast.Conditional{
 		cond:      cond
 		then_expr: then_expr
 		else_expr: else_expr
@@ -1071,9 +1085,9 @@ fn (mut p Parser) parse_conditional(condition ast.Expr) !ast.Expr {
 // 6.5.15 ask of it; only the emitter stops writing it. The shape this fixes is
 // glibc's `isinf`, whose type dispatch selects a call for a type the machine
 // does not carry and never runs it.
-fn (p Parser) constant_condition(at tokenize.Token, condition ast.Expr) ast.Expr {
+fn (mut p Parser) constant_condition(at tokenize.Token, condition ast.Expr) ast.Expr {
 	value := p.constant_value(condition) or { return condition }
-	return ast.Expr(ast.IntLit{
+	return p.arena.put_int_lit(ast.IntLit{
 		value: value
 		text:  '${value}'
 		typ:   types.int_type()
@@ -1209,7 +1223,7 @@ fn (mut p Parser) parse_binary(min_precedence int) !ast.Expr {
 		// and not the expression that computes it. Anything else stays in the
 		// tree, where the back end refuses a decimal value it has no form for by
 		// name rather than emitting a call to a routine that does not exist.
-		left = p.fold_decimal_binary(binary) or { ast.Expr(binary) }
+		left = p.fold_decimal_binary(binary) or { p.arena.put_binary(binary) }
 	}
 	return left
 }
@@ -1250,7 +1264,7 @@ fn (mut p Parser) binary_type(op tokenize.Token, left ast.Expr, right ast.Expr) 
 			return types.Type{}
 		}
 		if !a.is_integer() {
-			p.error_at(op, 'unsupported: the type of ${describe_operand(left)} ${op.text} ${describe_operand(right)} is not one this compiler resolves')
+			p.error_at(op, 'unsupported: the type of ${describe_operand(left, &p.arena)} ${op.text} ${describe_operand(right, &p.arena)} is not one this compiler resolves')
 			return types.Type{}
 		}
 		return types.integer_promotion(a, p.representation) or {
@@ -1276,7 +1290,7 @@ fn (mut p Parser) binary_type(op tokenize.Token, left ast.Expr, right ast.Expr) 
 		// refused by name rather than typed and then computed with a scalar
 		// meaning, which would answer one lane or the wrong width.
 		if !(a.is_vector() && b.is_vector()) || !a.same(b) {
-			p.error_at(op, 'unsupported: the type of ${describe_operand(left)} ${op.text} ${describe_operand(right)} is not one this compiler resolves, and a vector operator takes two operands of one vector type')
+			p.error_at(op, 'unsupported: the type of ${describe_operand(left, &p.arena)} ${op.text} ${describe_operand(right, &p.arena)} is not one this compiler resolves, and a vector operator takes two operands of one vector type')
 			return types.Type{}
 		}
 		if op.text != '+' {
@@ -1300,7 +1314,7 @@ fn (mut p Parser) binary_type(op tokenize.Token, left ast.Expr, right ast.Expr) 
 		// Both operands were resolved and the model still has no answer for the
 		// operator, which is a construct this reader does not type rather than
 		// a construct it refused.
-		p.error_at(op, 'unsupported: the type of ${describe_operand(left)} ${op.text} ${describe_operand(right)} is not one this compiler resolves')
+		p.error_at(op, 'unsupported: the type of ${describe_operand(left, &p.arena)} ${op.text} ${describe_operand(right, &p.arena)} is not one this compiler resolves')
 	}
 	return types.Type{}
 }
@@ -1326,15 +1340,15 @@ fn (mut p Parser) binary_type(op tokenize.Token, left ast.Expr, right ast.Expr) 
 // neither pointer names.
 fn (mut p Parser) pointer_difference_type(op tokenize.Token, left ast.Expr, right ast.Expr, a types.Type, b types.Type) types.Type {
 	left_element := a.pointee() or {
-		p.error_at(op, 'unsupported: the type of ${describe_operand(left)} ${op.text} ${describe_operand(right)} is not one this compiler resolves')
+		p.error_at(op, 'unsupported: the type of ${describe_operand(left, &p.arena)} ${op.text} ${describe_operand(right, &p.arena)} is not one this compiler resolves')
 		return types.Type{}
 	}
 	right_element := b.pointee() or {
-		p.error_at(op, 'unsupported: the type of ${describe_operand(left)} ${op.text} ${describe_operand(right)} is not one this compiler resolves')
+		p.error_at(op, 'unsupported: the type of ${describe_operand(left, &p.arena)} ${op.text} ${describe_operand(right, &p.arena)} is not one this compiler resolves')
 		return types.Type{}
 	}
 	if !types.unqualified(left_element).compatible(types.unqualified(right_element)) {
-		p.error_at(op, 'unsupported: ${describe_operand(left)} and ${describe_operand(right)} are ${a.describe()} and ${b.describe()}, which point at incompatible types, so their difference is not a count of an element')
+		p.error_at(op, 'unsupported: ${describe_operand(left, &p.arena)} and ${describe_operand(right, &p.arena)} are ${a.describe()} and ${b.describe()}, which point at incompatible types, so their difference is not a count of an element')
 		return types.Type{}
 	}
 	return types.long_type()
@@ -1365,7 +1379,7 @@ fn (mut p Parser) parse_member_path(base string, base_at tokenize.Token, through
 		// pointer points at, so the assignment target asks the same reader
 		// instead of being read as an element of the pointer's declaration.
 		if aggregate.is_pointer() {
-			element_base := ast.Expr(ast.Ident{
+			element_base := p.arena.put_ident(ast.Ident{
 				name: base
 				typ:  aggregate
 				line: base_at.line
@@ -1411,8 +1425,8 @@ fn (mut p Parser) parse_member_path(base string, base_at tokenize.Token, through
 // same Field the way they do for a name, because a member of a member is inside
 // the same object.
 fn (mut p Parser) parse_general_member_path(object ast.Expr, through_pointer bool, at tokenize.Token) !&ast.Field {
-	object_desc := describe_operand(object)
-	mut aggregate := object.typ
+	object_desc := describe_operand(object, &p.arena)
+	mut aggregate := p.arena.typ(object)
 	if through_pointer {
 		// The object is a pointer and the member belongs to what it points at.
 		// A value that is not a pointer has no object to be read through, and
@@ -1484,8 +1498,8 @@ fn (mut p Parser) parse_member(base string, object ?ast.Expr, aggregate types.Ty
 	member := tagged.members()[at]
 	return &ast.Field{
 		name:            base
-		base:            object
-		index:           index
+		base:            object or { ast.Expr{} }
+		index:           index or { ast.Expr{} }
 		member:          written
 		offset:          into + layout.offsets[at]
 		spelling:        member.typ.storage_spelling()
@@ -1516,7 +1530,7 @@ fn (mut p Parser) parse_member(base string, object ?ast.Expr, aggregate types.Ty
 // which is where those members are. A type that is already complete is answered as
 // it is: its members are the tag's, and a lookup could only find the tag of some
 // other scope wearing the same name.
-fn (p Parser) tagged_type(aggregate types.Type) types.Type {
+fn (mut p Parser) tagged_type(aggregate types.Type) types.Type {
 	mut answered := aggregate
 	p.complete_parts(mut answered)
 	if answered.kind !in [types.Kind.struct_, .union_] || answered.tag() == ''
@@ -1542,7 +1556,7 @@ fn (p Parser) tagged_type(aggregate types.Type) types.Type {
 // type. The mention is one heap Type that every copy of the type points at, so
 // filling it in reaches all of them and keeps the shape the declaration gave it,
 // where rebuilding the type does neither.
-fn (p Parser) complete_parts(mut t types.Type) {
+fn (mut p Parser) complete_parts(mut t types.Type) {
 	match t.kind {
 		.pointer, .array {
 			if t.base != unsafe { nil } {
@@ -1578,7 +1592,7 @@ fn (p Parser) complete_parts(mut t types.Type) {
 // the type is one the back end cannot size from a spelling. A struct whose layout
 // the model gave is that many bytes; everything else answers zero, which is what
 // a declaration of a scalar asks for and never looks at.
-fn (p Parser) aggregate_bytes(declared types.Type) int {
+fn (mut p Parser) aggregate_bytes(declared types.Type) int {
 	if declared.is_array() {
 		// An array of aggregates is a stride and a count: one element is as many
 		// bytes as the layout says, and the count is what the declarator wrote, so
@@ -1603,30 +1617,41 @@ fn (p Parser) aggregate_bytes(declared types.Type) int {
 
 // describe_operand names an operand of an operator for a diagnostic, so the
 // refusal says which expression the operator was written between.
-fn describe_operand(expr ast.Expr) string {
-	return match expr {
-		ast.Ident { expr.name }
-		ast.Index { '${describe_operand(expr.base)}[...]' }
-		ast.Field { '${expr.name}.${expr.member}' }
-		ast.IntLit { expr.text }
-		ast.FloatLit { expr.text }
-		ast.ComplexLit { expr.text }
-		ast.StrLit { 'a string literal' }
-		ast.Call {
-			if _ := expr.callee {
+fn describe_operand(expr ast.Expr, arena &ast.Arena) string {
+	return match expr.kind {
+		.ident { arena.ident(expr).name }
+		.index { '${describe_operand(arena.index(expr).base, arena)}[...]' }
+		.field {
+			node := arena.field(expr)
+			'${node.name}.${node.member}'
+		}
+		.int_lit { arena.int_lit(expr).text }
+		.float_lit { arena.float_lit(expr).text }
+		.complex_lit { arena.complex_lit(expr).text }
+		.str_lit { 'a string literal' }
+		.call {
+			node := arena.call(expr)
+			if !node.callee.is_none() {
 				'a call through an expression'
 			} else {
-				'a call to ${expr.name}'
+				'a call to ${node.name}'
 			}
 		}
-		ast.Unary { 'a value with ${expr.op} applied to it' }
-		ast.Cast { 'a value converted to ${expr.spelling}' }
-		ast.Binary { 'a value of ${expr.op}' }
-		ast.IncDec { 'a value with ${expr.op} applied to ${describe_operand(expr.operand)}' }
-		ast.Conditional { 'a conditional value' }
-		ast.Assign { 'a value assigned to ${describe_operand(expr.target)} with ${expr.op}' }
-		ast.Comma { 'a value of ,' }
-		ast.StmtExpr { 'a statement expression' }
+		.unary { 'a value with ${arena.unary(expr).op} applied to it' }
+		.cast { 'a value converted to ${arena.cast(expr).spelling}' }
+		.binary { 'a value of ${arena.binary(expr).op}' }
+		.inc_dec {
+			node := arena.inc_dec(expr)
+			'a value with ${node.op} applied to ${describe_operand(node.operand, arena)}'
+		}
+		.conditional { 'a conditional value' }
+		.assign {
+			node := arena.assign(expr)
+			'a value assigned to ${describe_operand(node.target, arena)} with ${node.op}'
+		}
+		.comma { 'a value of ,' }
+		.stmt_expr { 'a statement expression' }
+		.none { 'nothing' }
 	}
 }
 
@@ -1636,8 +1661,8 @@ fn describe_operand(expr ast.Expr) string {
 // places it does not are read from the operand's own clause instead - `&a` is the
 // address of the array, and a string literal that initializes an array of
 // characters stays an array.
-fn (p Parser) value_type(expr ast.Expr) types.Type {
-	return types.decay(expr.typ)
+fn (mut p Parser) value_type(expr ast.Expr) types.Type {
+	return types.decay(p.arena.typ(expr))
 }
 
 // unary_type is the type a prefix operator gives its expression. `!` answers with
@@ -1659,7 +1684,7 @@ fn (mut p Parser) unary_type(op tokenize.Token, operand ast.Expr) types.Type {
 		if p.is_unresolved(operand) {
 			return types.Type{}
 		}
-		return types.pointer_to(operand.typ)
+		return types.pointer_to(p.arena.typ(operand))
 	}
 	if p.is_unresolved(operand) {
 		return types.Type{}
@@ -1688,23 +1713,24 @@ fn (mut p Parser) deref_type(op tokenize.Token, operand ast.Expr) types.Type {
 	if p.is_unresolved(operand) {
 		return types.Type{}
 	}
-	if operand.typ.is_array() {
-		return operand.typ.element() or { types.Type{} }
+	operand_type := p.arena.typ(operand)
+	if operand_type.is_array() {
+		return operand_type.element() or { types.Type{} }
 	}
-	if operand.typ.is_function() {
-		return operand.typ
+	if operand_type.is_function() {
+		return operand_type
 	}
-	if !operand.typ.is_pointer() {
-		p.error_at(op, 'unsupported: * reads through an address, and this operand is ${operand.typ.describe()}')
+	if !operand_type.is_pointer() {
+		p.error_at(op, 'unsupported: * reads through an address, and this operand is ${operand_type.describe()}')
 		return types.Type{}
 	}
-	return operand.typ.pointee() or { types.Type{} }
+	return operand_type.pointee() or { types.Type{} }
 }
 
 // is_unresolved says whether an expression's clause is the one the model could
 // not answer for, which no operator may take an address of or promote.
-fn (p Parser) is_unresolved(expr ast.Expr) bool {
-	if expr.typ.kind == .unknown {
+fn (mut p Parser) is_unresolved(expr ast.Expr) bool {
+	if expr.kind == .none || p.arena.typ(expr).kind == .unknown {
 		return true
 	}
 	return false
@@ -1719,19 +1745,21 @@ fn (p Parser) is_unresolved(expr ast.Expr) bool {
 // Which names the scope has is what is asked here, not which names the file has:
 // `int x[n]; int n = 4;` has no n at this point, and the caller that wants the
 // file's answer waits until the end of the file to ask it.
-fn (p Parser) unresolved_name(expr ast.Expr) ?ast.Ident {
-	match expr {
-		ast.Ident {
-			if is_keyword(expr.name) {
+fn (mut p Parser) unresolved_name(expr ast.Expr) ?ast.Ident {
+	match expr.kind {
+		.ident {
+			node := p.arena.ident(expr)
+			if is_keyword(node.name) {
 				return none
 			}
-			if _ := p.scopes.lookup(expr.name) {
+			if _ := p.scopes.lookup(node.name) {
 				return none
 			}
-			return expr
+			return *node
 		}
-		ast.Unary {
-			if expr.op == '&&' {
+		.unary {
+			node := p.arena.unary(expr)
+			if node.op == '&&' {
 				// The operand of `&&` is a label name and not an object: it is
 				// resolved against the function's labels where the jump is
 				// emitted, so it is no more undeclared than the name a `goto`
@@ -1739,19 +1767,20 @@ fn (p Parser) unresolved_name(expr ast.Expr) ?ast.Ident {
 				// declaration.
 				return none
 			}
-			return p.unresolved_name(expr.expr)
+			return p.unresolved_name(node.expr)
 		}
-		ast.Cast {
-			return p.unresolved_name(expr.expr)
+		.cast {
+			node := p.arena.cast(expr)
+			return p.unresolved_name(node.expr)
 		}
-		ast.Binary {
+		.binary {
 			// An operator chain is one node deep in the grammar however many
 			// terms it has, so the left spine is walked with a loop and only
 			// genuinely nested expressions recurse.
 			mut spine := []ast.Binary{}
-			mut node := ast.Expr(expr)
-			for node is ast.Binary {
-				step := node as ast.Binary
+			mut node := expr
+			for node.kind == .binary {
+				step := *p.arena.binary(node)
 				spine << step
 				node = step.left
 			}
@@ -1765,20 +1794,22 @@ fn (p Parser) unresolved_name(expr ast.Expr) ?ast.Ident {
 			}
 			return none
 		}
-		ast.Conditional {
-			if found := p.unresolved_name(expr.cond) {
+		.conditional {
+			node := p.arena.conditional(expr)
+			if found := p.unresolved_name(node.cond) {
 				return found
 			}
-			if found := p.unresolved_name(expr.then_expr) {
+			if found := p.unresolved_name(node.then_expr) {
 				return found
 			}
-			return p.unresolved_name(expr.else_expr)
+			return p.unresolved_name(node.else_expr)
 		}
-		ast.Index {
-			if found := p.unresolved_name(expr.base) {
+		.index {
+			node := p.arena.index(expr)
+			if found := p.unresolved_name(node.base) {
 				return found
 			}
-			return p.unresolved_name(expr.index)
+			return p.unresolved_name(node.index)
 		}
 		else {
 			return none
@@ -1872,9 +1903,9 @@ fn (mut p Parser) parse_unary() !ast.Expr {
 			return error('no label name')
 		}
 		p.next()
-		return ast.Expr(ast.Unary{
+		return p.arena.put_unary(ast.Unary{
 			op:   '&&'
-			expr: ast.Expr(ast.Ident{
+			expr: p.arena.put_ident(ast.Ident{
 				name: name.text
 				line: name.line
 				col:  name.col
@@ -1893,7 +1924,7 @@ fn (mut p Parser) parse_unary() !ast.Expr {
 	if t.kind == .punct && t.text in ['-', '+', '!', '~', '&', '*'] {
 		p.next()
 		operand := p.parse_prefix_operand(t)!
-		return ast.Expr(ast.Unary{
+		return p.arena.put_unary(ast.Unary{
 			op:   t.text
 			expr: operand
 			typ:  p.unary_type(t, operand)
@@ -1998,7 +2029,7 @@ fn (mut p Parser) real_or_imaginary(op tokenize.Token, operand ast.Expr) ast.Exp
 // complex value is unequal to zero when either component is: measured on gcc
 // 16.2.1, `_Bool b = 0.0 + 2.0i;` leaves 1 in b, where the real part alone would
 // leave 0. The node that says that is the comparison the standard names.
-fn (p Parser) converted_into(destination types.Type, value ast.Expr) ast.Expr {
+fn (mut p Parser) converted_into(destination types.Type, value ast.Expr) ast.Expr {
 	if !destination.is_arithmetic() || destination.is_complex() {
 		return value
 	}
@@ -2006,29 +2037,30 @@ fn (p Parser) converted_into(destination types.Type, value ast.Expr) ast.Expr {
 	if !source.is_complex() {
 		return value
 	}
+	at := p.arena.span(value)
 	if destination.kind == .bool_ {
-		return ast.Expr(ast.Binary{
+		return p.arena.put_binary(ast.Binary{
 			op:    '!='
 			left:  value
-			right: ast.Expr(ast.IntLit{
+			right: p.arena.put_int_lit(ast.IntLit{
 				value: 0
 				text:  '0'
 				typ:   types.int_type()
-				line:  value.line
-				col:   value.col
+				line:  at.line
+				col:   at.col
 			})
 			typ:   types.int_type()
-			line:  value.line
-			col:   value.col
+			line:  at.line
+			col:   at.col
 		})
 	}
 	kind := source.kind.complex_component() or { return value }
-	return ast.Expr(ast.Unary{
+	return p.arena.put_unary(ast.Unary{
 		op:   '__real__'
 		expr: value
 		typ:  types.scalar(kind) or { types.Type{} }
-		line: value.line
-		col:  value.col
+		line: at.line
+		col:  at.col
 	})
 }
 
@@ -2048,7 +2080,7 @@ fn (mut p Parser) complex_part(op tokenize.Token, operand ast.Expr, value types.
 		return p.zero_value(op, types.Type{})
 	}
 	component := types.scalar(kind) or { types.Type{} }
-	return ast.Expr(ast.Unary{
+	return p.arena.put_unary(ast.Unary{
 		op:   op.text
 		expr: operand
 		typ:  component
@@ -2062,7 +2094,7 @@ fn (mut p Parser) complex_part(op tokenize.Token, operand ast.Expr, value types.
 // a floating one, the same two nodes a written constant of that type already is.
 fn (mut p Parser) zero_value(op tokenize.Token, value types.Type) ast.Expr {
 	if value.is_floating() {
-		return ast.Expr(ast.FloatLit{
+		return p.arena.put_float_lit(ast.FloatLit{
 			value: 0.0
 			text:  '0.0'
 			typ:   value
@@ -2070,7 +2102,7 @@ fn (mut p Parser) zero_value(op tokenize.Token, value types.Type) ast.Expr {
 			col:   op.col
 		})
 	}
-	return ast.Expr(ast.IntLit{
+	return p.arena.put_int_lit(ast.IntLit{
 		value: 0
 		text:  '0'
 		typ:   value
@@ -2171,8 +2203,8 @@ fn (mut p Parser) postfix_on(base ast.Expr) !ast.Expr {
 // other object goes through the general reader, which holds the object in the
 // Field's base.
 fn (mut p Parser) parse_member_on(object ast.Expr, through_pointer bool, at tokenize.Token) !ast.Expr {
-	if object is ast.Ident {
-		named := object as ast.Ident
+	if object.kind == .ident {
+		named := *p.arena.ident(object)
 		named_at := tokenize.Token{
 			kind: .identifier
 			text: named.name
@@ -2180,9 +2212,9 @@ fn (mut p Parser) parse_member_on(object ast.Expr, through_pointer bool, at toke
 			col:  named.col
 		}
 		member := p.parse_member_path(named.name, named_at, through_pointer, ?ast.Expr(none))!
-		return ast.Expr(*member)
+		return p.arena.put_field(*member)
 	}
-	if object is ast.Index {
+	if object.kind == .index {
 		// A member of an element: `s[i].a` reads the member from the element
 		// the index names. The name-and-index shape belongs to an array, whose
 		// place in the frame or the image the reader knows and whose stride the
@@ -2190,9 +2222,9 @@ fn (mut p Parser) parse_member_on(object ast.Expr, through_pointer bool, at toke
 		// from the pointer's value and scaled by the size of what it points at,
 		// which is what the general reader computes; `p[i].a` goes there with
 		// the element node as its base, exactly as `p[i]` alone does.
-		element := object as ast.Index
-		if element.base is ast.Ident {
-			base := element.base as ast.Ident
+		element := *p.arena.index(object)
+		if element.base.kind == .ident {
+			base := *p.arena.ident(element.base)
 			if base.typ.is_array() || base.typ.kind == .unknown {
 				base_at := tokenize.Token{
 					kind: .identifier
@@ -2200,12 +2232,12 @@ fn (mut p Parser) parse_member_on(object ast.Expr, through_pointer bool, at toke
 					line: base.line
 					col:  base.col
 				}
-				return ast.Expr(*p.parse_member_path(base.name, base_at, through_pointer, element.index)!)
+				return p.arena.put_field(*p.parse_member_path(base.name, base_at, through_pointer, element.index)!)
 			}
 		}
 	}
 	member := p.parse_general_member_path(object, through_pointer, at)!
-	return ast.Expr(*member)
+	return p.arena.put_field(*member)
 }
 
 // parse_member_chain reads the member accesses that follow an object, left to
@@ -2253,23 +2285,26 @@ fn (mut p Parser) element(base ast.Expr, index ast.Expr, at tokenize.Token) !ast
 	mut address := base
 	mut count := index
 	mut element := types.Type{}
-	if base.typ.is_array() || base.typ.is_pointer() {
-		element = p.element_type(base.typ, base, at) or { return error('no element type') }
-	} else if index.typ.is_array() || index.typ.is_pointer() {
+	base_type := p.arena.typ(base)
+	index_type := p.arena.typ(index)
+	if base_type.is_array() || base_type.is_pointer() {
+		element = p.element_type(base_type, base, at) or { return error('no element type') }
+	} else if index_type.is_array() || index_type.is_pointer() {
 		address = index
 		count = base
-		element = p.element_type(index.typ, index, at) or { return error('no element type') }
+		element = p.element_type(index_type, index, at) or { return error('no element type') }
 	} else {
-		p.error_at(at, 'unsupported: neither ${describe_operand(base)} nor ${describe_operand(index)} is an array or a pointer, so this is not an element of one')
+		p.error_at(at, 'unsupported: neither ${describe_operand(base, &p.arena)} nor ${describe_operand(index, &p.arena)} is an array or a pointer, so this is not an element of one')
 		return error('no array or pointer operand')
 	}
-	if address is ast.Field && address.typ.is_array() {
-		address = ast.Expr(ast.Unary{
+	if address.kind == .field && p.arena.typ(address).is_array() {
+		member := *p.arena.field(address)
+		address = p.arena.put_unary(ast.Unary{
 			op:   '&'
 			expr: address
-			typ:  address.typ
-			line: address.line
-			col:  address.col
+			typ:  member.typ
+			line: member.line
+			col:  member.col
 		})
 	}
 	// A row of an array whose bound is a value is that many bytes wide, and how
@@ -2277,11 +2312,11 @@ fn (mut p Parser) element(base ast.Expr, index ast.Expr, at tokenize.Token) !ast
 	// `c * sizeof(int)`. It is left none where the element type has a size this
 	// reader can fold, which is every ordinary array, and the emitter then
 	// scales the index by that size as it always did.
-	mut stride := ?ast.Expr(none)
+	mut stride := ast.Expr{}
 	if element.has_vla() {
-		stride = p.vla_size_expr(element, at)
+		stride = p.vla_size_expr(element, at) or { ast.Expr{} }
 	}
-	return ast.Expr(ast.Index{
+	return p.arena.put_index(ast.Index{
 		base:       address
 		index:      count
 		typ:        element
@@ -2302,7 +2337,7 @@ fn (mut p Parser) element_type(t types.Type, operand ast.Expr, at tokenize.Token
 	if t.is_pointer() {
 		return t.pointee() or { types.Type{} }
 	}
-	p.error_at(at, 'unsupported: ${describe_operand(operand)} is neither an array nor a pointer, so it has no element to subscript')
+	p.error_at(at, 'unsupported: ${describe_operand(operand, &p.arena)} is neither an array nor a pointer, so it has no element to subscript')
 	return none
 }
 
@@ -2320,25 +2355,26 @@ fn (mut p Parser) element_type(t types.Type, operand ast.Expr, at tokenize.Token
 // type the reader never resolved is left for the walk that reports names nothing
 // declares, so an undeclared name gets that message and not this one.
 fn (mut p Parser) inc_dec(op tokenize.Token, operand ast.Expr, postfix bool) !ast.Expr {
-	if !steps_an_object(operand) {
-		p.error_at(op, 'unsupported: ${op.text} on ${describe_operand(operand)}, and this compiler steps an object - a name, an element, a member or what a pointer points at - only')
+	if !steps_an_object(operand, &p.arena) {
+		p.error_at(op, 'unsupported: ${op.text} on ${describe_operand(operand, &p.arena)}, and this compiler steps an object - a name, an element, a member or what a pointer points at - only')
 		return error('operand is not an object')
 	}
-	kind := operand.typ.kind
+	operand_type := p.arena.typ(operand)
+	kind := operand_type.kind
 	if kind != .unknown && !steps_a_value(kind) {
 		reason := if kind in [.int128, .unsigned_int128] {
-			'and this back end has no ${operand.typ.describe()} value to step'
+			'and this back end has no ${operand_type.describe()} value to step'
 		} else {
 			'and this compiler steps an object of an integer, a pointer or a floating type only'
 		}
-		p.error_at(op, 'unsupported: ${op.text} on ${describe_operand(operand)}, which is ${operand.typ.describe()}, ${reason}')
+		p.error_at(op, 'unsupported: ${op.text} on ${describe_operand(operand, &p.arena)}, which is ${operand_type.describe()}, ${reason}')
 		return error('operand is not a value this compiler steps')
 	}
-	return ast.Expr(ast.IncDec{
+	return p.arena.put_inc_dec(ast.IncDec{
 		op:      op.text
 		operand: operand
 		postfix: postfix
-		typ:     operand.typ
+		typ:     operand_type
 		line:    op.line
 		col:     op.col
 	})
@@ -2348,10 +2384,10 @@ fn (mut p Parser) inc_dec(op tokenize.Token, operand ast.Expr, postfix bool) !as
 // step in place: a name, an element, a member, or what a pointer points at. A
 // literal and a computed value are not objects, so they are refused by name
 // rather than read as a place to store.
-fn steps_an_object(operand ast.Expr) bool {
-	return match operand {
-		ast.Ident, ast.Index, ast.Field { true }
-		ast.Unary { operand.op == '*' }
+fn steps_an_object(operand ast.Expr, arena &ast.Arena) bool {
+	return match operand.kind {
+		.ident, .index, .field { true }
+		.unary { arena.unary(operand).op == '*' }
 		else { false }
 	}
 }
@@ -2403,9 +2439,9 @@ fn (mut p Parser) parse_cast_or_compound(at tokenize.Token) !ast.Expr {
 		&& !types.unqualified(p.value_type(operand)).compatible(types.unqualified(destination)) {
 		return p.cast_to_union(at, spec, d, destination, operand)!
 	}
-	return ast.Expr(ast.Cast{
+	return p.arena.put_cast(ast.Cast{
 		spelling: p.conversion_spelling(spec, d, destination)
-		expr:     p.converted_into(destination, decayed_operand(operand))
+		expr:     p.converted_into(destination, p.decayed_operand(operand))
 		typ:      destination
 		line:     at.line
 		col:      at.col
@@ -2419,7 +2455,7 @@ fn (mut p Parser) parse_cast_or_compound(at tokenize.Token) !ast.Expr {
 // stars do not carry, so `(int (*)(int))` came out as `int *` and the message
 // named a destination the program never wrote. The resolved type's own spelling
 // keeps that part, and it is the same type the conversion is about.
-fn (p Parser) conversion_spelling(spec DeclSpec, d Declarator, resolved types.Type) string {
+fn (mut p Parser) conversion_spelling(spec DeclSpec, d Declarator, resolved types.Type) string {
 	if d.steps.len > d.pointer_count() {
 		return resolved.describe()
 	}
@@ -2435,16 +2471,18 @@ fn (p Parser) conversion_spelling(spec DeclSpec, d Declarator, resolved types.Ty
 // conversion written out - the same value the emitter already writes for a bare
 // function name - and it is what makes the conversion the pointer-to-pointer
 // conversion 6.3.2.3p8 allows, to a different function type and back.
-fn decayed_operand(operand ast.Expr) ast.Expr {
-	if !operand.typ.is_function() {
+fn (mut p Parser) decayed_operand(operand ast.Expr) ast.Expr {
+	operand_type := p.arena.typ(operand)
+	if !operand_type.is_function() {
 		return operand
 	}
-	return ast.Expr(ast.Unary{
+	at := p.arena.span(operand)
+	return p.arena.put_unary(ast.Unary{
 		op:   '&'
 		expr: operand
-		typ:  types.decay(operand.typ)
-		line: operand.line
-		col:  operand.col
+		typ:  types.decay(operand_type)
+		line: at.line
+		col:  at.col
 	})
 }
 
@@ -2524,7 +2562,8 @@ fn (mut p Parser) parse_sizeof(at tokenize.Token) !ast.Expr {
 			0
 		}
 		operand := p.parse_prefix_operand(at)!
-		spelling = describe_operand(operand)
+		operand_type := p.arena.typ(operand)
+		spelling = describe_operand(operand, &p.arena)
 		if p.is_unresolved(operand) {
 			// The operand was refused where it was written, and its type is
 			// the one the reader never resolved. Naming the operand is what
@@ -2535,7 +2574,7 @@ fn (mut p Parser) parse_sizeof(at tokenize.Token) !ast.Expr {
 		// A variable-length array's size is not a constant, so it is not a
 		// constant expression and the answer is the product of its bounds,
 		// evaluated where the sizeof is asked.
-		if vla := p.vla_size_expr(operand.typ, at) {
+		if vla := p.vla_size_expr(operand_type, at) {
 			return vla
 		}
 		// The size is a constant, so 6.5.3.4p2 has the operand not evaluated and
@@ -2547,8 +2586,8 @@ fn (mut p Parser) parse_sizeof(at tokenize.Token) !ast.Expr {
 		if p.compound_pending.len > 0 {
 			p.compound_pending[p.compound_pending.len - 1] = p.compound_pending[p.compound_pending.len - 1][..pending]
 		}
-		size = p.representation.size_of(operand.typ) or {
-			p.error_at(at, 'unsupported: sizeof asks how many bytes ${spelling} takes, and this compiler has no size for ${operand.typ.describe()}')
+		size = p.representation.size_of(operand_type) or {
+			p.error_at(at, 'unsupported: sizeof asks how many bytes ${spelling} takes, and this compiler has no size for ${operand_type.describe()}')
 			return error('no size for the operand')
 		}
 	}
@@ -2556,7 +2595,7 @@ fn (mut p Parser) parse_sizeof(at tokenize.Token) !ast.Expr {
 		p.error_at(at, 'unsupported: ${spelling} is ${size} bytes, and this compiler answers a size in an int')
 		return error('size past an int')
 	}
-	return ast.Expr(ast.IntLit{
+	return p.arena.put_int_lit(ast.IntLit{
 		value: i64(size)
 		text:  'sizeof(${spelling})'
 		typ:   types.unsigned_long_type()
@@ -2625,7 +2664,7 @@ fn (mut p Parser) parse_countof(at tokenize.Token) !ast.Expr {
 			// runs, so the count is that expression evaluated where the
 			// `_Countof` is asked. Measured on gcc 16.2.1, `int v[n];
 			// _Countof(v)` is how many elements v has at the time.
-			bounds := p.vla_bound_exprs(declared.vla_id)
+			bounds := p.vla_bound_exprs(declared.vla_id())
 			if bounds.len > 0 {
 				bound = bounds[0]
 			}
@@ -2646,7 +2685,8 @@ fn (mut p Parser) parse_countof(at tokenize.Token) !ast.Expr {
 			0
 		}
 		operand := p.parse_prefix_operand(at)!
-		spelling = describe_operand(operand)
+		operand_type := p.arena.typ(operand)
+		spelling = describe_operand(operand, &p.arena)
 		if p.is_unresolved(operand) {
 			p.error_at(at, 'unsupported: _Countof asks how many elements ${spelling} has, and this compiler did not resolve its type')
 			return error('no type for the operand')
@@ -2654,7 +2694,7 @@ fn (mut p Parser) parse_countof(at tokenize.Token) !ast.Expr {
 		if p.compound_pending.len > 0 {
 			p.compound_pending[p.compound_pending.len - 1] = p.compound_pending[p.compound_pending.len - 1][..pending]
 		}
-		typ := operand.typ
+		typ := operand_type
 		if !typ.is_array() {
 			p.error_at(at, 'a constraint violation: _Countof asks how many elements an array has, and ${spelling} has type ${typ.describe()}, which is not an array')
 			return error('_Countof of a non-array')
@@ -2662,7 +2702,7 @@ fn (mut p Parser) parse_countof(at tokenize.Token) !ast.Expr {
 		if typ.count > 0 {
 			count = typ.count
 		} else if typ.vla {
-			bounds := p.vla_bound_exprs(typ.vla_id)
+			bounds := p.vla_bound_exprs(typ.vla_id())
 			if bounds.len > 0 {
 				bound = bounds[0]
 			}
@@ -2675,7 +2715,7 @@ fn (mut p Parser) parse_countof(at tokenize.Token) !ast.Expr {
 	if value := bound {
 		return p.size_as_unsigned(value, at)
 	}
-	return ast.Expr(ast.IntLit{
+	return p.arena.put_int_lit(ast.IntLit{
 		value: i64(count)
 		text:  '_Countof(${spelling})'
 		typ:   types.unsigned_long_type()
@@ -2721,7 +2761,8 @@ fn (mut p Parser) parse_alignof(at tokenize.Token) !ast.Expr {
 			0
 		}
 		operand := p.parse_prefix_operand(at)!
-		spelling = describe_operand(operand)
+		operand_type := p.arena.typ(operand)
+		spelling = describe_operand(operand, &p.arena)
 		if p.is_unresolved(operand) {
 			p.error_at(at, 'unsupported: __alignof__ asks how ${spelling} is aligned, and this compiler did not resolve its type')
 			return error('no type for the operand')
@@ -2729,12 +2770,12 @@ fn (mut p Parser) parse_alignof(at tokenize.Token) !ast.Expr {
 		if p.compound_pending.len > 0 {
 			p.compound_pending[p.compound_pending.len - 1] = p.compound_pending[p.compound_pending.len - 1][..pending]
 		}
-		alignment = p.representation.align_of(operand.typ) or {
-			p.error_at(at, 'unsupported: __alignof__ asks how ${spelling} is aligned, and this compiler has no alignment for ${operand.typ.describe()}')
+		alignment = p.representation.align_of(operand_type) or {
+			p.error_at(at, 'unsupported: __alignof__ asks how ${spelling} is aligned, and this compiler has no alignment for ${operand_type.describe()}')
 			return error('no alignment for the operand')
 		}
 	}
-	return ast.Expr(ast.IntLit{
+	return p.arena.put_int_lit(ast.IntLit{
 		value: i64(alignment)
 		text:  '__alignof__(${spelling})'
 		typ:   types.unsigned_long_type()
@@ -2784,7 +2825,7 @@ fn (mut p Parser) parse_generic_selection(at tokenize.Token) !ast.Expr {
 	// its first element, a function to a pointer to itself, and the qualifiers
 	// come off. Measured on gcc 16.2.1, `const int x; _Generic(x, int: 11,
 	// default: 99)` is 11, so a qualified operand matches the unqualified type.
-	selector := types.unqualified(types.decay(controlling.typ))
+	selector := types.unqualified(types.decay(p.arena.typ(controlling)))
 	p.generic_controls << controlling
 	if !p.expect_punct(',') {
 		return error('expected , after the controlling expression of a generic selection')
@@ -2820,7 +2861,7 @@ fn (mut p Parser) parse_generic_selection(at tokenize.Token) !ast.Expr {
 		seen << arm.typ
 	}
 	if selector.kind == .unknown {
-		p.error_at(at, 'unsupported: a generic selection asks for the type of ${describe_operand(controlling)}, and this compiler did not resolve it')
+		p.error_at(at, 'unsupported: a generic selection asks for the type of ${describe_operand(controlling, &p.arena)}, and this compiler did not resolve it')
 		return error('no type for the controlling expression')
 	}
 	for arm in arms {
@@ -2888,7 +2929,7 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 				p.error_at(t, err.msg())
 				return error('bad imaginary literal')
 			}
-			return ast.Expr(ast.ComplexLit{
+			return p.arena.put_complex_lit(ast.ComplexLit{
 				value:      constant.value
 				long_value: constant.long_value
 				text:       t.text
@@ -2916,7 +2957,7 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 					p.report_at(t.line, t.col, if t.file != '' { t.file } else { p.file },
 						range_warning, true, .cpp)
 				}
-				return ast.Expr(ast.FloatLit{
+				return p.arena.put_float_lit(ast.FloatLit{
 					decimal_value: value
 					text:          t.text
 					typ:           types.decimal_type(value.kind)
@@ -2929,7 +2970,7 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 					p.error_at(t, err.msg())
 					return error('bad long double literal')
 				}
-				return ast.Expr(ast.FloatLit{
+				return p.arena.put_float_lit(ast.FloatLit{
 					long_value: value
 					text:       t.text
 					typ:        p.floating_type(t, 0.0)
@@ -2942,7 +2983,7 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 					p.error_at(t, err.msg())
 					return error('bad _Float128 literal')
 				}
-				return ast.Expr(ast.FloatLit{
+				return p.arena.put_float_lit(ast.FloatLit{
 					long_value: value
 					text:       t.text
 					typ:        p.floating_type(t, 0.0)
@@ -2954,7 +2995,7 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 				p.error_at(t, err.msg())
 				return error('bad floating literal')
 			}
-			return ast.Expr(ast.FloatLit{
+			return p.arena.put_float_lit(ast.FloatLit{
 				value: value
 				text:  t.text
 				typ:   p.floating_type(t, value)
@@ -2966,7 +3007,7 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 			p.error_at(t, err.msg())
 			return error('bad integer literal')
 		}
-		return ast.Expr(ast.IntLit{
+		return p.arena.put_int_lit(ast.IntLit{
 			value: value
 			text:  t.text
 			typ:   p.constant_type(t, value)
@@ -2982,7 +3023,7 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 		}
 		// A character constant has the type int, whatever it was written as:
 		// 6.4.4.4 says so, and it is why `'a' + 'b'` is an int in C.
-		return ast.Expr(ast.IntLit{
+		return p.arena.put_int_lit(ast.IntLit{
 			value: value
 			text:  t.text
 			typ:   types.int_type()
@@ -3004,7 +3045,7 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 		// built from. It is asked before the name is resolved, because there is
 		// no storage behind the name to read.
 		if constant := p.scopes.lookup_constant(t.text) {
-			return integer_constant(constant.value, t.text, t, constant.kind)
+			return p.integer_constant(constant.value, t.text, t, constant.kind)
 		}
 		// The function-name spellings name the function the expression is
 		// written in: `__func__` is C99's (6.4.2.2), and `__FUNCTION__` and
@@ -3032,7 +3073,7 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 		// the enclosing frame into a call through that pointer.
 		if t.text in p.nested_names && !p.at_punct('(') {
 			symbol := p.nested_names[t.text]
-			return ast.Expr(ast.Ident{
+			return p.arena.put_ident(ast.Ident{
 				name: symbol
 				typ:  p.resolve(symbol)
 				line: t.line
@@ -3042,10 +3083,10 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 
 		if p.at_punct('.') || p.at_punct('->') {
 			member := p.parse_member_path(t.text, t, p.at_punct('->'), ?ast.Expr(none))!
-			return ast.Expr(*member)
+			return p.arena.put_field(*member)
 		}
 		typ := p.resolve(t.text)
-		return ast.Expr(ast.Ident{
+		return p.arena.put_ident(ast.Ident{
 			name: t.text
 			typ:  typ
 			line: t.line
@@ -3058,7 +3099,7 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 			p.error_at(t, err.msg())
 			return error('bad string literal')
 		}
-		return ast.Expr(ast.StrLit{
+		return p.arena.put_str_lit(ast.StrLit{
 			value: literal.value
 			text:  t.text
 			unit:  literal.unit
@@ -3138,13 +3179,13 @@ fn (mut p Parser) parse_statement_expression(open tokenize.Token) !ast.Expr {
 	// Every other kind leaves the construct worth nothing. The two halves are
 	// split here so the back end emits each one once: the value is the last
 	// expression and the body is everything before it.
-	mut value := ?ast.Expr(none)
+	mut value := ast.Expr{}
 	if stmts.len > 0 {
-		value = p.trailing_value(stmts[stmts.len - 1])
+		value = p.trailing_value(stmts[stmts.len - 1]) or { ast.Expr{} }
 	}
-	body := if value != none { stmts[..stmts.len - 1].clone() } else { stmts.clone() }
-	typ := if present := value { p.value_type(present) } else { types.void_type() }
-	return ast.Expr(ast.StmtExpr{
+	body := if !value.is_none() { stmts[..stmts.len - 1].clone() } else { stmts.clone() }
+	typ := if !value.is_none() { p.value_type(value) } else { types.void_type() }
+	return p.arena.put_stmt_expr(ast.StmtExpr{
 		body:  body
 		value: value
 		typ:   typ
@@ -3161,15 +3202,21 @@ fn (mut p Parser) parse_statement_expression(open tokenize.Token) !ast.Expr {
 // the sum, because the compound spelling was already read as `a = a + 1`. Every
 // other statement kind is worth nothing, which is what a declaration, a loop, an
 // if and a block are.
-fn (p Parser) trailing_value(stmt ast.Stmt) ?ast.Expr {
+fn (mut p Parser) trailing_value(stmt ast.Stmt) ?ast.Expr {
 	match stmt.kind {
 		.expr_stmt {
+			if stmt.expr.is_none() {
+				return none
+			}
 			return stmt.expr
 		}
 		.assign {
-			value := stmt.expr or { return none }
+			value := stmt.expr
+			if value.is_none() {
+				return none
+			}
 			target := p.assignment_target(stmt) or { return none }
-			return ast.Expr(ast.Assign{
+			return p.arena.put_assign(ast.Assign{
 				target: target
 				value:  value
 				op:     '='
@@ -3190,20 +3237,23 @@ fn (p Parser) trailing_value(stmt ast.Stmt) ?ast.Expr {
 // subscript - and each piece is the expression it stands for, so the whole
 // target is put back the way the expression reader read it when the same
 // assignment is written where a value is wanted.
-fn (p Parser) assignment_target(stmt ast.Stmt) ?ast.Expr {
-	if subscript := stmt.subscript() {
+fn (mut p Parser) assignment_target(stmt ast.Stmt) ?ast.Expr {
+	subscript := stmt.subscript()
+	if !subscript.is_none() {
 		return subscript
 	}
-	if deref := stmt.deref() {
+	deref := stmt.deref()
+	if !deref.is_none() {
 		return deref
 	}
 	if member := stmt.field {
-		return ast.Expr(*member)
+		return p.arena.put_field(*member)
 	}
-	if index := stmt.index {
+	index := stmt.index
+	if !index.is_none() {
 		base := p.resolve(stmt.target)
-		return ast.Expr(ast.Index{
-			base:  ast.Expr(ast.Ident{
+		return p.arena.put_index(ast.Index{
+			base:  p.arena.put_ident(ast.Ident{
 				name: stmt.target
 				typ:  base
 				line: stmt.line
@@ -3218,7 +3268,7 @@ fn (p Parser) assignment_target(stmt ast.Stmt) ?ast.Expr {
 	if stmt.target.len == 0 {
 		return none
 	}
-	return ast.Expr(ast.Ident{
+	return p.arena.put_ident(ast.Ident{
 		name: stmt.target
 		typ:  p.resolve(stmt.target)
 		line: stmt.line
@@ -3238,7 +3288,7 @@ fn (mut p Parser) function_name_expression(at tokenize.Token) !ast.Expr {
 		p.error_at(at, 'unsupported: ${at.text} is read outside a function body, and it names the function it is written in')
 		return error('function name outside a function')
 	}
-	return ast.Expr(ast.StrLit{
+	return p.arena.put_str_lit(ast.StrLit{
 		value: name
 		text:  '"${name}"'
 		typ:   types.array_of(types.char_type(), name.len + 1)
@@ -3340,7 +3390,7 @@ fn string_literal_type(text string, literal StringLiteral) types.Type {
 
 // signature is the function type a name declares, following a pointer to a
 // function to the function it points at.
-fn (p Parser) signature(name string) ?types.Type {
+fn (mut p Parser) signature(name string) ?types.Type {
 	declared := p.resolve(name)
 	if declared.is_function() {
 		return declared
@@ -3356,7 +3406,7 @@ fn (p Parser) signature(name string) ?types.Type {
 
 // is_callable says whether a name the unit declares is what 6.5.2.2 requires what a
 // call calls to be, which is a function or a pointer to a function.
-fn (p Parser) is_callable(name string) bool {
+fn (mut p Parser) is_callable(name string) bool {
 	signature := p.signature(name) or { return false }
 	return signature.is_function()
 }
@@ -3425,7 +3475,8 @@ fn (mut p Parser) checked_arguments(signature types.Type, mut args []ast.Expr, a
 		problem := types.assignment_problem(parameters[index].typ, p.value_type(converted), p.is_null_constant(converted)) or {
 			continue
 		}
-		p.problem_span(argument.line, argument.col, problem)
+		argument_at := p.arena.span(argument)
+		p.problem_span(argument_at.line, argument_at.col, problem)
 	}
 	return answered.returns() or { types.Type{} }
 }
@@ -3438,8 +3489,9 @@ fn (mut p Parser) checked_arguments(signature types.Type, mut args []ast.Expr, a
 // parenthesised expression - has to be worth a function or a pointer to one, and
 // anything else is refused by name here, where the call is written.
 fn (mut p Parser) call(callee ast.Expr, mut args []ast.Expr) !ast.Expr {
-	if callee is ast.Ident {
-		name := (callee as ast.Ident).name
+	at_callee := p.arena.span(callee)
+	if callee.kind == .ident {
+		name := p.arena.ident(callee).name
 		// A nested function is visible under the name it was written with and
 		// emitted under the symbol its enclosing function gives it. The call is
 		// written against the symbol, which is the name the emitter and the
@@ -3448,44 +3500,44 @@ fn (mut p Parser) call(callee ast.Expr, mut args []ast.Expr) !ast.Expr {
 		at := tokenize.Token{
 			kind: .identifier
 			text: symbol
-			line: callee.line
-			col:  callee.col
+			line: at_callee.line
+			col:  at_callee.col
 		}
 		typ := p.call_type(at, mut args)
 		if p.object_holds_a_function_pointer(name) {
-			return ast.Expr(ast.Call{
+			return p.arena.put_call(ast.Call{
 				callee: callee
 				args:   args
 				typ:    typ
-				line:   callee.line
-				col:    callee.col
+				line:   at_callee.line
+				col:    at_callee.col
 			})
 		}
-		return ast.Expr(ast.Call{
+		return p.arena.put_call(ast.Call{
 			name: symbol
 			args: args
 			typ:  typ
-			line: callee.line
-			col:  callee.col
+			line: at_callee.line
+			col:  at_callee.col
 		})
 	}
-	what := describe_operand(callee)
-	signature := callable_signature(callee) or {
-		p.error_span(callee.line, callee.col, 'a constraint violation: what a call calls has to be a function or a pointer to a function, and this is ${callee.typ.describe()}')
+	what := describe_operand(callee, &p.arena)
+	signature := callable_signature(callee, &p.arena) or {
+		p.error_span(at_callee.line, at_callee.col, 'a constraint violation: what a call calls has to be a function or a pointer to a function, and this is ${p.arena.typ(callee).describe()}')
 		return error('the callee is not callable')
 	}
 	at := tokenize.Token{
 		kind: .identifier
 		text: what
-		line: callee.line
-		col:  callee.col
+		line: at_callee.line
+		col:  at_callee.col
 	}
-	return ast.Expr(ast.Call{
+	return p.arena.put_call(ast.Call{
 		callee: callee
 		args:   args
 		typ:    p.checked_arguments(signature, mut args, at, what)
-		line:   callee.line
-		col:    callee.col
+		line:   at_callee.line
+		col:    at_callee.col
 	})
 }
 
@@ -3493,7 +3545,7 @@ fn (mut p Parser) call(callee ast.Expr, mut args []ast.Expr) !ast.Expr {
 // pointer to a function, which is a call through a value rather than a call to the
 // function the name is. A typedef that names the pointer type resolves to the
 // pointer here, so `binop fp` and `int (*fp)(int, int)` answer the same.
-fn (p Parser) object_holds_a_function_pointer(name string) bool {
+fn (mut p Parser) object_holds_a_function_pointer(name string) bool {
 	declared := p.resolve(name)
 	if !declared.is_pointer() {
 		return false
@@ -3506,12 +3558,13 @@ fn (p Parser) object_holds_a_function_pointer(name string) bool {
 // function it is, or the function a pointer to it points at, and nothing for
 // anything else. It is the question 6.5.2.2 asks of the callee, asked of an
 // expression rather than of a name.
-fn callable_signature(callee ast.Expr) ?types.Type {
-	if callee.typ.is_function() {
-		return callee.typ
+fn callable_signature(callee ast.Expr, arena &ast.Arena) ?types.Type {
+	callee_type := arena.typ(callee)
+	if callee_type.is_function() {
+		return callee_type
 	}
-	if callee.typ.is_pointer() {
-		inner := callee.typ.pointee() or { return none }
+	if callee_type.is_pointer() {
+		inner := callee_type.pointee() or { return none }
 		if inner.is_function() {
 			return inner
 		}
@@ -3526,7 +3579,7 @@ fn callable_signature(callee ast.Expr) ?types.Type {
 // are the same answer to the question here. Measured, gcc 16.2.1 under `-std=c99`
 // accepts `h(1 - 1)` for a parameter of type `int (*)(void)`, which this compiler
 // refused while the question was asked of the literal alone.
-fn (p Parser) is_null_constant(expr ast.Expr) bool {
+fn (mut p Parser) is_null_constant(expr ast.Expr) bool {
 	value := p.constant_value(expr) or { return false }
 	return value == 0
 }
@@ -3548,13 +3601,13 @@ fn (p Parser) is_null_constant(expr ast.Expr) bool {
 // An assignment and a call argument ask the same question through
 // `types.assignment_problem`, which already lets a void pointer convert to any
 // object pointer, so the cast spelling needs no change there.
-fn (p Parser) is_null_pointer_constant(expr ast.Expr) bool {
+fn (mut p Parser) is_null_pointer_constant(expr ast.Expr) bool {
 	if p.is_null_constant(expr) {
 		return true
 	}
-	if expr is ast.Cast && expr.typ.is_pointer() {
-		pointee := expr.typ.pointee() or { return false }
-		return pointee.kind == .void_ && p.is_null_constant(expr.expr)
+	if expr.kind == .cast && p.arena.typ(expr).is_pointer() {
+		pointee := p.arena.typ(expr).pointee() or { return false }
+		return pointee.kind == .void_ && p.is_null_constant(p.arena.cast(expr).expr)
 	}
 	return false
 }
@@ -3580,51 +3633,53 @@ fn (p Parser) is_null_pointer_constant(expr ast.Expr) bool {
 // name, a call and a cast to a floating or pointer type all answer none, so a
 // pointer is still never initialized with something that only has a value at run
 // time.
-fn (p Parser) constant_value(expr ast.Expr) ?i64 {
-	if expr is ast.IntLit {
-		return expr.value
+fn (mut p Parser) constant_value(expr ast.Expr) ?i64 {
+	if expr.kind == .int_lit {
+		return p.arena.int_lit(expr).value
 	}
-	if expr is ast.Unary {
-		operand := p.constant_value(expr.expr) or { return none }
-		if expr.op == '-' {
+	if expr.kind == .unary {
+		node := *p.arena.unary(expr)
+		operand := p.constant_value(node.expr) or { return none }
+		if node.op == '-' {
 			return -operand
 		}
-		if expr.op == '+' {
+		if node.op == '+' {
 			return operand
 		}
-		if expr.op == '~' {
+		if node.op == '~' {
 			return ~operand
 		}
-		if expr.op == '!' {
+		if node.op == '!' {
 			return if operand == 0 { i64(1) } else { i64(0) }
 		}
 		return none
 	}
-	if expr is ast.Cast {
+	if expr.kind == .cast {
 		// 6.6 makes a cast of an integer constant to an integer type an integer
 		// constant expression, and 6.6p6 allows only that: a cast whose target is
 		// not an integer type answers none, so `(double) 3` is not an operand an
 		// array size may be built from.
-		if !expr.typ.kind.is_integer() {
+		node := *p.arena.cast(expr)
+		if !node.typ.kind.is_integer() {
 			return none
 		}
 		// The value is the one the conversion makes: `(char) 300` is 44 here as it
 		// is at run time, because a value that narrows keeps what the target type
 		// can hold.
-		if operand := p.constant_value(expr.expr) {
-			return p.converted_constant(expr.typ, operand)
+		if operand := p.constant_value(node.expr) {
+			return p.converted_constant(node.typ, operand)
 		}
 		// 6.6p6 names the other operand an integer constant expression may have
 		// from a floating constant: one that is the immediate operand of a cast.
 		// `(int) 3.5` is an integer constant expression whose value is three, and
 		// gcc 16.2.1 under `-std=c99` accepts `int x[(int) 3.5];` as three
 		// elements where this folder answered none and the bound was refused.
-		if value := floating_operand(expr.expr) {
-			return p.converted_float_constant(expr.typ, value)
+		if value := floating_operand(node.expr, &p.arena) {
+			return p.converted_float_constant(node.typ, value)
 		}
 		return none
 	}
-	if expr is ast.Binary {
+	if expr.kind == .binary {
 		// `&&` and `||` are operators 6.6p3 leaves in a constant expression, and
 		// the operand the result does not need is not evaluated. Measured on gcc
 		// 16.2.1 under `-std=c99`, `int x[1 || f()]` and `int x[0 && n]` are
@@ -3633,20 +3688,21 @@ fn (p Parser) constant_value(expr ast.Expr) ?i64 {
 		// open. They keep their recursion for the same reason: which side is
 		// evaluated depends on the other one, so the two operands are not folded
 		// in a fixed order.
-		if expr.op == '&&' {
-			left := p.constant_value(expr.left) or { return none }
+		head := *p.arena.binary(expr)
+		if head.op == '&&' {
+			left := p.constant_value(head.left) or { return none }
 			if left == 0 {
 				return i64(0)
 			}
-			right := p.constant_value(expr.right) or { return none }
+			right := p.constant_value(head.right) or { return none }
 			return if right != 0 { i64(1) } else { i64(0) }
 		}
-		if expr.op == '||' {
-			left := p.constant_value(expr.left) or { return none }
+		if head.op == '||' {
+			left := p.constant_value(head.left) or { return none }
 			if left != 0 {
 				return i64(1)
 			}
-			right := p.constant_value(expr.right) or { return none }
+			right := p.constant_value(head.right) or { return none }
 			return if right != 0 { i64(1) } else { i64(0) }
 		}
 		// An operator chain is one node deep in the grammar however many terms it
@@ -3654,9 +3710,9 @@ fn (p Parser) constant_value(expr ast.Expr) ?i64 {
 		// expressions recurse: a chain of a few thousand terms is a size generated
 		// code reaches, and a call per term would take the stack out on it.
 		mut spine := []ast.Binary{}
-		mut node := ast.Expr(expr)
-		for node is ast.Binary {
-			step := node as ast.Binary
+		mut node := expr
+		for node.kind == .binary {
+			step := *p.arena.binary(node)
 			if step.op == '&&' || step.op == '||' {
 				break
 			}
@@ -3671,7 +3727,7 @@ fn (p Parser) constant_value(expr ast.Expr) ?i64 {
 		}
 		return value
 	}
-	if expr is ast.Conditional {
+	if expr.kind == .conditional {
 		// 6.6p3 leaves the conditional operator in a constant expression and
 		// 6.5.15 evaluates one arm, so only the arm the condition selects has to
 		// be constant. Measured on gcc 16.2.1 under `-std=c99`, `int x[1 ? 2 :
@@ -3680,14 +3736,15 @@ fn (p Parser) constant_value(expr ast.Expr) ?i64 {
 		// `size of array has non-integer type`: the expression's own type has to
 		// be an integer type, and the arm that does not run does not have to be
 		// constant.
-		if !expr.typ.kind.is_integer() {
+		node := *p.arena.conditional(expr)
+		if !node.typ.kind.is_integer() {
 			return none
 		}
-		condition := p.constant_value(expr.cond) or { return none }
+		condition := p.constant_value(node.cond) or { return none }
 		if condition != 0 {
-			return p.constant_value(expr.then_expr) or { return none }
+			return p.constant_value(node.then_expr) or { return none }
 		}
-		return p.constant_value(expr.else_expr) or { return none }
+		return p.constant_value(node.else_expr) or { return none }
 	}
 	return none
 }
@@ -3706,9 +3763,10 @@ fn (p Parser) constant_value(expr ast.Expr) ?i64 {
 // than becoming the half of a floating division. A shape that is not one of
 // these answers none, so an element this reader cannot evaluate is refused by
 // name rather than written as a value the fold did not make.
-fn (p Parser) floating_constant_value(expr ast.Expr) ?f64 {
-	if expr is ast.FloatLit {
-		if expr.long_value != none {
+fn (mut p Parser) floating_constant_value(expr ast.Expr) ?f64 {
+	if expr.kind == .float_lit {
+		node := *p.arena.float_lit(expr)
+		if node.long_value != none {
 			// A long double constant keeps its value in the extended field and
 			// its double field is zero (ast.FloatLit), so folding one here
 			// answered 0.0 for every spelling. This folder produces a double
@@ -3717,7 +3775,7 @@ fn (p Parser) floating_constant_value(expr ast.Expr) ?f64 {
 			// of the extended type instead, which is where its bytes come from.
 			return none
 		}
-		if expr.decimal_value.kind.is_decimal() {
+		if node.decimal_value.kind.is_decimal() {
 			// A decimal constant keeps its value in the decimal field and
 			// its double field is zero (ast.FloatLit), so folding one here
 			// would answer 0.0 for every spelling. This folder produces a
@@ -3725,34 +3783,37 @@ fn (p Parser) floating_constant_value(expr ast.Expr) ?f64 {
 			// constant is refused by name where the value is needed.
 			return none
 		}
-		return expr.value
+		return node.value
 	}
-	if expr is ast.Unary {
-		if expr.op != '-' && expr.op != '+' {
+	if expr.kind == .unary {
+		node := *p.arena.unary(expr)
+		if node.op != '-' && node.op != '+' {
 			return none
 		}
-		operand := p.floating_constant_value(expr.expr) or { return none }
-		return if expr.op == '-' { -operand } else { operand }
+		operand := p.floating_constant_value(node.expr) or { return none }
+		return if node.op == '-' { -operand } else { operand }
 	}
-	if expr is ast.Cast {
-		if !expr.typ.kind.is_floating() {
+	if expr.kind == .cast {
+		node := *p.arena.cast(expr)
+		if !node.typ.kind.is_floating() {
 			return none
 		}
-		if value := p.floating_constant_value(expr.expr) {
+		if value := p.floating_constant_value(node.expr) {
 			return value
 		}
-		if value := p.constant_value(expr.expr) {
+		if value := p.constant_value(node.expr) {
 			return f64(value)
 		}
 		return none
 	}
-	if expr is ast.Binary {
-		if !expr.typ.kind.is_floating() {
+	if expr.kind == .binary {
+		node := *p.arena.binary(expr)
+		if !node.typ.kind.is_floating() {
 			return none
 		}
-		left := p.floating_operand_value(expr.left) or { return none }
-		right := p.floating_operand_value(expr.right) or { return none }
-		return match expr.op {
+		left := p.floating_operand_value(node.left) or { return none }
+		right := p.floating_operand_value(node.right) or { return none }
+		return match node.op {
 			'+' { left + right }
 			'-' { left - right }
 			'*' { left * right }
@@ -3765,15 +3826,16 @@ fn (p Parser) floating_constant_value(expr ast.Expr) ?f64 {
 			else { none }
 		}
 	}
-	if expr is ast.Conditional {
-		if !expr.typ.kind.is_floating() {
+	if expr.kind == .conditional {
+		node := *p.arena.conditional(expr)
+		if !node.typ.kind.is_floating() {
 			return none
 		}
-		condition := p.constant_value(expr.cond) or { return none }
+		condition := p.constant_value(node.cond) or { return none }
 		if condition != 0 {
-			return p.floating_constant_value(expr.then_expr) or { return none }
+			return p.floating_constant_value(node.then_expr) or { return none }
 		}
-		return p.floating_constant_value(expr.else_expr) or { return none }
+		return p.floating_constant_value(node.else_expr) or { return none }
 	}
 	return none
 }
@@ -3783,7 +3845,7 @@ fn (p Parser) floating_constant_value(expr ast.Expr) ?f64 {
 // it is a constant of an integer type. The two classes are read apart rather
 // than both through the double folder, so a step whose own operands are integers
 // keeps the integer arithmetic the language gives it.
-fn (p Parser) floating_operand_value(expr ast.Expr) ?f64 {
+fn (mut p Parser) floating_operand_value(expr ast.Expr) ?f64 {
 	if value := p.floating_constant_value(expr) {
 		return value
 	}
@@ -3855,23 +3917,25 @@ fn apply_constant_step(op string, left i64, right i64) ?i64 {
 // an integer constant expression only as the immediate operand of a cast, and
 // `-3.5` is one constant with a sign on it. It is asked only from the cast arm, so
 // a floating constant anywhere else still has no value this folder will use.
-fn floating_operand(expr ast.Expr) ?f64 {
-	if expr is ast.FloatLit {
-		if expr.decimal_value.kind.is_decimal() {
+fn floating_operand(expr ast.Expr, arena &ast.Arena) ?f64 {
+	if expr.kind == .float_lit {
+		node := *arena.float_lit(expr)
+		if node.decimal_value.kind.is_decimal() {
 			// A decimal constant's double field is zero, so folding one here
 			// would answer 0.0 for `(int) 1.5df`. A decimal value is not a
 			// double this folder holds, so it answers none and the cast is
 			// left to the back end.
 			return none
 		}
-		return expr.value
+		return node.value
 	}
-	if expr is ast.Unary {
-		if operand := floating_operand(expr.expr) {
-			if expr.op == '-' {
+	if expr.kind == .unary {
+		node := *arena.unary(expr)
+		if operand := floating_operand(node.expr, arena) {
+			if node.op == '-' {
 				return -operand
 			}
-			if expr.op == '+' {
+			if node.op == '+' {
 				return operand
 			}
 		}
@@ -3882,7 +3946,7 @@ fn floating_operand(expr ast.Expr) ?f64 {
 // converted_constant is one integer constant converted to an integer type: a
 // `_Bool` is one for any value that is not zero, a narrowing conversion keeps the
 // low bytes, and a type the target has no size for answers none.
-fn (p Parser) converted_constant(typ types.Type, operand i64) ?i64 {
+fn (mut p Parser) converted_constant(typ types.Type, operand i64) ?i64 {
 	if typ.kind == .bool_ {
 		return if operand != 0 { i64(1) } else { i64(0) }
 	}
@@ -3897,7 +3961,7 @@ fn (p Parser) converted_constant(typ types.Type, operand i64) ?i64 {
 // `int x[(int) -0.5];` is zero. A value no i64 holds, or a NaN, is not a
 // conversion this reader makes and answers none rather than wrapping to a number
 // that is not the one written.
-fn (p Parser) converted_float_constant(typ types.Type, value f64) ?i64 {
+fn (mut p Parser) converted_float_constant(typ types.Type, value f64) ?i64 {
 	if value != value || value >= 9223372036854775808.0 || value < -9223372036854775808.0 {
 		return none
 	}
@@ -3975,11 +4039,11 @@ fn (mut p Parser) skip_declaration() {
 	}
 }
 
-fn (p Parser) peek() tokenize.Token {
+fn (mut p Parser) peek() tokenize.Token {
 	return p.peek_at(0)
 }
 
-fn (p Parser) peek_at(ahead int) tokenize.Token {
+fn (mut p Parser) peek_at(ahead int) tokenize.Token {
 	if p.pos + ahead < p.tokens.len {
 		return p.tokens[p.pos + ahead]
 	}
@@ -4002,11 +4066,11 @@ fn (mut p Parser) next() tokenize.Token {
 	return t
 }
 
-fn (p Parser) at_eof() bool {
+fn (mut p Parser) at_eof() bool {
 	return p.peek().kind == .eof
 }
 
-fn (p Parser) at_punct(text string) bool {
+fn (mut p Parser) at_punct(text string) bool {
 	t := p.peek()
 	return t.kind == .punct && t.text == text
 }

@@ -1267,17 +1267,18 @@ fn (mut e Emitter) refuse_unresolved() !void {
 // check_statements walks the statements of a body looking for such a constant.
 fn (mut e Emitter) check_statements(stmts []ast.Stmt, depth int) !void {
 	for stmt in stmts {
-		if expr := stmt.expr {
-			e.check_expression(expr, depth)!
+		if !stmt.expr.is_none() {
+			e.check_expression(stmt.expr, depth)!
 		}
-		if init := stmt.initializer() {
+		init := stmt.initializer()
+		if !init.is_none() {
 			e.check_expression(init, depth)!
 		}
-		if index := stmt.index {
-			e.check_expression(index, depth)!
+		if !stmt.index.is_none() {
+			e.check_expression(stmt.index, depth)!
 		}
-		if cond := stmt.cond {
-			e.check_expression(cond, depth)!
+		if !stmt.cond.is_none() {
+			e.check_expression(stmt.cond, depth)!
 		}
 		e.check_statements(stmt.body, depth)!
 		e.check_statements(stmt.then_body(), depth)!
@@ -1300,9 +1301,10 @@ fn (mut e Emitter) check_expression(expr ast.Expr, depth int) !void {
 	if depth - e.argument_credit > max_emit_depth {
 		return
 	}
-	if expr is ast.IntLit {
-		if expr.typ.kind == .unknown && !is_an_int_value(expr.value) {
-			e.diagnostics << problem(expr.line, expr.col, 'unsupported: the integer constant ${expr.text} has no type this compiler resolved, and it is not a value the int this back end writes a constant as can hold')
+	if expr.kind == .int_lit {
+		node := e.unit.arena.int_lit(expr)
+		if node.typ.kind == .unknown && !is_an_int_value(node.value) {
+			e.diagnostics << problem(node.line, node.col, 'unsupported: the integer constant ${node.text} has no type this compiler resolved, and it is not a value the int this back end writes a constant as can hold')
 			return error('unresolved constant')
 		}
 		return
@@ -2354,7 +2356,7 @@ fn (mut e Emitter) emit_asm_multiply_add(stmt ast.Stmt, lines []string, inputs [
 // what V's generated C writes here; an operand that is an lvalue of any other shape
 // is refused rather than stored somewhere the program did not ask for.
 fn (mut e Emitter) store_asm_output(stmt ast.Stmt, operand ast.AsmOperand, register backend.Register) !void {
-	name := asm_output_name(operand)
+	name := e.asm_output_name(operand)
 	if name == '' {
 		return e.refuse_asm(stmt, 'the output operand ${asm_operand_spelling(operand)} is not a plain object name')
 	}
@@ -2428,10 +2430,10 @@ fn asm_operand_with(operands []ast.AsmOperand, constraint string) int {
 
 // asm_output_name is the object an output operand's value is written to, and empty
 // when the operand is not a plain name.
-fn asm_output_name(operand ast.AsmOperand) string {
+fn (e Emitter) asm_output_name(operand ast.AsmOperand) string {
 	value := operand.value
-	if value is ast.Ident {
-		return value.name
+	if value.kind == .ident {
+		return e.unit.arena.ident(value).name
 	}
 	return ''
 }
@@ -2519,7 +2521,7 @@ fn jump_label_index(text string) ?int {
 // argument: `return 1;` in a function returning a double returns 1.0, and
 // `return 1.5;` in one returning an int returns 1.
 fn (mut e Emitter) emit_return(stmt ast.Stmt) !void {
-	expr := stmt.expr or {
+	if stmt.expr.is_none() {
 		if e.returning == 'void' {
 			// A return without a value is the form C allows in a function whose
 			// return type is void (6.8.6.4p1), and it leaves the way a return with
@@ -2535,6 +2537,7 @@ fn (mut e Emitter) emit_return(stmt ast.Stmt) !void {
 		e.diagnostics << problem(stmt.line, stmt.col, 'a constraint violation: return without a value in a function that returns ${e.returning}')
 		return error('return without a value')
 	}
+	expr := stmt.expr
 	if e.returning == 'void' {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: return with a value in a function that returns void')
 		return error('return with a value')
@@ -2620,7 +2623,8 @@ fn (mut e Emitter) emit_return(stmt ast.Stmt) !void {
 		// and rdx = -1.
 		e.emit_value(expr, 0)!
 		if !e.wide_value(expr) {
-			e.widen_word_pair(expr.typ.is_unsigned_type(), e.narrow_width(expr.typ), stmt.line,
+			converted := e.expr_type(expr)
+			e.widen_word_pair(converted.is_unsigned_type(), e.narrow_width(converted), stmt.line,
 				stmt.col)!
 		}
 		e.append(e.target.frame_epilogue())
@@ -2728,7 +2732,7 @@ fn (mut e Emitter) convert_to_return(expr ast.Expr, line int, col int) !void {
 	}
 	if kind := e.narrow_return_kind() {
 		register := e.accumulator(line, col)!
-		e.narrow_register(kind, register, (e.storage_width(expr.typ) or { 4 }) == 8)!
+		e.narrow_register(kind, register, (e.storage_width(e.expr_type(expr)) or { 4 }) == 8)!
 	}
 }
 
@@ -2812,7 +2816,8 @@ fn (e Emitter) returns_eight_byte_integer() bool {
 // storage and nothing else, which is what C says it is: the slot is there for
 // whatever the function writes into it next.
 fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
-	if size_expr := stmt.decl_vla_size() {
+	size_expr := stmt.decl_vla_size()
+	if !size_expr.is_none() {
 		// A variable-length array is the one declaration whose storage is
 		// claimed while the program runs rather than reserved by the frame.
 		return e.emit_vla_decl(stmt, size_expr)
@@ -2848,7 +2853,10 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 			col:      stmt.col
 		}
 	}
-	init := stmt.initializer() or { return }
+	init := stmt.initializer()
+	if init.is_none() {
+		return
+	}
 	if slot.long_double && slot.count == 0 {
 		// An object of the extended type declared with a value: the value is
 		// copied if it is a long double, and converted by the machine's x87 moves
@@ -2932,7 +2940,7 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 // function, so a loop body that declares an array does not grow the stack every
 // time round.
 fn (mut e Emitter) emit_vla_decl(stmt ast.Stmt, size_expr ast.Expr) !void {
-	if stmt.initializer() != none {
+	if !stmt.initializer().is_none() {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.decl_name()} is a variable-length array, and a variable-length array may not be initialized')
 		return error('VLA initializer')
 	}
@@ -2977,28 +2985,31 @@ fn (mut e Emitter) emit_vla_decl(stmt ast.Stmt, size_expr ast.Expr) !void {
 // The name has to be in scope: an assignment to a name that was never declared
 // has nowhere to go, and a guessed slot would be someone else's variable.
 fn (mut e Emitter) emit_assign(stmt ast.Stmt, depth int) !void {
-	expr := stmt.expr or {
+	if stmt.expr.is_none() {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.target} is assigned without a value')
 		return error('assignment without a value')
 	}
+	expr := stmt.expr
 	// A compound assignment whose target is reached through an address is
 	// written by the path that computes that address once and reads and writes
 	// through it. A name target is not one of those: reading a name has no side
 	// effect to repeat, and the expansion in expr is emitted directly below.
-	if stmt.compound() != '' && (stmt.field != none || stmt.deref() != none || stmt.subscript() != none || stmt.index != none) {
+	if stmt.compound() != '' && (stmt.field != none || !stmt.deref().is_none() || !stmt.subscript().is_none() || !stmt.index.is_none()) {
 		return e.assign_compound(stmt, depth)
 	}
-	if deref := stmt.deref() {
+	deref := stmt.deref()
+	if !deref.is_none() {
 		return e.assign_deref(stmt, deref, expr, depth)
 	}
 	if member := stmt.field {
 		return e.assign_member(stmt, *member, expr, depth)
 	}
-	if subscript := stmt.subscript() {
+	subscript := stmt.subscript()
+	if !subscript.is_none() {
 		return e.assign_subscript(stmt, subscript, expr, depth)
 	}
-	if subscript := stmt.index {
-		return e.assign_element(stmt, subscript, expr, depth)
+	if !stmt.index.is_none() {
+		return e.assign_element(stmt, stmt.index, expr, depth)
 	}
 	target := e.lookup(stmt.target) or {
 		// A top-level object is written through its address in the image, the
@@ -3078,7 +3089,7 @@ fn (mut e Emitter) emit_assign(stmt ast.Stmt, depth int) !void {
 // the one exception, because the language stores an int value in a char by
 // taking its low byte, which is what makes `*cp = 1` one byte.
 fn (mut e Emitter) assign_deref(stmt ast.Stmt, target ast.Expr, expr ast.Expr, depth int) !void {
-	unary := target as ast.Unary
+	unary := e.unit.arena.unary(target)
 	// The address is the value of the expression the dereference reads
 	// through: `*p` writes at the address p holds, and `**pp` writes at the
 	// address the outer read gives, which is the value of `*pp`.
@@ -3180,55 +3191,58 @@ fn (mut e Emitter) assign_deref(stmt ast.Stmt, target ast.Expr, expr ast.Expr, d
 // and the 128-bit, complex and long double objects this back end has no value
 // for.
 fn (mut e Emitter) assign_compound(stmt ast.Stmt, depth int) !void {
-	value := stmt.expr or {
+	if stmt.expr.is_none() {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= has no value')
 		return error('compound assignment without a value')
 	}
-	binary := value as ast.Binary
-	destination := binary.left
-	written := destination.typ.describe()
-	if destination.typ.kind == .unknown {
+	binary := e.unit.arena.binary(stmt.expr)
+	target := binary.left
+	destination := e.expr_type(target)
+	written := destination.describe()
+	if destination.kind == .unknown {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= writes an object whose type this compiler cannot resolve')
 		return error('unknown compound target type')
 	}
-	if destination is ast.Field {
-		if destination.bitfield {
-			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to the bitfield ${destination.name}.${destination.member} is not implemented, and this back end does not step a bitfield in place')
+	if target.kind == .field {
+		member := e.unit.arena.field(target)
+		if member.bitfield {
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to the bitfield ${member.name}.${member.member} is not implemented, and this back end does not step a bitfield in place')
 			return error('bitfield compound assignment')
 		}
 	}
-	if destination.typ.kind.is_complex() {
+	if destination.kind.is_complex() {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to an object of ${written} is not implemented, and this back end keeps one value of a complex type in a register')
 		return error('complex compound assignment')
 	}
-	if destination.typ.kind.is_extended() {
+	if destination.kind.is_extended() {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to an object of ${written} is not one this back end makes at the width of the type')
 		return error('long double compound assignment')
 	}
-	if destination.typ.kind in [.int128, .unsigned_int128] {
+	if destination.kind in [.int128, .unsigned_int128] {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to an object of ${written} is not implemented')
 		return error('wide compound assignment')
 	}
-	if destination.typ.is_pointer() {
+	if destination.is_pointer() {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= to an object of ${written} is not implemented, and an integer added to a pointer is scaled by the size of what it points at')
 		return error('pointer compound assignment')
 	}
 	// The address of the target, computed once and parked while the value is
 	// read. The increment path computes the same address for the same shapes, so
 	// it is the one used here rather than a fourth copy of that computation.
-	e.inc_dec_address(destination, depth + 1)!
+	e.inc_dec_address(target, depth + 1)!
 	address := e.value_slot(depth)
 	e.store_accumulator(address, stmt.line, stmt.col)!
-	mut single := destination.typ.kind == .float
-	mut double := destination.typ.kind == .double
-	if destination is ast.Field {
-		single = single || e.writes_a_float(destination.spelling)
-		double = double || e.writes_a_double(destination.spelling)
+	mut single := destination.kind == .float
+	mut double := destination.kind == .double
+	if target.kind == .field {
+		member := e.unit.arena.field(target)
+		single = single || e.writes_a_float(member.spelling)
+		double = double || e.writes_a_double(member.spelling)
 	}
 	if single || double {
 		return e.assign_compound_float(stmt, binary, address, single, depth)
 	}
-	width := e.storage_width(destination.typ) or {
+	width := e.storage_width(destination) or {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the compound assignment ${stmt.compound()}= writes an object of ${written}, and this back end stores ints, chars, floats, doubles and pointers only')
 		return error('unsupported compound width')
 	}
@@ -3240,9 +3254,9 @@ fn (mut e Emitter) assign_compound(stmt ast.Stmt, depth int) !void {
 	load_register := e.scratch(stmt.line, stmt.col)!
 	e.load_argument(address, load_register, e.target.word_size, stmt.line, stmt.col)!
 	register := e.accumulator(stmt.line, stmt.col)!
-	e.load_indirect_value(load_register, register, destination.typ.is_unsigned_type(), width)!
+	e.load_indirect_value(load_register, register, destination.is_unsigned_type(), width)!
 	if wide {
-		e.extend_operand_to_word(destination, stmt.line, stmt.col)!
+		e.extend_operand_to_word(target, stmt.line, stmt.col)!
 	}
 	left := e.value_slot(depth + 1)
 	e.store_accumulator(left, stmt.line, stmt.col)!
@@ -3253,7 +3267,7 @@ fn (mut e Emitter) assign_compound(stmt ast.Stmt, depth int) !void {
 	e.move_operand_to_scratch(binary, wide)!
 	e.load_accumulator(left, stmt.line, stmt.col)!
 	e.apply_binary(binary, wide)!
-	e.normalize_a_bool_store(destination.typ.kind == .bool_, wide, stmt.line, stmt.col)!
+	e.normalize_a_bool_store(destination.kind == .bool_, wide, stmt.line, stmt.col)!
 	// The scratch register may have been used by the value's own expression, so
 	// the address is read back into it here rather than kept across that
 	// emission. The result that is written is the accumulator's, which the load
@@ -3334,7 +3348,10 @@ fn (mut e Emitter) assign_single_at(stmt ast.Stmt, address Slot, expr ast.Expr, 
 // address is the frame's address plus the slot's offset, parked in a value slot
 // while the value is read.
 fn (mut e Emitter) assign_object_local(stmt ast.Stmt, target Slot, depth int) !void {
-	expr_value := stmt.expr or { return error('assignment without a value') }
+	if stmt.expr.is_none() {
+		return error('assignment without a value')
+	}
+	expr_value := stmt.expr
 	register := e.accumulator(stmt.line, stmt.col)!
 	frame := e.slot_base_register(target, stmt.line, stmt.col)!
 	e.append(e.target.address_of_slot(frame, target.offset, register))
@@ -3347,7 +3364,10 @@ fn (mut e Emitter) assign_object_local(stmt ast.Stmt, target Slot, depth int) !v
 // address is in the image, so it is a reference the layout fills in rather than an
 // offset from the frame.
 fn (mut e Emitter) assign_object_global(stmt ast.Stmt, object image.GlobalSlot, depth int) !void {
-	expr_value := stmt.expr or { return error('assignment without a value') }
+	if stmt.expr.is_none() {
+		return error('assignment without a value')
+	}
+	expr_value := stmt.expr
 	register := e.accumulator(stmt.line, stmt.col)!
 	e.reference_object_address(register, stmt.target)
 	address := e.value_slot(depth)
@@ -3365,13 +3385,14 @@ fn (mut e Emitter) assign_object_global(stmt ast.Stmt, object image.GlobalSlot, 
 // The destination's address is loaded into a scratch register last, because that is
 // the register the store goes through and reading the value must not disturb it.
 fn (mut e Emitter) assign_object(address Slot, width int, expr ast.Expr, line int, col int, depth int) !void {
-	if expr is ast.Call {
-		if class := e.call_return_class(expr) {
+	if expr.kind == .call {
+		call := e.unit.arena.call(expr)
+		if class := e.call_return_class(*call) {
 			// The value arrives in the registers the classes name: one eightbyte,
 			// or two when the object is two of them, each in the register a value
 			// of its class comes back in.
 			if class.bytes != width {
-				e.diagnostics << problem(line, col, 'unsupported: the call to ${expr.name} hands back an object of ${class.bytes} bytes and ${width} bytes are written into this object')
+				e.diagnostics << problem(line, col, 'unsupported: the call to ${call.name} hands back an object of ${class.bytes} bytes and ${width} bytes are written into this object')
 				return error('aggregate too small')
 			}
 			if class.count > 2 {
@@ -3384,11 +3405,11 @@ fn (mut e Emitter) assign_object(address Slot, width int, expr ast.Expr, line in
 			base := e.scratch(line, col)!
 			e.load_argument(address, base, e.target.word_size, line, col)!
 			e.store_return_eightbyte(base, 0, low_eightbyte_width(class.bytes, e.target.word_size),
-				class.first_floating, expr.line, expr.col)!
+				class.first_floating, call.line, call.col)!
 			if class.count == 2 {
 				e.append(e.target.add_immediate(base, e.target.word_size))
 				e.store_return_eightbyte(base, 1, class.bytes - e.target.word_size,
-					class.second_floating, expr.line, expr.col)!
+					class.second_floating, call.line, call.col)!
 			}
 			return
 		}
@@ -3507,7 +3528,7 @@ fn (e Emitter) storage_of_no_bytes(t types.Type) bool {
 }
 
 fn (e Emitter) aggregate_argument(call ast.Call, position int) ?abi.Class {
-	if parameter := call_parameter(call, position) {
+	if parameter := e.call_parameter(call, position) {
 		// The callee's parameter type is the object that travels, so its class is
 		// the target's answer for that type rather than a table entry.
 		class := abi.class_of(e.representation, parameter)
@@ -3529,48 +3550,53 @@ fn (e Emitter) aggregate_argument(call ast.Call, position int) ?abi.Class {
 // caller needs is where those bytes are: a local's place in the frame, a top-level
 // object's place in the image, or a member's place inside the object that holds it.
 fn (mut e Emitter) address_of_object(expr ast.Expr, depth int) !void {
-	if expr is ast.Comma {
+	if expr.kind == .comma {
 		// A compound literal written where its statement does not describe a
 		// single evaluation: the left operand is the stores that initialize
 		// the object and the right operand names it, so the stores run first
 		// and the object is what the right operand is.
-		e.emit_effect(expr.left, depth + 1)!
-		return e.address_of_object(expr.right, depth)
+		comma := e.unit.arena.comma(expr)
+		e.emit_effect(comma.left, depth + 1)!
+		return e.address_of_object(comma.right, depth)
 	}
-	if expr is ast.Ident {
-		e.address_of_member(expr.name, ?ast.Expr(none), 0, false, depth, expr.line, expr.col)!
+	if expr.kind == .ident {
+		node := e.unit.arena.ident(expr)
+		e.address_of_member(node.name, ast.Expr{}, 0, false, depth, node.line, node.col)!
 		return
 	}
-	if expr is ast.Field {
-		e.field_address(expr, depth, expr.line, expr.col)!
+	if expr.kind == .field {
+		member := e.unit.arena.field(expr)
+		e.field_address(*member, depth, member.line, member.col)!
 		return
 	}
-	if expr is ast.Index {
+	if expr.kind == .index {
 		// An element is at the base's value plus the index scaled by the size
 		// of one element, which is the address emit_element_address computes.
-		e.emit_element_address(expr, depth)!
+		e.emit_element_address(*e.unit.arena.index(expr), depth)!
 		return
 	}
-	if expr is ast.Unary {
-		if expr.op == '*' {
+	if expr.kind == .unary {
+		unary := e.unit.arena.unary(expr)
+		if unary.op == '*' {
 			// The address of what a pointer points at is the pointer's own
 			// value, which is what the operand is worth.
-			e.emit_expr_at(expr.expr, depth)!
+			e.emit_expr_at(unary.expr, depth)!
 			return
 		}
 	}
-	if expr.typ.kind.is_complex() {
+	typ := e.expr_type(expr)
+	if typ.kind.is_complex() {
 		// A complex value that is not a name, a member or an element has no
 		// storage of its own: it is computed into a temporary and the address of
 		// that is what the object is worth, which is what a call hands over and
 		// what a return reads.
 		object := e.complex_object(expr, depth + 1)!
-		frame := e.frame_pointer(expr_line(expr), expr_col(expr))!
-		register := e.accumulator(expr_line(expr), expr_col(expr))!
+		frame := e.frame_pointer(e.expr_line(expr), e.expr_col(expr))!
+		register := e.accumulator(e.expr_line(expr), e.expr_col(expr))!
 		e.append(e.target.address_of_slot(frame, i32(object.offset), register))
 		return
 	}
-	if expr.typ.kind in [.struct_, .union_] {
+	if typ.kind in [.struct_, .union_] {
 		// An object of an aggregate type that is not a name, a member or an
 		// element has no storage of its own: it is materialized into a
 		// temporary of this level and the address of that is what the object
@@ -3578,12 +3604,12 @@ fn (mut e Emitter) address_of_object(expr ast.Expr, depth int) !void {
 		// the shape C99 6.5.15p3 gives that type to and 6.5.16 then assigns
 		// from, and V's own generated C writes one at hello.c:2699.
 		object := e.aggregate_object(expr, depth + 1)!
-		frame := e.frame_pointer(expr_line(expr), expr_col(expr))!
-		register := e.accumulator(expr_line(expr), expr_col(expr))!
+		frame := e.frame_pointer(e.expr_line(expr), e.expr_col(expr))!
+		register := e.accumulator(e.expr_line(expr), e.expr_col(expr))!
 		e.append(e.target.address_of_slot(frame, i32(object.offset), register))
 		return
 	}
-	e.diagnostics << problem(expr_line(expr), expr_col(expr), 'unsupported: an object handed over by value has to be a name, an element or a member, and this expression is not one')
+	e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: an object handed over by value has to be a name, an element or a member, and this expression is not one')
 	return error('not an object')
 }
 
@@ -3595,8 +3621,9 @@ fn (mut e Emitter) address_of_object(expr ast.Expr, depth int) !void {
 // the arm the conditional chose is that the arm's bytes are copied, which is
 // the copy 6.5.16 assigns from.
 fn (mut e Emitter) aggregate_object(expr ast.Expr, depth int) !Slot {
-	size := e.representation.size_of(expr.typ) or {
-		e.diagnostics << problem(expr_line(expr), expr_col(expr), 'unsupported: ${expr.typ.describe()} is an object whose size this back end does not know')
+	typ := e.expr_type(expr)
+	size := e.representation.size_of(typ) or {
+		e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: ${typ.describe()} is an object whose size this back end does not know')
 		return error('unknown object size')
 	}
 	object := e.reserve(size)
@@ -3614,45 +3641,48 @@ fn (mut e Emitter) aggregate_object(expr ast.Expr, depth int) !Slot {
 // no path in this back end yet, and it is refused with the same words a name, an
 // element or a member are not needed for.
 fn (mut e Emitter) emit_aggregate_into(destination Slot, expr ast.Expr, depth int) !void {
-	if expr is ast.Comma {
+	if expr.kind == .comma {
 		// A compound literal written where its statement does not describe a
 		// single evaluation: the left operand is the stores that initialize
 		// the object, runs first, and the object is what the right operand is.
-		e.emit_effect(expr.left, depth + 1)!
-		return e.emit_aggregate_into(destination, expr.right, depth)
+		comma := e.unit.arena.comma(expr)
+		e.emit_effect(comma.left, depth + 1)!
+		return e.emit_aggregate_into(destination, comma.right, depth)
 	}
-	if expr is ast.Conditional {
-		e.emit_condition(expr.cond, depth + 1, expr.line, expr.col)!
+	if expr.kind == .conditional {
+		node := e.unit.arena.conditional(expr)
+		e.emit_condition(node.cond, depth + 1, node.line, node.col)!
 		else_label := e.label()
 		end_label := e.label()
-		e.branch(.branch_zero, else_label, expr.line, expr.col)!
-		e.write_aggregate_value(destination, expr.then_expr, depth)!
+		e.branch(.branch_zero, else_label, node.line, node.col)!
+		e.write_aggregate_value(destination, node.then_expr, depth)!
 		e.jump(end_label)!
 		e.place(else_label)
-		e.write_aggregate_value(destination, expr.else_expr, depth)!
+		e.write_aggregate_value(destination, node.else_expr, depth)!
 		e.place(end_label)
 		return
 	}
-	if expr is ast.StmtExpr {
+	if expr.kind == .stmt_expr {
 		// A statement expression whose value is an object: the body's statements
 		// run in the order they were written and the value expression is the
 		// object, which is the same object the expression would be on its own,
 		// so the branch below writes it. V's own generated C writes one of these
 		// at every v_panic of a message it builds in place, where the value
 		// expression is the call that joins the parts.
-		return e.emit_statement_expression_into(destination, expr, depth)
+		return e.emit_statement_expression_into(destination, *e.unit.arena.stmt_expr(expr),
+			depth)
 	}
-	if expr is ast.Call {
+	if expr.kind == .call {
 		// A call of an aggregate type has a path: assign_object writes the
 		// bytes the call hands back, and the destination's address is parked
 		// for it the way the conditional's arms park it. A call with no return
 		// class names no object this back end hands over, so it falls through
 		// to the refusal below rather than to a copy of nothing.
-		if e.call_return_class(expr) != none {
+		if e.call_return_class(*e.unit.arena.call(expr)) != none {
 			return e.write_aggregate_value(destination, expr, depth)
 		}
 	}
-	if expr is ast.Cast {
+	if expr.kind == .cast {
 		// A cast to a type of another class would be a conversion, but a cast
 		// whose operand is already an object of an aggregate type is not one:
 		// the two types are compatible or the type checker refused the program,
@@ -3661,11 +3691,12 @@ fn (mut e Emitter) emit_aggregate_into(destination Slot, expr ast.Expr, depth in
 		// generated C writes this at every array it makes, as
 		// `Array res = (Array)(__new_array_noscan(...))`, and one such cast is
 		// how a packed structure's bytes are read back out of an array.
-		if expr.expr.typ.is_aggregate() {
-			return e.write_aggregate_value(destination, expr.expr, depth)
+		cast := e.unit.arena.cast(expr)
+		if e.expr_type(cast.expr).is_aggregate() {
+			return e.write_aggregate_value(destination, cast.expr, depth)
 		}
 	}
-	e.diagnostics << problem(expr_line(expr), expr_col(expr), 'unsupported: an object handed over by value has to be a name, an element or a member, and this expression is not one')
+	e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: an object handed over by value has to be a name, an element or a member, and this expression is not one')
 	return error('not an object')
 }
 
@@ -3677,8 +3708,8 @@ fn (mut e Emitter) emit_aggregate_into(destination Slot, expr ast.Expr, depth in
 // bytes are read from its own address. One arm of a conditional and a call's
 // result are the two values this is asked to write.
 fn (mut e Emitter) write_aggregate_value(destination Slot, arm ast.Expr, depth int) !void {
-	line := expr_line(arm)
-	col := expr_col(arm)
+	line := e.expr_line(arm)
+	col := e.expr_col(arm)
 	frame := e.frame_pointer(line, col)!
 	register := e.accumulator(line, col)!
 	e.append(e.target.address_of_slot(frame, i32(destination.offset), register))
@@ -3695,7 +3726,8 @@ fn (mut e Emitter) write_aggregate_value(destination Slot, arm ast.Expr, depth i
 // or, when the access is written with `->`, from the pointer value the object is
 // worth. The member's own offset into the object is added either way.
 fn (mut e Emitter) field_address(field ast.Field, depth int, line int, col int) !void {
-	if base := field.base {
+	base := field.base
+	if !base.is_none() {
 		if field.through_pointer {
 			e.emit_expr_at(base, depth + 1)!
 		} else {
@@ -3717,29 +3749,30 @@ fn (mut e Emitter) field_address(field ast.Field, depth int, line int, col int) 
 // address is that storage's. A smaller object comes back in the registers, so it
 // is spilled into a slot of its own first and the member is read from there.
 fn (mut e Emitter) field_object_address(expr ast.Expr, depth int) !void {
-	if expr is ast.Call {
-		if class := e.call_return_class(expr) {
+	if expr.kind == .call {
+		call := e.unit.arena.call(expr)
+		if class := e.call_return_class(*call) {
 			if class.count > 2 {
 				e.emit_expr_at(expr, depth + 1)!
-				register := e.accumulator(expr.line, expr.col)!
-				frame := e.frame_pointer(expr.line, expr.col)!
+				register := e.accumulator(call.line, call.col)!
+				frame := e.frame_pointer(call.line, call.col)!
 				e.append(e.target.address_of_slot(frame, e.hidden.offset, register))
 				return
 			}
 			temp := e.reserve(align(class.bytes, e.target.word_size))
 			e.emit_expr_at(expr, depth + 1)!
-			base := e.scratch(expr.line, expr.col)!
-			frame := e.frame_pointer(expr.line, expr.col)!
+			base := e.scratch(call.line, call.col)!
+			frame := e.frame_pointer(call.line, call.col)!
 			e.append(e.target.address_of_slot(frame, temp.offset, base))
 			e.store_return_eightbyte(base, 0, low_eightbyte_width(class.bytes, e.target.word_size),
-				class.first_floating, expr.line, expr.col)!
+				class.first_floating, call.line, call.col)!
 			if class.count == 2 {
 				e.append(e.target.add_immediate(base, e.target.word_size))
 				e.store_return_eightbyte(base, 1, class.bytes - e.target.word_size,
-					class.second_floating, expr.line, expr.col)!
+					class.second_floating, call.line, call.col)!
 			}
-			register := e.accumulator(expr.line, expr.col)!
-			home := e.frame_pointer(expr.line, expr.col)!
+			register := e.accumulator(call.line, call.col)!
+			home := e.frame_pointer(call.line, call.col)!
 			e.append(e.target.address_of_slot(home, temp.offset, register))
 			return
 		}
@@ -3754,8 +3787,9 @@ fn (mut e Emitter) field_object_address(expr ast.Expr, depth int) !void {
 // byte is added to it. The address is left in the accumulator rather than stored,
 // because the reader loads through it and the writer stores it where the value will
 // need it.
-fn (mut e Emitter) address_of_member(name string, index ?ast.Expr, offset int, through_pointer bool, depth int, line int, col int) !void {
-	if element := index {
+fn (mut e Emitter) address_of_member(name string, index ast.Expr, offset int, through_pointer bool, depth int, line int, col int) !void {
+	element := index
+	if !element.is_none() {
 		// One element of an array of objects: the address of the element is the
 		// address of the array plus the index scaled by the size of one element,
 		// and for an aggregate that size is the layout's, which is why the
@@ -4137,7 +4171,7 @@ fn (mut e Emitter) assign_element(stmt ast.Stmt, subscript ast.Expr, expr ast.Ex
 				// takes, through the element's own address.
 				return e.store_wide_at(address, expr, stmt.line, stmt.col, depth)
 			}
-			if expr.typ.is_aggregate() && !expr.typ.is_array() {
+			if e.expr_type(expr).is_aggregate() && !e.expr_type(expr).is_array() {
 				// An element of an aggregate type is an object at the address the
 				// subscript computed, and what is written into it is the object
 				// copy the same assignment between two objects makes. Neither
@@ -4263,7 +4297,7 @@ fn (mut e Emitter) assign_element(stmt ast.Stmt, subscript ast.Expr, expr ast.Ex
 		// through the element's own address.
 		return e.store_wide_at(address, expr, stmt.line, stmt.col, depth)
 	}
-	if expr.typ.is_aggregate() && !expr.typ.is_array() {
+	if e.expr_type(expr).is_aggregate() && !e.expr_type(expr).is_array() {
 		// An element of an aggregate type is an object at the address the index
 		// computed, and what is written into it is the object copy the same
 		// assignment between two objects makes: the destination an object is
@@ -4348,7 +4382,7 @@ fn (mut e Emitter) assign_element(stmt ast.Stmt, subscript ast.Expr, expr ast.Ex
 // element's type. It is the write half of the general element read, and it is
 // what `3[p] = 9` and an element written through a pointer go through.
 fn (mut e Emitter) assign_subscript(stmt ast.Stmt, subscript ast.Expr, expr ast.Expr, depth int) !void {
-	index := subscript as ast.Index
+	index := e.unit.arena.index(subscript)
 	e.emit_element_address(index, depth + 1)!
 	address := e.value_slot(depth)
 	e.store_accumulator(address, stmt.line, stmt.col)!
@@ -4447,25 +4481,26 @@ fn (mut e Emitter) assign_subscript(stmt ast.Stmt, subscript ast.Expr, expr ast.
 }
 
 fn (mut e Emitter) emit_expression_statement(stmt ast.Stmt) !void {
-	expr := stmt.expr or {
+	if stmt.expr.is_none() {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: an expression statement with no expression')
 		return error('empty expression statement')
 	}
-	if expr is ast.Call {
-		e.emit_call(expr, 0)!
+	expr := stmt.expr
+	if expr.kind == .call {
+		e.emit_call(*e.unit.arena.call(expr), 0)!
 		return
 	}
-	if expr is ast.IncDec {
+	if expr.kind == .inc_dec {
 		// A statement use throws the value away, which is what `i++;` asks for:
 		// the step is what it does and the old value is not wanted.
-		e.emit_inc_dec(expr, 0)!
+		e.emit_inc_dec(*e.unit.arena.inc_dec(expr), 0)!
 		return
 	}
-	if expr is ast.StmtExpr {
+	if expr.kind == .stmt_expr {
 		// A statement expression written as a statement is the construct used
 		// for what its body does, which is one of the two ways gcc's assert
 		// writes it: the value, when there is one, is thrown away.
-		e.emit_statement_expression(expr as ast.StmtExpr, false)!
+		e.emit_statement_expression(*e.unit.arena.stmt_expr(expr), false)!
 		return
 	}
 	// Everything else is an expression evaluated for what it does with its value
@@ -4481,7 +4516,8 @@ fn (mut e Emitter) emit_expression_statement(stmt ast.Stmt) !void {
 	// expression is written with and loads nothing. For `*p` that is the address
 	// expression, which is the call V's own generated C makes a statement of with
 	// `*(codegen__CaseWalk*)array__pop(&stack);`.
-	if expr.typ.is_void() || expr.typ.kind in [.struct_, .union_, .array] {
+	typ := e.expr_type(expr)
+	if typ.is_void() || typ.kind in [.struct_, .union_, .array] {
 		return e.emit_discard(expr, 0)
 	}
 	return e.emit_effect(expr, 0)
@@ -4493,31 +4529,32 @@ fn (mut e Emitter) emit_expression_statement(stmt ast.Stmt) !void {
 // worth, so the operand is evaluated and nothing is loaded from or converted
 // from it.
 fn (mut e Emitter) emit_discard(expr ast.Expr, depth int) !void {
-	match expr {
-		ast.Cast {
-			e.emit_discard_operand(expr.expr, depth + 1)!
+	match expr.kind {
+		.cast {
+			e.emit_discard_operand(e.unit.arena.cast(expr).expr, depth + 1)!
 		}
-		ast.Unary {
-			e.emit_expr_at(expr.expr, depth + 1)!
+		.unary {
+			e.emit_expr_at(e.unit.arena.unary(expr).expr, depth + 1)!
 		}
-		ast.Comma {
+		.comma {
 			// Both operands are evaluated for what they do and the value of
 			// the right one is thrown away like the left's.
-			e.emit_effect(expr.left, depth + 1)!
-			e.emit_effect(expr.right, depth + 1)!
+			comma := e.unit.arena.comma(expr)
+			e.emit_effect(comma.left, depth + 1)!
+			e.emit_effect(comma.right, depth + 1)!
 		}
-		ast.StmtExpr {
+		.stmt_expr {
 			// The statements run for what they do and the construct's value,
 			// when it has one, is thrown away.
-			e.emit_statement_expression(expr, false)!
+			e.emit_statement_expression(*e.unit.arena.stmt_expr(expr), false)!
 		}
-		ast.Call {
-			e.emit_call(expr, depth)!
+		.call {
+			e.emit_call(*e.unit.arena.call(expr), depth)!
 		}
-		ast.IncDec {
-			e.emit_inc_dec(expr, depth)!
+		.inc_dec {
+			e.emit_inc_dec(*e.unit.arena.inc_dec(expr), depth)!
 		}
-		ast.Conditional {
+		.conditional {
 			// 6.5.15 evaluates only the arm the condition selects, and a
 			// conditional whose two arms are void is worth nothing at all: it
 			// is written for what the selected arm does. glibc's strict-ISO
@@ -4525,26 +4562,27 @@ fn (mut e Emitter) emit_discard(expr ast.Expr, depth int) !void {
 			// refusals on either side of it. A condition the reader folded to
 			// a literal selects the same arm on every run, so only that arm is
 			// written, which is what emit_conditional does for a value.
-			if expr.cond is ast.IntLit {
-				arm := if (expr.cond as ast.IntLit).value != 0 {
-					expr.then_expr
+			node := e.unit.arena.conditional(expr)
+			if node.cond.kind == .int_lit {
+				arm := if e.unit.arena.int_lit(node.cond).value != 0 {
+					node.then_expr
 				} else {
-					expr.else_expr
+					node.else_expr
 				}
 				return e.emit_effect(arm, depth + 1)
 			}
-			e.emit_condition(expr.cond, depth + 1, expr.line, expr.col)!
+			e.emit_condition(node.cond, depth + 1, node.line, node.col)!
 			else_label := e.label()
 			end_label := e.label()
-			e.branch(.branch_zero, else_label, expr.line, expr.col)!
-			e.emit_effect(expr.then_expr, depth + 1)!
+			e.branch(.branch_zero, else_label, node.line, node.col)!
+			e.emit_effect(node.then_expr, depth + 1)!
 			e.jump(end_label)!
 			e.place(else_label)
-			e.emit_effect(expr.else_expr, depth + 1)!
+			e.emit_effect(node.else_expr, depth + 1)!
 			e.place(end_label)
 		}
 		else {
-			e.diagnostics << problem(expr.line, expr.col, 'unsupported: a ${expr.typ.describe()} expression in a statement is not one this back end evaluates for its side effects')
+			e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: a ${e.expr_type(expr).describe()} expression in a statement is not one this back end evaluates for its side effects')
 			return error('void expression shape')
 		}
 	}
@@ -4555,7 +4593,7 @@ fn (mut e Emitter) emit_discard(expr ast.Expr, depth int) !void {
 // emitted as itself with its register simply not read, which is what throwing a
 // value away means.
 fn (mut e Emitter) emit_effect(expr ast.Expr, depth int) !void {
-	if expr.typ.is_void() {
+	if e.expr_type(expr).is_void() {
 		return e.emit_discard(expr, depth)
 	}
 	e.emit_expr_at(expr, depth)!
@@ -4570,7 +4608,7 @@ fn (mut e Emitter) emit_effect(expr ast.Expr, depth int) !void {
 // too, where reading the object as a value is not implemented for the same
 // reason. Every other operand is evaluated as it would be for its value.
 fn (mut e Emitter) emit_discard_operand(expr ast.Expr, depth int) !void {
-	if expr is ast.Ident && expr.typ.kind in [.struct_, .union_, .array] {
+	if expr.kind == .ident && e.expr_type(expr).kind in [.struct_, .union_, .array] {
 		return
 	}
 	e.emit_expr_at(expr, depth)!
@@ -4585,10 +4623,11 @@ fn (mut e Emitter) emit_discard_operand(expr ast.Expr, depth int) !void {
 // needs to know before it puts a return of zero behind it: an if whose two
 // bodies both return has no way through.
 fn (mut e Emitter) emit_if(stmt ast.Stmt) !bool {
-	cond := stmt.cond or {
+	if stmt.cond.is_none() {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: an if without a condition')
 		return error('if without a condition')
 	}
+	cond := stmt.cond
 	e.emit_condition(cond, 0, stmt.line, stmt.col)!
 	else_label := e.label()
 	e.branch(.branch_zero, else_label, stmt.line, stmt.col)!
@@ -4613,10 +4652,11 @@ fn (mut e Emitter) emit_if(stmt ast.Stmt) !bool {
 // loop whose step is at the end of the body is the desugaring's business, and
 // this is the shape it desugared into.
 fn (mut e Emitter) emit_while(stmt ast.Stmt) !void {
-	cond := stmt.cond or {
+	if stmt.cond.is_none() {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a while without a condition')
 		return error('while without a condition')
 	}
+	cond := stmt.cond
 	top := e.label()
 	end := e.label()
 	// A continue goes to the step, which is the third part of a for and nothing
@@ -4655,10 +4695,11 @@ fn (mut e Emitter) emit_while(stmt ast.Stmt) !void {
 // jump would read the condition nowhere and landing it on the top label would read it
 // only after the body had run again, and C asks for the condition next.
 fn (mut e Emitter) emit_do_while(stmt ast.Stmt) !void {
-	cond := stmt.cond or {
+	if stmt.cond.is_none() {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a do without a condition')
 		return error('do without a condition')
 	}
+	cond := stmt.cond
 	top := e.label()
 	end := e.label()
 	test := e.label()
@@ -4743,12 +4784,14 @@ fn (mut e Emitter) emit_jump_out(stmt ast.Stmt, is_break bool) !void {
 // per case, two for a range: the corpus writes a switch with 1023 labels and a
 // few thousand is the size a switch is allowed to reach.
 fn (mut e Emitter) emit_switch(stmt ast.Stmt) !void {
-	cond := stmt.cond or {
+	if stmt.cond.is_none() {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a switch without a controlling expression')
 		return error('switch without an expression')
 	}
-	width := e.converted_width(cond.typ) or { e.target.word_size }
-	unsigned := cond.typ.is_unsigned_type()
+	cond := stmt.cond
+	cond_type := e.expr_type(cond)
+	width := e.converted_width(cond_type) or { e.target.word_size }
+	unsigned := cond_type.is_unsigned_type()
 	e.emit_expr(cond)!
 	e.extend_operand_to_word(cond, stmt.line, stmt.col)!
 	operand := e.reserve(e.target.word_size)
@@ -4981,7 +5024,8 @@ fn (mut e Emitter) emit_case_label(stmt ast.Stmt, is_default bool) !void {
 // written before the place it lands on. What is not settled until then is
 // whether a label of that name is written at all.
 fn (mut e Emitter) emit_goto(stmt ast.Stmt) !void {
-	if target := stmt.goto_expr() {
+	target := stmt.goto_expr()
+	if !target.is_none() {
 		// A computed goto jumps to the address the expression is worth, so the
 		// value is evaluated and the machine jumps to the register holding it.
 		// The named-label machinery is not involved: the program wrote an
@@ -5382,7 +5426,7 @@ fn (mut e Emitter) normalize_a_bool_value(value ast.Expr, line int, col int) !vo
 		return e.emit_test(value, line, col)
 	}
 	register := e.accumulator(line, col)!
-	word := e.eight_byte_integer(value.typ) || e.is_a_pointer(value)
+	word := e.eight_byte_integer(e.expr_type(value)) || e.is_a_pointer(value)
 	return e.narrow_register(.bool_, register, word)
 }
 
@@ -5581,20 +5625,20 @@ fn (e Emitter) cleanups_live() bool {
 // parameter, a pointer to a type compatible with the object, and the address is
 // the same one `&object` writes anywhere else.
 fn (mut e Emitter) emit_cleanup_call(c Cleanup) !void {
-	object := ast.Expr(ast.Ident{
+	object := e.unit.arena.put_ident(ast.Ident{
 		name: c.name
 		typ:  c.typ
 		line: c.line
 		col:  c.col
 	})
-	address := ast.Expr(ast.Unary{
+	address := e.unit.arena.put_unary(ast.Unary{
 		op:   '&'
 		expr: object
 		typ:  types.pointer_to(c.typ)
 		line: c.line
 		col:  c.col
 	})
-	call := ast.Expr(ast.Call{
+	call := e.unit.arena.put_call(ast.Call{
 		name: c.function
 		args: [address]
 		typ:  types.void_type()
@@ -5646,7 +5690,7 @@ fn (mut c VlaCounter) statement(stmt ast.Stmt) {
 	match stmt.kind {
 		.block { c.scope(stmt.body) }
 		.var_decl {
-			if stmt.decl_vla_size() != none && c.active.len > 0 {
+			if !stmt.decl_vla_size().is_none() && c.active.len > 0 {
 				c.active[c.active.len - 1] = true
 			}
 		}
@@ -5706,7 +5750,7 @@ fn function_has_vla(stmts []ast.Stmt) bool {
 fn statement_has_vla(stmt ast.Stmt) bool {
 	match stmt.kind {
 		.block { return function_has_vla(stmt.body) }
-		.var_decl { return stmt.decl_vla_size() != none }
+		.var_decl { return !stmt.decl_vla_size().is_none() }
 		.if_stmt { return function_has_vla(stmt.then_body()) || function_has_vla(stmt.else_body()) }
 		.while_stmt { return function_has_vla(stmt.body) || function_has_vla(stmt.step()) }
 		.do_while_stmt { return function_has_vla(stmt.body) }
@@ -5872,11 +5916,12 @@ fn (mut e Emitter) branch(kind image.FixupKind, name string, line int, col int) 
 // cleared by exclusive-or with itself rather than read from memory, so this costs
 // no constant.
 fn (mut e Emitter) emit_test(value ast.Expr, line int, col int) !void {
-	if value.typ.kind.is_decimal() {
+	value_type := e.expr_type(value)
+	if value_type.kind.is_decimal() {
 		// A truth value for a decimal is its comparison with zero, and this
 		// back end writes no comparison for one, so testing the bytes that
 		// happen to be in the accumulator would be an answer nobody asked for.
-		e.diagnostics << problem(line, col, 'unsupported: a ${value.typ.describe()} is tested as a condition, and this back end has no truth value for a decimal yet')
+		e.diagnostics << problem(line, col, 'unsupported: a ${value_type.describe()} is tested as a condition, and this back end has no truth value for a decimal yet')
 		return error('decimal condition')
 	}
 	if e.long_double_of(value) {
@@ -5902,7 +5947,7 @@ fn (mut e Emitter) emit_test(value ast.Expr, line int, col int) !void {
 			e.append(e.target.double_comparison('!=', floating, zero, register, other)!)
 		}
 	}
-	if e.eight_byte_integer(value.typ) || e.is_a_pointer(value) {
+	if e.eight_byte_integer(value_type) || e.is_a_pointer(value) {
 		// A pointer is tested at the width of an address and not at the width
 		// of an int, because the low four bytes of 0x100000000 are zero: a
 		// four-byte test calls that pointer, which is not null, equal to the
@@ -6314,101 +6359,107 @@ fn (e Emitter) floating_at(expr ast.Expr, depth int) bool {
 	if depth - e.argument_credit > max_emit_depth {
 		return false
 	}
+	typ := e.expr_type(expr)
 	// A long double is a floating type in the language and not a value of the
 	// register file this walk is about: it lives in memory, so no path that asks
 	// this question computes with it. The guard is here rather than in each arm
 	// because a long double reaches them all as `is_floating`.
-	if expr.typ.kind.is_extended() {
+	if typ.kind.is_extended() {
 		return false
 	}
-	return match expr {
-		ast.FloatLit {
+	return match expr.kind {
+		.float_lit {
 			true
 		}
-		ast.Ident {
-			if slot := e.lookup(expr.name) {
+		.ident {
+			node := e.unit.arena.ident(expr)
+			if slot := e.lookup(node.name) {
 				// The name of an array is the address of its first element,
 				// which is a pointer and not a floating value, however its
 				// elements are read.
 				slot.count == 0 && (slot.floating || slot.single)
 			} else {
-				e.global_is_floating(expr.name)
+				e.global_is_floating(node.name)
 			}
 		}
-		ast.Unary {
+		.unary {
+			node := e.unit.arena.unary(expr)
 			// The sign change and the unary plus preserve the type; the
 			// logical not and the complement produce an int, and the type the
 			// parser resolved says which one this is.
-			if expr.typ.kind != .unknown {
-				return expr.typ.is_floating()
+			if node.typ.kind != .unknown {
+				return node.typ.is_floating()
 			}
-			(expr.op == '-' || expr.op == '+') && e.floating_at(expr.expr, depth + 1)
+			(node.op == '-' || node.op == '+') && e.floating_at(node.expr, depth + 1)
 		}
-		ast.Binary {
-			if expr.op in ['==', '!=', '<', '>', '<=', '>=', '&&', '||'] {
+		.binary {
+			node := e.unit.arena.binary(expr)
+			if node.op in ['==', '!=', '<', '>', '<=', '>=', '&&', '||'] {
 				false
-			} else if expr.typ.kind != .unknown {
+			} else if node.typ.kind != .unknown {
 				// Both operands of an arithmetic operator have one class after
 				// the usual conversions, so the node's own type answers for the
 				// whole chain.
-				expr.typ.is_floating()
+				node.typ.is_floating()
 			} else {
-				e.floating_at(expr.left, depth + 1) || e.floating_at(expr.right, depth + 1)
+				e.floating_at(node.left, depth + 1) || e.floating_at(node.right, depth + 1)
 			}
 		}
-		ast.Cast {
+		.cast {
 			// A conversion says what the value is afterwards, so the target type
 			// is the answer: a double is a double whichever class its operand
 			// was, and the type the reader resolved says which one this is.
-			expr.typ.is_floating()
+			typ.is_floating()
 		}
-		ast.Conditional {
+		.conditional {
 			// The value is whichever arm ran, converted to the type the two
 			// arms have in common, so that type is the answer and not either
 			// arm's own.
-			if expr.typ.kind != .unknown {
-				expr.typ.is_floating()
+			node := e.unit.arena.conditional(expr)
+			if node.typ.kind != .unknown {
+				node.typ.is_floating()
 			} else {
-				e.floating_at(expr.then_expr, depth + 1) || e.floating_at(expr.else_expr, depth + 1)
+				e.floating_at(node.then_expr, depth + 1) || e.floating_at(node.else_expr, depth + 1)
 			}
 		}
-		ast.Assign {
+		.assign {
 			// The value written, whose type is the object's: the whole
 			// expression is floating when the object is.
-			expr.typ.kind != .unknown && expr.typ.is_floating()
+			typ.kind != .unknown && typ.is_floating()
 		}
-		ast.Comma {
+		.comma {
 			// Worth the value of its right operand, so that operand's type
 			// is the answer.
-			expr.typ.kind != .unknown && expr.typ.is_floating()
+			typ.kind != .unknown && typ.is_floating()
 		}
-		ast.StmtExpr {
+		.stmt_expr {
 			// Worth the value of its last expression statement, whose type
 			// the reader resolved for the node.
-			expr.typ.kind != .unknown && expr.typ.is_floating()
+			typ.kind != .unknown && typ.is_floating()
 		}
-		ast.Index {
+		.index {
 			// An element is a floating value when the type the reader gave the
 			// element is one: the element type of the array or the pointee of
 			// the pointer, which the node carries. The base of a subscript is
 			// an expression rather than a name, so the element's own type is
 			// what answers and not a slot looked up by the name the base used
 			// to be.
-			expr.typ.kind != .unknown && expr.typ.is_floating()
+			typ.kind != .unknown && typ.is_floating()
 		}
-		ast.Field {
+		.field {
 			// A member whose declared type is a floating one is a floating
 			// value, and the reader kept that type as the spelling of the
 			// member.
-			e.writes_a_double(expr.spelling) || e.writes_a_float(expr.spelling)
+			node := e.unit.arena.field(expr)
+			e.writes_a_double(node.spelling) || e.writes_a_float(node.spelling)
 		}
-		ast.IncDec {
+		.inc_dec {
 			// The value is the object after the step, whose class is the
 			// object's own: a double or a float name, element or member is a
 			// floating value, and the reader resolved that type for the node.
-			expr.typ.kind != .unknown && expr.typ.is_floating()
+			typ.kind != .unknown && typ.is_floating()
 		}
-		ast.Call {
+		.call {
 			// A call that hands an object back hands its bytes over in the
 			// register its class names, so the floating class is the same answer
 			// as a function that returns a double or a float. The clause the
@@ -6417,17 +6468,18 @@ fn (e Emitter) floating_at(expr ast.Expr, depth int) bool {
 			// itself from the compiler's own spellings is not a call to a
 			// function the program declares, and its clause is the only thing
 			// that says whether the value it hands over is a floating one.
-			if expr.typ.kind != .unknown {
-				return expr.typ.is_floating()
+			node := e.unit.arena.call(expr)
+			if node.typ.kind != .unknown {
+				return node.typ.is_floating()
 			}
 			// A call written to an expression carries the type the parser
 			// resolved onto the callee, which is the other source for the same
 			// answer: either one can be the one that got set.
-			if typ := indirect_call_returns(expr) {
-				return typ.is_floating()
+			if callee_type := indirect_call_returns(*node) {
+				return callee_type.is_floating()
 			}
-			e.returns[expr.name] == 'double' || e.returns[expr.name] == 'float'
-				|| e.return_classes[expr.name].first_floating
+			e.returns[node.name] == 'double' || e.returns[node.name] == 'float'
+				|| e.return_classes[node.name].first_floating
 		}
 		else {
 			false
@@ -6444,89 +6496,96 @@ fn (e Emitter) single_at(expr ast.Expr, depth int) bool {
 	}
 	// The same guard floating_at carries: the extended type is not a value of
 	// this register file at either width.
-	if expr.typ.kind.is_extended() {
+	typ := e.expr_type(expr)
+	if typ.kind.is_extended() {
 		return false
 	}
-	return match expr {
-		ast.FloatLit {
+	return match expr.kind {
+		.float_lit {
 			// The reader gives a constant with an `f` suffix the float type and
 			// any other floating constant the double one, so the constant's
 			// own type is the answer.
-			expr.typ.kind == .float
+			typ.kind == .float
 		}
-		ast.Ident {
-			if slot := e.lookup(expr.name) {
+		.ident {
+			node := e.unit.arena.ident(expr)
+			if slot := e.lookup(node.name) {
 				slot.count == 0 && slot.single
 			} else {
-				e.global_is_single(expr.name)
+				e.global_is_single(node.name)
 			}
 		}
-		ast.Unary {
-			if expr.typ.kind != .unknown {
-				return expr.typ.kind == .float
+		.unary {
+			node := e.unit.arena.unary(expr)
+			if node.typ.kind != .unknown {
+				return node.typ.kind == .float
 			}
-			(expr.op == '-' || expr.op == '+') && e.single_at(expr.expr, depth + 1)
+			(node.op == '-' || node.op == '+') && e.single_at(node.expr, depth + 1)
 		}
-		ast.Binary {
-			if expr.op in ['==', '!=', '<', '>', '<=', '>=', '&&', '||'] {
+		.binary {
+			node := e.unit.arena.binary(expr)
+			if node.op in ['==', '!=', '<', '>', '<=', '>=', '&&', '||'] {
 				false
-			} else if expr.typ.kind != .unknown {
+			} else if node.typ.kind != .unknown {
 				// The usual arithmetic conversions make a step with a double
 				// anywhere in it a double step, so the node's own type is the
 				// answer and an operand being a float does not make it one.
-				expr.typ.kind == .float
+				node.typ.kind == .float
 			} else {
-				(e.single_at(expr.left, depth + 1) || e.single_at(expr.right, depth + 1))
-					&& !(e.double_of(expr.left) || e.double_of(expr.right))
+				(e.single_at(node.left, depth + 1) || e.single_at(node.right, depth + 1))
+					&& !(e.double_of(node.left) || e.double_of(node.right))
 			}
 		}
-		ast.Cast {
-			expr.typ.kind == .float
+		.cast {
+			typ.kind == .float
 		}
-		ast.Index {
+		.index {
 			// The same question floating_at asks of an element, at four bytes:
 			// the element's own type is the answer.
-			expr.typ.kind == .float
+			typ.kind == .float
 		}
-		ast.Field {
-			e.writes_a_float(expr.spelling)
+		.field {
+			node := e.unit.arena.field(expr)
+			e.writes_a_float(node.spelling)
 		}
-		ast.IncDec {
+		.inc_dec {
 			// The same question at four bytes: the object is a float, so the
 			// value the operator leaves in the floating file is one.
-			expr.typ.kind == .float
+			typ.kind == .float
 		}
-		ast.Call {
+		.call {
 			// The same question at four bytes, and the reader's clause is the
 			// answer where it has one.
-			if expr.typ.kind != .unknown {
-				return expr.typ.kind == .float
+			node := e.unit.arena.call(expr)
+			if node.typ.kind != .unknown {
+				return node.typ.kind == .float
 			}
-			if typ := indirect_call_returns(expr) {
-				return typ.kind == .float
+			if callee_type := indirect_call_returns(*node) {
+				return callee_type.kind == .float
 			}
-			e.returns[expr.name] == 'float'
+			e.returns[node.name] == 'float'
 		}
-		ast.Conditional {
+		.conditional {
 			// The value is whichever arm ran, converted to the type the two
 			// arms have in common, so that type is the answer and not either
 			// arm's own.
-			if expr.typ.kind != .unknown {
-				expr.typ.kind == .float
+			node := e.unit.arena.conditional(expr)
+			if node.typ.kind != .unknown {
+				node.typ.kind == .float
 			} else {
-				e.floating_at(expr.then_expr, depth + 1) || e.floating_at(expr.else_expr, depth + 1)
+				e.floating_at(node.then_expr, depth + 1) || e.floating_at(node.else_expr, depth + 1)
 			}
 		}
-		ast.Assign, ast.Comma {
+		.assign, .comma {
 			// The node's own type is the type of the value it leaves, which
 			// the reader resolved, so it decides this the way it decides
 			// whether the value is floating at all.
-			expr.typ.kind == .float
+			typ.kind == .float
 		}
-		ast.StmtExpr {
+		.stmt_expr {
 			// The same question about a statement expression's value, whose
 			// type is the node's own clause.
-			expr.typ.kind == .float
+			typ.kind == .float
 		}
 		else {
 			false
@@ -6548,7 +6607,7 @@ fn (mut e Emitter) convert_to_double(expr ast.Expr, line int, col int) !void {
 		// conversion takes. An implicit conversion has no place to park the
 		// object's address here, and computing with the bytes of the value
 		// instead would be a number nobody wrote, so it is refused by name.
-		e.diagnostics << problem(line, col, 'unsupported: a ${expr.typ.describe()} is converted to a double here without a cast, and this back end makes that conversion only where a cast asks for it')
+		e.diagnostics << problem(line, col, 'unsupported: a ${e.expr_type(expr).describe()} is converted to a double here without a cast, and this back end makes that conversion only where a cast asks for it')
 		return error('decimal to double')
 	}
 	if e.long_double_of(expr) {
@@ -6576,9 +6635,9 @@ fn (mut e Emitter) convert_to_double(expr ast.Expr, line int, col int) !void {
 	}
 	integer := e.accumulator(line, col)!
 	double_register := e.float_accumulator(line, col)!
-	width := e.storage_width(expr.typ) or { 0 }
+	width := e.storage_width(e.expr_type(expr)) or { 0 }
 	if width == 8 {
-		if expr.typ.is_unsigned_type() {
+		if e.expr_type(expr).is_unsigned_type() {
 			// An eight-byte unsigned value fills the whole register, so there
 			// is no upper half to clear and the four-byte fix does not carry.
 			// The value is split at 2^63, which is a sequence the machine
@@ -6593,7 +6652,7 @@ fn (mut e Emitter) convert_to_double(expr ast.Expr, line int, col int) !void {
 		e.append(e.target.signed_word_to_double(double_register, integer)!)
 		return
 	}
-	if expr.typ.is_unsigned_type() && width == 4 {
+	if e.expr_type(expr).is_unsigned_type() && width == 4 {
 		// A four-byte unsigned value can be at or above 2^31, which is where the
 		// signed conversion reads the top bit as a sign. A narrower unsigned type
 		// is already below that boundary, and a source eight bytes wide is the
@@ -6653,12 +6712,12 @@ fn (mut e Emitter) convert_to_single(expr ast.Expr, line int, col int) !void {
 // one and 2^63 for an eight-byte one, while a signed destination has no such
 // values and its conversion is the one the machine has.
 fn (mut e Emitter) convert_to_int(expr ast.Expr, unsigned_target bool, target_width int, line int, col int) !void {
-	if expr.typ.kind.is_decimal() {
+	if e.expr_type(expr).kind.is_decimal() {
 		// Only a conversion to a double reads a decimal object where it lives,
 		// and there is no value of the format this back end holds to convert
 		// from, so a decimal that would become an integer is refused by name
 		// rather than stored with the bits of the floating accumulator.
-		e.diagnostics << problem(line, col, 'unsupported: a ${expr.typ.describe()} is converted to an integer here, and this back end has no conversion from a decimal except to a double')
+		e.diagnostics << problem(line, col, 'unsupported: a ${e.expr_type(expr).describe()} is converted to an integer here, and this back end has no conversion from a decimal except to a double')
 		return error('decimal to int')
 	}
 	if e.long_double_of(expr) {
@@ -6708,20 +6767,22 @@ fn (mut e Emitter) convert_to_int(expr ast.Expr, unsigned_target bool, target_wi
 // is_a_pointer says whether an expression is a pointer: the width of a word that
 // is not a double is one, and a string is the address of its bytes.
 fn (e Emitter) is_a_pointer(expr ast.Expr) bool {
-	if expr.typ.kind == .pointer || expr.typ.is_array() {
+	typ := e.expr_type(expr)
+	if typ.kind == .pointer || typ.is_array() {
 		return true
 	}
-	if expr is ast.StrLit {
+	if expr.kind == .str_lit {
 		return true
 	}
 	if e.floating_of(expr) {
 		return false
 	}
-	if expr is ast.Ident {
-		if slot := e.lookup(expr.name) {
+	if expr.kind == .ident {
+		name := e.unit.arena.ident(expr).name
+		if slot := e.lookup(name) {
 			return slot.is_array()
 		}
-		if object := e.global_shape(expr.name) {
+		if object := e.global_shape(name) {
 			return object.count > 0
 		}
 	}
@@ -6735,14 +6796,14 @@ fn (e Emitter) is_a_pointer(expr ast.Expr) bool {
 // the three shapes that are storage with an address, and so the three a value has
 // to be read out of rather than computed into a register.
 fn (e Emitter) names_an_object(expr ast.Expr) bool {
-	return match expr {
-		ast.Ident, ast.Field, ast.Index { true }
+	return match expr.kind {
+		.ident, .field, .index { true }
 		else { false }
 	}
 }
 
 fn (e Emitter) wide_value(expr ast.Expr) bool {
-	return expr.typ.kind in [types.Kind.int128, .unsigned_int128]
+	return e.expr_type(expr).kind in [types.Kind.int128, .unsigned_int128]
 }
 
 // store_wide widens a value narrower than sixteen bytes into a 128-bit object. The
@@ -6789,8 +6850,8 @@ fn (mut e Emitter) store_wide_at(address Slot, expr ast.Expr, line int, col int,
 		// widen, which is the shape an assignment between two of them has; a value
 		// of the type that is not an object — the result of an addition, say — is
 		// already the pair, and it is written at the address as two words.
-		match expr {
-			ast.Ident, ast.Field, ast.Index {
+		match expr.kind {
+			.ident, .field, .index {
 				return e.assign_object(address, wide_bytes, expr, line, col, depth)
 			}
 			else {
@@ -6818,7 +6879,7 @@ fn (mut e Emitter) store_wide_at(address Slot, expr ast.Expr, line int, col int,
 	waiting := e.remainder(line, col)!
 	pointer := e.scratch(line, col)!
 	e.emit_expr_at(expr, depth + 1)!
-	if expr.typ.is_unsigned_type() {
+	if e.expr_type(expr).is_unsigned_type() {
 		// An unsigned value of four bytes keeps its bits with zero above them, so
 		// the word above it is zero: `(unsigned __int128)0xffffffffu` is 4294967295
 		// and not -1. Measured on gcc 16.2.1. The choice is the one
@@ -6965,17 +7026,17 @@ fn (mut e Emitter) emit_expr(expr ast.Expr) !void {
 }
 
 fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
-	if expr.typ.kind.is_complex() {
+	if e.expr_type(expr).kind.is_complex() {
 		// A complex value is two components and the accumulator is one register.
 		// Every context that wants one has a complex path that answers for it —
 		// an object it is written into, a call it is handed to, a comparison it
 		// is part of — so an expression reaching here is one no complex path
 		// took, and it is refused by name rather than read as its real part.
-		e.diagnostics << problem(expr_line(expr), expr_col(expr), 'unsupported: a value of type ${expr.typ.describe()} is two components, and a complex value used as a single one is not computed here')
+		e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: a value of type ${e.expr_type(expr).describe()} is two components, and a complex value used as a single one is not computed here')
 		return error('complex value as a value')
 	}
 	if depth - e.argument_credit > max_emit_depth {
-		e.diagnostics << problem(expr_line(expr), expr_col(expr), 'unsupported: the expression is nested more than ${max_emit_depth} levels deep')
+		e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: the expression is nested more than ${max_emit_depth} levels deep')
 		return error('expression nested too deeply')
 	}
 	if value := e.constant(expr) {
@@ -6983,8 +7044,8 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 		// the ten-byte move: the four-byte one below takes four bytes and clears
 		// the rest of the register, so a value whose top bit is set would arrive
 		// zero-extended rather than as itself.
-		if e.eight_byte_integer(expr.typ) {
-			register := e.accumulator(expr_line(expr), expr_col(expr))!
+		if e.eight_byte_integer(e.expr_type(expr)) {
+			register := e.accumulator(e.expr_line(expr), e.expr_col(expr))!
 			e.append(e.target.move_immediate64(register, u64(value))!)
 			return
 		}
@@ -6996,44 +7057,46 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 		// would be a wrong value with no diagnostic, which is the one outcome
 		// this compiler treats as a bug, so the constant is refused by name.
 		if !fits_immediate32(value) {
-			e.diagnostics << problem(expr_line(expr), expr_col(expr), 'unsupported: the constant ${value} needs more than the four bytes this back end writes a constant with')
+			e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: the constant ${value} needs more than the four bytes this back end writes a constant with')
 			return error('constant does not fit the immediate')
 		}
-		register := e.accumulator(expr_line(expr), expr_col(expr))!
+		register := e.accumulator(e.expr_line(expr), e.expr_col(expr))!
 		e.append(e.target.move_immediate32(register, u32(value))!)
 		return
 	}
-	match expr {
-		ast.IntLit {
+	match expr.kind {
+		.int_lit {
+			node := e.unit.arena.int_lit(expr)
 			// An integer literal is a constant, so the walk above has already
 			// answered for it; this is the same answer for a reader who wonders.
 			// It is checked the same way, because the answer and the instruction
 			// are one thing.
-			register := e.accumulator(expr.line, expr.col)!
-			if e.eight_byte_integer(expr.typ) {
-				e.append(e.target.move_immediate64(register, u64(expr.value))!)
+			register := e.accumulator(node.line, node.col)!
+			if e.eight_byte_integer(e.expr_type(expr)) {
+				e.append(e.target.move_immediate64(register, u64(node.value))!)
 				return
 			}
-			if !fits_immediate32(expr.value) {
-				e.diagnostics << problem(expr.line, expr.col, 'unsupported: the constant ${expr.value} needs more than the four bytes this back end writes a constant with')
+			if !fits_immediate32(node.value) {
+				e.diagnostics << problem(node.line, node.col, 'unsupported: the constant ${node.value} needs more than the four bytes this back end writes a constant with')
 				return error('constant does not fit the immediate')
 			}
-			e.append(e.target.move_immediate32(register, u32(expr.value))!)
+			e.append(e.target.move_immediate32(register, u32(node.value))!)
 		}
-		ast.FloatLit {
-			if expr.typ.kind.is_decimal() {
+		.float_lit {
+			node := e.unit.arena.float_lit(expr)
+			if e.expr_type(expr).kind.is_decimal() {
 				// A decimal constant is materialized as a value: its
 				// encoded bytes are read out of the image into the floating
 				// accumulator, which is where gcc keeps one in flight. The
 				// constant also has a store into an object of its own type,
 				// which writes the same bytes where they live.
-				return e.emit_decimal_constant(expr, expr.line, expr.col)
+				return e.emit_decimal_constant(expr, node.line, node.col)
 			}
-			if expr.typ.kind.is_extended() {
+			if node.typ.kind.is_extended() {
 				// A long double constant is materialized into a frame
 				// temporary. Its value is sixteen bytes and not a register
 				// width, so what the expression is worth is the address of them.
-				e.emit_extended_literal(expr, expr.line, expr.col)!
+				e.emit_extended_literal(*node, node.line, node.col)!
 				return
 			}
 			// A floating constant of either width is read-only data and an
@@ -7047,41 +7110,43 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 			// a double. Reading a float's entry with the eight-byte move would
 			// read the four bytes of it and then whatever was interned after
 			// it, which is a value nobody wrote.
-			register := e.float_accumulator(expr.line, expr.col)!
-			if expr.typ.kind == .float {
-				e.intern_single(expr.value)
-				e.reference(e.target.load_float_constant(register, 0)!, .single_constant, single_key(expr.value),
+			register := e.float_accumulator(node.line, node.col)!
+			if node.typ.kind == .float {
+				e.intern_single(node.value)
+				e.reference(e.target.load_float_constant(register, 0)!, .single_constant, single_key(node.value),
 					e.target.name_of(register))
 			} else {
-				e.intern_double(expr.value)
-				e.reference(e.target.load_double_constant(register, 0)!, .float_constant, float_key(expr.value),
+				e.intern_double(node.value)
+				e.reference(e.target.load_double_constant(register, 0)!, .float_constant, float_key(node.value),
 					e.target.name_of(register))
 			}
 		}
-		ast.ComplexLit {
+		.complex_lit {
+			node := e.unit.arena.complex_lit(expr)
 			// An imaginary constant is a complex value, and a complex value is
 			// two components rather than the one a register here holds. Where
 			// one is wanted the complex paths answer for it; a context that
 			// asks for a scalar at this point has nowhere to put it, so it is
 			// refused by name rather than read as its imaginary part alone.
-			e.diagnostics << problem(expr.line, expr.col, 'unsupported: the imaginary constant ${expr.text} is a complex value used where a scalar is wanted')
+			e.diagnostics << problem(node.line, node.col, 'unsupported: the imaginary constant ${node.text} is a complex value used where a scalar is wanted')
 			return error('complex constant as a scalar')
 		}
-		ast.Ident {
-			slot := e.lookup(expr.name) or {
+		.ident {
+			node := e.unit.arena.ident(expr)
+			slot := e.lookup(node.name) or {
 				// Not a local: a top-level object is storage the image holds,
 				// and its name is the address of that storage. What is read is
 				// the value at the width the object was defined with, which is
 				// the same load an element of an array takes.
-				if object := e.global_of(expr.name) {
-					register := e.accumulator(expr.line, expr.col)!
-					e.reference_object_address(register, expr.name)
+				if object := e.global_of(node.name) {
+					register := e.accumulator(node.line, node.col)!
+					e.reference_object_address(register, node.name)
 					if object.count > 0 {
 						// The name of an array is the address of its first
 						// element.
 						return
 					}
-					if object.count == 0 && e.global_is_long_double(expr.name) {
+					if object.count == 0 && e.global_is_long_double(node.name) {
 						// An object of the extended type read as a value is
 						// its address: sixteen bytes are in memory and there is
 						// no register of that width to read them into.
@@ -7091,7 +7156,7 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 						// A top-level object of a 128-bit type read as a value gets the
 						// refusal a local of the type gets: of that width there is no
 						// value here, only storage, and the storage is real.
-						e.diagnostics << problem(expr.line, expr.col, 'unsupported: ${expr.name} is an object of 128 bits, and this back end stores one and copies one but has no value of that width to read')
+						e.diagnostics << problem(node.line, node.col, 'unsupported: ${node.name} is an object of 128 bits, and this back end stores one and copies one but has no value of that width to read')
 						return error('128-bit value')
 					}
 					if object.single {
@@ -7099,7 +7164,7 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 						// four-byte instruction, for the same reason: the
 						// value lives in the floating file and the address in
 						// the general one.
-						float_register := e.float_accumulator(expr.line, expr.col)!
+						float_register := e.float_accumulator(node.line, node.col)!
 						e.append(e.target.load_float_indirect(register, float_register)!)
 						return
 					}
@@ -7108,45 +7173,45 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 						// instruction that moves one, and the address is in
 						// the general file, so nothing is disturbed by reading
 						// into the floating one.
-						double_register := e.float_accumulator(expr.line, expr.col)!
+						double_register := e.float_accumulator(node.line, node.col)!
 						e.append(e.target.load_double_indirect(register, double_register)!)
 						return
 					}
 					e.load_indirect_value(register, register, object.unsigned, object.width)!
 					return
 				}
-				if e.is_function_name(expr.name) {
+				if e.is_function_name(node.name) {
 					// 6.3.2.1: a function designator used where a value is
 					// wanted is the pointer to the function, so a name that is
 					// a function this unit names, defined here or declared
 					// elsewhere, is worth the address of that function.
-					e.emit_function_address(expr.name, expr.line, expr.col) or {
+					e.emit_function_address(node.name, node.line, node.col) or {
 						return error('no function address')
 					}
 					return
 				}
-				e.diagnostics << problem(expr.line, expr.col, 'unsupported: ${expr.name} is not a constant and is not a local of this function')
+				e.diagnostics << problem(node.line, node.col, 'unsupported: ${node.name} is not a constant and is not a local of this function')
 				return error('unknown name')
 			}
 			if slot.long_double && slot.count == 0 {
 				// The name of an object of the extended type is the address of
 				// its sixteen bytes, which is what a value of the type is worth
 				// everywhere in this back end.
-				return e.leave_address(slot, expr.line, expr.col)
+				return e.leave_address(slot, node.line, node.col)
 			}
 			if slot.decimal && slot.count == 0 {
 				// A decimal object read as a value: its bytes are loaded into
 				// the floating accumulator, which is where a value of one
 				// travels. The name is not an address here, because a value of
 				// the type is what a context that reaches this wants.
-				return e.load_decimal_slot(slot, expr.line, expr.col)
+				return e.load_decimal_slot(slot, node.line, node.col)
 			}
 			if slot.wide {
 				// A 128-bit object is stored, copied and addressed, and it is
 				// not a value this back end has: reading the name would have to
 				// answer with a value of that width, so the refusal names what
 				// the object is good for instead.
-				e.diagnostics << problem(expr.line, expr.col, 'unsupported: ${expr.name} is an object of 128 bits, and this back end stores one and copies one but has no value of that width to read')
+				e.diagnostics << problem(node.line, node.col, 'unsupported: ${node.name} is an object of 128 bits, and this back end stores one and copies one but has no value of that width to read')
 				return error('128-bit value')
 			}
 			if slot.bytes > 0 && slot.count == 0 {
@@ -7157,38 +7222,39 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 				// first bytes as an int. An array of such objects is not one of
 				// them: its name is the address of its first element, which is
 				// what the array branch below answers and what `p = t` needs.
-				e.diagnostics << problem(expr.line, expr.col, 'unsupported: ${expr.name} is an object of an aggregate type, and using it as a value is not implemented; a member of it, or its address, is')
+				e.diagnostics << problem(node.line, node.col, 'unsupported: ${node.name} is an object of an aggregate type, and using it as a value is not implemented; a member of it, or its address, is')
 				return error('aggregate value')
 			}
 			if slot.vla {
 				// A variable-length array's name is worth the address of its
 				// first element, which is the address the declaration stored;
 				// the frame slot holds that address and not the array.
-				register := e.accumulator(expr.line, expr.col)!
-				e.load_vla_base(slot, register, expr.line, expr.col)!
+				register := e.accumulator(node.line, node.col)!
+				e.load_vla_base(slot, register, node.line, node.col)!
 				return
 			}
 			if slot.count > 0 {
 				// An array's name is worth the address of its first element: in
 				// an expression it is what a pointer is, which is what makes
 				// `puts(buf)` and `strlen(buf)` work with an array.
-				register := e.accumulator(expr.line, expr.col)!
-				base := e.slot_base_register(slot, expr.line, expr.col)!
+				register := e.accumulator(node.line, node.col)!
+				base := e.slot_base_register(slot, node.line, node.col)!
 				e.append(e.target.address_of_slot(base, slot.offset, register))
 				return
 			}
 			if slot.single {
-				e.load_single_accumulator(slot, expr.line, expr.col)!
+				e.load_single_accumulator(slot, node.line, node.col)!
 				return
 			}
 			if slot.floating {
-				e.load_double_accumulator(slot, expr.line, expr.col)!
+				e.load_double_accumulator(slot, node.line, node.col)!
 				return
 			}
-			e.load_accumulator(slot, expr.line, expr.col)!
+			e.load_accumulator(slot, node.line, node.col)!
 		}
-		ast.Field {
-			if expr.typ.is_array() {
+		.field {
+			node := e.unit.arena.field(expr)
+			if node.typ.is_array() {
 				// A member whose type is an array decays to a pointer to its
 				// first element wherever a value is wanted (6.3.2.1p3), the
 				// way an array's name does: the value it is worth is the
@@ -7202,14 +7268,14 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 				// the bytes past the object, and the address of those bytes is
 				// what `memcpy(fam.data, ...)` is handed. This is the one value
 				// a flexible member can be.
-				e.field_address(expr, depth, expr.line, expr.col)!
+				e.field_address(*node, depth, node.line, node.col)!
 				return
 			}
-			if e.writes_a_long_double(expr.spelling) {
+			if e.writes_a_long_double(node.spelling) {
 				// A member of the extended type is sixteen bytes at an offset
 				// into the object that holds it, and the value of the member is
 				// the address of those bytes.
-				e.field_address(expr, depth, expr.line, expr.col)!
+				e.field_address(*node, depth, node.line, node.col)!
 				return
 			}
 			// A member is the value at an offset into an object: the address of
@@ -7217,31 +7283,31 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 			// read at the width of the member's type. A double member is read
 			// with the instruction that moves one rather than with the integer
 			// load of the same width.
-			if e.writes_a_complex(expr.spelling) {
+			if e.writes_a_complex(node.spelling) {
 				// The member is two components, and this is the value question,
 				// which is the one this back end has no answer for; the
 				// member's own address is the part that works, and every
 				// context that places a complex value goes through it.
-				e.diagnostics << problem(expr.line, expr.col, 'unsupported: the member ${expr.name}.${expr.member} is declared ${expr.spelling}, and a value of that type is two components where this back end keeps one value in a register')
+				e.diagnostics << problem(node.line, node.col, 'unsupported: the member ${node.name}.${node.member} is declared ${node.spelling}, and a value of that type is two components where this back end keeps one value in a register')
 				return error('unsupported member type')
 			}
-			if e.writes_a_128(expr.spelling) {
+			if e.writes_a_128(node.spelling) {
 				// The object holds a member of that width, and the read is the
 				// value question, which is the one this back end has no answer
 				// for: the member's own address is the part that works.
-				e.diagnostics << problem(expr.line, expr.col, 'unsupported: the member ${expr.name}.${expr.member} is declared ${expr.spelling}, and this back end stores an object of that width but has no value of it to read')
+				e.diagnostics << problem(node.line, node.col, 'unsupported: the member ${node.name}.${node.member} is declared ${node.spelling}, and this back end stores an object of that width but has no value of it to read')
 				return error('unsupported member type')
 			}
-			if format := e.decimal_format_of(expr.spelling) {
+			if format := e.decimal_format_of(node.spelling) {
 				// A member of a decimal type is a decimal value at an offset
 				// into the object that holds it: the member's address is
 				// taken and its bytes are read into the floating accumulator
 				// through it.
-				e.field_address(expr, depth, expr.line, expr.col)!
-				register := e.accumulator(expr.line, expr.col)!
-				return e.load_decimal_at(register, 0, format.bytes(), expr.line, expr.col)
+				e.field_address(*node, depth, node.line, node.col)!
+				register := e.accumulator(node.line, node.col)!
+				return e.load_decimal_at(register, 0, format.bytes(), node.line, node.col)
 			}
-			if e.object_of_no_bytes(expr.typ) {
+			if e.object_of_no_bytes(node.typ) {
 				// A member of no bytes has no value to read: what a member of
 				// an aggregate type is worth is its bytes, and an empty
 				// structure has none, so the member's address is the whole of
@@ -7250,72 +7316,74 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 				// `Error__msg(((None__*)i->_object)->Error)`.
 				return
 			}
-			width := e.type_width(expr.spelling) or {
-				e.diagnostics << problem(expr.line, expr.col, 'unsupported: the member ${expr.name}.${expr.member} is declared ${expr.spelling}, and this back end stores ints, chars, floats, doubles and pointers only')
+			width := e.type_width(node.spelling) or {
+				e.diagnostics << problem(node.line, node.col, 'unsupported: the member ${node.name}.${node.member} is declared ${node.spelling}, and this back end stores ints, chars, floats, doubles and pointers only')
 				return error('unsupported member type')
 			}
-			e.field_address(expr, depth, expr.line, expr.col)!
-			register := e.accumulator(expr.line, expr.col)!
-			if e.writes_a_float(expr.spelling) {
-				float_register := e.float_accumulator(expr.line, expr.col)!
+			e.field_address(*node, depth, node.line, node.col)!
+			register := e.accumulator(node.line, node.col)!
+			if e.writes_a_float(node.spelling) {
+				float_register := e.float_accumulator(node.line, node.col)!
 				e.append(e.target.load_float_indirect(register, float_register)!)
 				return
 			}
-			if e.writes_a_double(expr.spelling) {
-				double_register := e.float_accumulator(expr.line, expr.col)!
+			if e.writes_a_double(node.spelling) {
+				double_register := e.float_accumulator(node.line, node.col)!
 				e.append(e.target.load_double_indirect(register, double_register)!)
 				return
 			}
-			if expr.bitfield {
-				return e.load_bitfield(register, expr, width)
+			if node.bitfield {
+				return e.load_bitfield(register, *node, width)
 			}
-			e.load_indirect_value(register, register, e.written_is_unsigned(expr.spelling), width)!
+			e.load_indirect_value(register, register, e.written_is_unsigned(node.spelling), width)!
 		}
-		ast.StrLit {
+		.str_lit {
+			node := e.unit.arena.str_lit(expr)
 			// A string is the address of its bytes: the image holds the bytes
 			// and the instruction says where they landed. A wide literal's
 			// bytes are picked out of their own table, because the same run of
 			// bytes can be a narrow literal's as well.
-			if expr.unit == 4 {
-				e.intern_wide(expr.value)
-				register := e.accumulator(expr.line, expr.col)!
-				e.reference(e.target.address_of(register, 0), .take_wide_address, expr.value,
+			if node.unit == 4 {
+				e.intern_wide(node.value)
+				register := e.accumulator(node.line, node.col)!
+				e.reference(e.target.address_of(register, 0), .take_wide_address, node.value,
 					e.target.name_of(register))
 			} else {
-				e.intern(expr.value)
-				register := e.accumulator(expr.line, expr.col)!
-				e.reference(e.target.address_of(register, 0), .take_address, expr.value,
+				e.intern(node.value)
+				register := e.accumulator(node.line, node.col)!
+				e.reference(e.target.address_of(register, 0), .take_address, node.value,
 					e.target.name_of(register))
 			}
 		}
-		ast.Unary {
-			e.emit_unary(expr, depth)!
+		.unary {
+			e.emit_unary(*e.unit.arena.unary(expr), depth)!
 		}
-		ast.Cast {
+		.cast {
 			e.emit_cast(expr, depth)!
 		}
-		ast.Binary {
+		.binary {
 			e.emit_binary(expr, depth)!
 		}
-		ast.IncDec {
-			e.emit_inc_dec(expr, depth)!
+		.inc_dec {
+			e.emit_inc_dec(*e.unit.arena.inc_dec(expr), depth)!
 		}
-		ast.Conditional {
+		.conditional {
 			e.emit_conditional(expr, depth)!
 		}
-		ast.Assign {
-			e.emit_assign_expression(expr, depth)!
+		.assign {
+			e.emit_assign_expression(*e.unit.arena.assign(expr), depth)!
 		}
-		ast.Comma {
-			e.emit_comma(expr, depth)!
+		.comma {
+			e.emit_comma(*e.unit.arena.comma(expr), depth)!
 		}
-		ast.StmtExpr {
+		.stmt_expr {
 			// `({ ... })` used as a value: the body runs for what it does and
 			// the last expression statement's value is what the construct is
 			// worth, which is left in the register a value lives in.
-			e.emit_statement_expression(expr, true)!
+			e.emit_statement_expression(*e.unit.arena.stmt_expr(expr), true)!
 		}
-		ast.Call {
+		.call {
+			node := e.unit.arena.call(expr)
 			// A call's value arrives in the register the machine returns
 			// results in, which is the register a value is expected to be in,
 			// so a call in an expression is emitted where a name would be. Its
@@ -7328,19 +7396,19 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 			// read from a register the call happened to leave something in.
 			// A call through an expression says the same thing through the
 			// type the parser resolved onto the call.
-			if typ := indirect_call_returns(expr) {
+			if typ := indirect_call_returns(*node) {
 				if typ.is_void() {
-					e.diagnostics << problem(expr.line, expr.col, 'unsupported: the call is used as a value, and what it calls returns void')
+					e.diagnostics << problem(node.line, node.col, 'unsupported: the call is used as a value, and what it calls returns void')
 					return error('void value')
 				}
-			} else if e.returns[expr.name] == 'void' {
-				e.diagnostics << problem(expr.line, expr.col, 'unsupported: the call to ${expr.name} is used as a value, and ${expr.name} returns void')
+			} else if e.returns[node.name] == 'void' {
+				e.diagnostics << problem(node.line, node.col, 'unsupported: the call to ${node.name} is used as a value, and ${node.name} returns void')
 				return error('void value')
 			}
-			e.emit_call(expr, depth + 1)!
+			e.emit_call(*node, depth + 1)!
 		}
-		ast.Index {
-			return e.emit_index(expr, depth)
+		.index {
+			return e.emit_index(*e.unit.arena.index(expr), depth)
 		}
 	}
 }
@@ -7364,7 +7432,7 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 // refuses by name everywhere else.
 fn (mut e Emitter) check_subscript_index(index ast.Expr) !void {
 	if e.long_double_of(index) {
-		e.diagnostics << problem(expr_line(index), expr_col(index), 'unsupported: a long double is used as a subscript, and converting an index from a value of that type is not a conversion this back end makes')
+		e.diagnostics << problem(e.expr_line(index), e.expr_col(index), 'unsupported: a long double is used as a subscript, and converting an index from a value of that type is not a conversion this back end makes')
 		return error('long double subscript')
 	}
 }
@@ -7382,12 +7450,12 @@ fn (mut e Emitter) check_subscript_index(index ast.Expr) !void {
 fn (mut e Emitter) emit_subscript_index(index ast.Expr, depth int) !void {
 	e.check_subscript_index(index)!
 	e.emit_expr_at(index, depth)!
-	e.extend_operand_to_word(index, expr_line(index), expr_col(index))!
+	e.extend_operand_to_word(index, e.expr_line(index), e.expr_col(index))!
 }
 
 fn (mut e Emitter) emit_index(expr ast.Index, depth int) !void {
-	if expr.base is ast.Ident {
-		name := (expr.base as ast.Ident).name
+	if expr.base.kind == .ident {
+		name := e.unit.arena.ident(expr.base).name
 		if slot := e.lookup(name) {
 			if slot.count > 0 {
 				return e.emit_named_index(expr, name, depth, true, slot)
@@ -7552,7 +7620,8 @@ fn (mut e Emitter) emit_general_index(expr ast.Index, depth int) !void {
 // element. It is the address half of the element read and of the element write,
 // which is why the two share it.
 fn (mut e Emitter) emit_element_address(expr ast.Index, depth int) !void {
-	if stride_expr := expr.vla_stride {
+	stride_expr := expr.vla_stride
+	if !stride_expr.is_none() {
 		return e.emit_dynamic_element_address(expr, stride_expr, depth)
 	}
 	e.emit_base_address(expr.base, depth + 1)!
@@ -7611,27 +7680,27 @@ fn (mut e Emitter) emit_dynamic_element_address(expr ast.Index, stride_expr ast.
 // the value read. Every other base is a pointer already, and its own value is the
 // address.
 fn (mut e Emitter) emit_base_address(base ast.Expr, depth int) !void {
-	if base is ast.Ident {
-		name := (base as ast.Ident).name
-		if slot := e.lookup(name) {
+	if base.kind == .ident {
+		node := e.unit.arena.ident(base)
+		if slot := e.lookup(node.name) {
 			if slot.vla {
 				// A variable-length array's storage is at the address its
 				// declaration stored, not at an offset from the frame: the
 				// frame held that address and nothing of the array.
-				register := e.accumulator(base.line, base.col)!
-				e.load_vla_base(slot, register, base.line, base.col)!
+				register := e.accumulator(node.line, node.col)!
+				e.load_vla_base(slot, register, node.line, node.col)!
 				return
 			}
 			if slot.count > 0 {
-				register := e.accumulator(base.line, base.col)!
-				frame := e.slot_base_register(slot, base.line, base.col)!
+				register := e.accumulator(node.line, node.col)!
+				frame := e.slot_base_register(slot, node.line, node.col)!
 				e.append(e.target.address_of_slot(frame, slot.offset, register))
 				return
 			}
-		} else if object := e.global_of(name) {
+		} else if object := e.global_of(node.name) {
 			if object.count > 0 {
-				register := e.accumulator(base.line, base.col)!
-				e.reference_object_address(register, name)
+				register := e.accumulator(node.line, node.col)!
+				e.reference_object_address(register, node.name)
 				return
 			}
 		}
@@ -7657,8 +7726,8 @@ fn (mut e Emitter) emit_base_address(base ast.Expr, depth int) !void {
 // shallow lands on a slot an enclosing call already parked an argument in.
 fn (mut e Emitter) emit_address(unary ast.Unary, depth int) !void {
 	register := e.accumulator(unary.line, unary.col)!
-	if unary.expr is ast.Ident {
-		name := unary.expr.name
+	if unary.expr.kind == .ident {
+		name := e.unit.arena.ident(unary.expr).name
 		if slot := e.lookup(name) {
 			if slot.vla {
 				// The object is at the address the declaration stored, so its
@@ -7681,44 +7750,47 @@ fn (mut e Emitter) emit_address(unary ast.Unary, depth int) !void {
 			return e.emit_function_address(name, unary.line, unary.col)
 		}
 	}
-	if unary.expr is ast.Field {
-		if unary.expr.bitfield {
+	if unary.expr.kind == .field {
+		member := e.unit.arena.field(unary.expr)
+		if member.bitfield {
 			// A bitfield is not an object with an address of its own: it is a
 			// run of bits inside a storage unit it shares, so `&s.a` has no
 			// byte to give. gcc refuses it too, and a refusal by name is what
 			// keeps this from handing back the unit's address as though it
 			// were the field's.
-			e.diagnostics << problem(unary.line, unary.col, 'unsupported: the address of the bitfield ${unary.expr.name}.${unary.expr.member} is taken, and a bitfield does not have an address of its own')
+			e.diagnostics << problem(unary.line, unary.col, 'unsupported: the address of the bitfield ${member.name}.${member.member} is taken, and a bitfield does not have an address of its own')
 			return error('address of a bitfield')
 		}
 		// The member's address is the object's address plus the byte the layout
 		// put the member at, which is the same computation a member read makes
 		// and stops short of the read.
-		e.field_address(unary.expr, depth, unary.line, unary.col)!
+		e.field_address(*member, depth, unary.line, unary.col)!
 		return
 	}
-	if unary.expr is ast.Index {
+	if unary.expr.kind == .index {
 		// The element's address, which is what the subscript computes before it
 		// reads or writes through it.
-		e.emit_element_address(unary.expr, depth)!
+		e.emit_element_address(*e.unit.arena.index(unary.expr), depth)!
 		return
 	}
-	if unary.expr is ast.Comma {
+	if unary.expr.kind == .comma {
 		// The address of a compound literal written where its statement does
 		// not describe a single evaluation: the left operand initializes the
 		// object, runs first for that, and the address is the right operand's.
-		e.emit_effect(unary.expr.left, depth + 1)!
+		comma := e.unit.arena.comma(unary.expr)
+		e.emit_effect(comma.left, depth + 1)!
 		return e.emit_address(ast.Unary{
 			op:   '&'
-			expr: unary.expr.right
+			expr: comma.right
 			typ:  unary.typ
 			line: unary.line
 			col:  unary.col
 		}, depth)
 	}
 	operand := unary.expr
-	if operand is ast.Unary {
-		if operand.op == '*' {
+	if operand.kind == .unary {
+		inner := e.unit.arena.unary(operand)
+		if inner.op == '*' {
 			// `&*p` is `p`: 6.5.3.2p3 has neither operator evaluated and the
 			// result as if both were omitted, so what is emitted is the pointer
 			// expression's own value and nothing is read from it. V's own
@@ -7726,27 +7798,27 @@ fn (mut e Emitter) emit_address(unary ast.Unary, depth int) !void {
 			// `map__set(&(*(map*)array_get(e->scopes, e->scopes.len - 1)), ...)`,
 			// where the address of the map in the current scope is what the call
 			// has already answered.
-			return e.emit_expr_at(operand.expr, depth + 1)
+			return e.emit_expr_at(inner.expr, depth + 1)
 		}
 	}
-	e.diagnostics << problem(unary.line, unary.col, 'unsupported: the address of ${describe_target(unary.expr)} is not implemented, and only a local or a top-level object has one this back end can take')
+	e.diagnostics << problem(unary.line, unary.col, 'unsupported: the address of ${e.describe_target(unary.expr)} is not implemented, and only a local or a top-level object has one this back end can take')
 	return error('no address')
 }
 
 // describe_target names what an address was taken of, so the diagnostic says
 // which expression it was looking at.
-fn describe_target(expr ast.Expr) string {
-	return match expr {
-		ast.Ident {
-			expr.name
+fn (e Emitter) describe_target(expr ast.Expr) string {
+	return match expr.kind {
+		.ident {
+			e.unit.arena.ident(expr).name
 		}
-		ast.Index {
-			'${describe_target(expr.base)}[...]'
+		.index {
+			'${e.describe_target(e.unit.arena.index(expr).base)}[...]'
 		}
-		ast.StrLit {
+		.str_lit {
 			'a string literal'
 		}
-		ast.Call {
+		.call {
 			'the value of a call'
 		}
 		else {
@@ -7756,7 +7828,7 @@ fn describe_target(expr ast.Expr) string {
 }
 
 fn (mut e Emitter) emit_unary(unary ast.Unary, depth int) !void {
-	if unary.op == '!' && unary.expr.typ.kind.is_decimal() && e.names_an_object(unary.expr) {
+	if unary.op == '!' && e.expr_type(unary.expr).kind.is_decimal() && e.names_an_object(unary.expr) {
 		// Whether a decimal object is zero is answered where the object lies,
 		// and the answer is an int; the operand's value is never read into a
 		// register. An operand that is not an object - a constant - is left to
@@ -7816,7 +7888,7 @@ fn (mut e Emitter) emit_unary(unary ast.Unary, depth int) !void {
 		// the operators it has a meaning for are computed on the pair.
 		return e.emit_wide_unary(unary, depth)
 	}
-	if unary.expr.typ.kind.is_decimal() {
+	if e.expr_type(unary.expr).kind.is_decimal() {
 		// The operators a decimal has here are the sign change and the unary
 		// plus. Negating a decimal is flipping its sign bit, which is the top
 		// bit of the value at its own width: one bit in the floating
@@ -7826,13 +7898,13 @@ fn (mut e Emitter) emit_unary(unary ast.Unary, depth int) !void {
 		// questions this back end does not answer for a decimal, because both
 		// need its value compared and no comparison is written.
 		if unary.op != '+' && unary.op != '-' {
-			e.diagnostics << problem(unary.line, unary.col, 'unsupported: ${unary.op} takes a ${unary.expr.typ.describe()} operand, and this back end has no such operation for a decimal')
+			e.diagnostics << problem(unary.line, unary.col, 'unsupported: ${unary.op} takes a ${e.expr_type(unary.expr).describe()} operand, and this back end has no such operation for a decimal')
 			return error('decimal unary operand')
 		}
 		e.emit_expr_at(unary.expr, depth + 1)!
 		if unary.op == '-' {
 			register := e.scratch(unary.line, unary.col)!
-			match decimal_width_of(unary.expr.typ) {
+			match decimal_width_of(e.expr_type(unary.expr)) {
 				4 {
 					e.append(e.target.negate_single(e.float_accumulator(unary.line, unary.col)!, register)!)
 				}
@@ -7860,7 +7932,7 @@ fn (mut e Emitter) emit_unary(unary ast.Unary, depth int) !void {
 		}
 	} else if width := e.width_of(unary.expr) {
 		if width != 4 && unary.op != '+' && unary.op != '!' {
-			if !e.eight_byte_integer(unary.expr.typ) {
+			if !e.eight_byte_integer(e.expr_type(unary.expr)) {
 				// Eight bytes that are not an integer is the width of a pointer
 				// and the only other width this back end has, so the diagnostic
 				// can say what it is. The three operators that reach here are
@@ -7879,7 +7951,7 @@ fn (mut e Emitter) emit_unary(unary ast.Unary, depth int) !void {
 	// A pointer is eight bytes and is asked whether it is the null pointer by
 	// the same word-wide not a 64-bit integer is: a four-byte test would call a
 	// pointer null whose only set bit is above the four bytes.
-	wide := e.eight_byte_integer(unary.expr.typ) || e.is_a_pointer(unary.expr)
+	wide := e.eight_byte_integer(e.expr_type(unary.expr)) || e.is_a_pointer(unary.expr)
 	match unary.op {
 		'+' {}
 		'-' {
@@ -7949,8 +8021,8 @@ fn (mut e Emitter) emit_unary(unary ast.Unary, depth int) !void {
 // was written by something that got past it; it is refused here by name rather
 // than stored through an address that was never computed.
 fn (mut e Emitter) emit_assign_expression(assign ast.Assign, depth int) !void {
-	stmt := assignment_statement(assign) or {
-		e.diagnostics << problem(assign.line, assign.col, 'unsupported: the target of this assignment expression is ${describe_target(assign.target)}, and this back end writes a name, an element, a member or a dereference')
+	stmt := e.assignment_statement(assign) or {
+		e.diagnostics << problem(assign.line, assign.col, 'unsupported: the target of this assignment expression is ${e.describe_target(assign.target)}, and this back end writes a name, an element, a member or a dereference')
 		return error('assignment expression target')
 	}
 	e.emit_assign(stmt, depth)!
@@ -7962,26 +8034,26 @@ fn (mut e Emitter) emit_assign_expression(assign ast.Assign, depth int) !void {
 // what it is written into, and where it was written - and the statement reader
 // already addresses every place an assignment can write, so the store is not
 // written a second time here.
-fn assignment_statement(assign ast.Assign) ?ast.Stmt {
+fn (mut e Emitter) assignment_statement(assign ast.Assign) ?ast.Stmt {
 	mut target := ''
-	mut subscript := ?ast.Expr(none)
+	mut subscript := ast.Expr{}
 	mut member := ?&ast.Field(none)
-	mut deref := ?ast.Expr(none)
-	match assign.target {
-		ast.Ident {
-			target = assign.target.name
+	mut deref := ast.Expr{}
+	match assign.target.kind {
+		.ident {
+			target = e.unit.arena.ident(assign.target).name
 		}
-		ast.Index {
-			subscript = ast.Expr(assign.target)
+		.index {
+			subscript = assign.target
 		}
-		ast.Field {
-			member = assign.target.boxed()
+		.field {
+			member = e.unit.arena.box_field(*e.unit.arena.field(assign.target))
 		}
-		ast.Unary {
-			if assign.target.op != '*' {
+		.unary {
+			if e.unit.arena.unary(assign.target).op != '*' {
 				return none
 			}
-			deref = ast.Expr(assign.target)
+			deref = assign.target
 		}
 		else {
 			return none
@@ -7992,11 +8064,11 @@ fn assignment_statement(assign ast.Assign) ?ast.Stmt {
 	// neither: building one for every assignment would put back the bytes the
 	// extra part exists to keep out of the node.
 	mut extra := ?&ast.StmtExtra(none)
-	if subscript != none || deref != none {
-		extra = &ast.StmtExtra{
+	if !subscript.is_none() || !deref.is_none() {
+		extra = e.unit.arena.box_extra(ast.StmtExtra{
 			subscript: subscript
 			deref:     deref
-		}
+		})
 	}
 	return ast.Stmt{
 		kind:   .assign
@@ -8052,10 +8124,11 @@ fn (mut e Emitter) emit_statement_expression(expr ast.StmtExpr, as_value bool) !
 	// construct's value: `({ int a = 4; a; })` reads the `a` it declared.
 	e.push_scope()
 	_ := e.emit_statements(expr.body)!
-	if value := expr.value {
+	value := expr.value
+	if !value.is_none() {
 		if as_value {
 			e.emit_expr_at(value, 0)!
-		} else if value.typ.kind in [.struct_, .union_, .array] {
+		} else if e.expr_type(value).kind in [.struct_, .union_, .array] {
 			// The construct is a statement, so what its last expression is worth is
 			// not wanted. A value of an aggregate type is not one a register holds,
 			// so there is no register to leave unread, and `emit_discard` evaluates
@@ -8082,10 +8155,11 @@ fn (mut e Emitter) emit_statement_expression(expr ast.StmtExpr, as_value bool) !
 // case that has no such register. It is the object counterpart of
 // emit_statement_expression, which can only hand a value back.
 fn (mut e Emitter) emit_statement_expression_into(destination Slot, expr ast.StmtExpr, depth int) !void {
-	value := expr.value or {
+	if expr.value.is_none() {
 		e.diagnostics << problem(expr.line, expr.col, 'unsupported: a statement expression used as an object has no value, because its last statement is not an expression statement')
 		return error('statement expression without a value')
 	}
+	value := expr.value
 	saved := e.slot_base
 	e.slot_base = e.values.len
 	e.push_scope()
@@ -8150,8 +8224,8 @@ fn (mut e Emitter) emit_inc_dec(expr ast.IncDec, depth int) !void {
 	}
 	step := e.inc_dec_step(expr)!
 	operand := expr.operand
-	if operand is ast.Ident {
-		return e.emit_inc_dec_name(expr, operand, step, depth)
+	if operand.kind == .ident {
+		return e.emit_inc_dec_name(expr, *e.unit.arena.ident(operand), step, depth)
 	}
 	return e.emit_inc_dec_object(expr, step, depth)
 }
@@ -8217,9 +8291,10 @@ fn (mut e Emitter) emit_inc_dec_name(expr ast.IncDec, name ast.Ident, step i32, 
 // the object and written back through the same address.
 fn (mut e Emitter) emit_inc_dec_object(expr ast.IncDec, step i32, depth int) !void {
 	operand := expr.operand
-	if operand is ast.Field {
-		if operand.bitfield {
-			e.diagnostics << problem(expr.line, expr.col, 'unsupported: ${expr.op} on the bitfield ${operand.name}.${operand.member}, and this back end does not step a bitfield in place')
+	if operand.kind == .field {
+		member := e.unit.arena.field(operand)
+		if member.bitfield {
+			e.diagnostics << problem(expr.line, expr.col, 'unsupported: ${expr.op} on the bitfield ${member.name}.${member.member}, and this back end does not step a bitfield in place')
 			return error('bitfield increment')
 		}
 	}
@@ -8307,40 +8382,43 @@ fn (mut e Emitter) emit_inc_dec_floating(expr ast.IncDec, depth int) !void {
 // member from the object that holds it, or from the pointer `->` reads; and what
 // a pointer points at is the pointer's own value.
 fn (mut e Emitter) inc_dec_address(operand ast.Expr, depth int) !void {
-	if operand is ast.Ident {
-		if slot := e.lookup(operand.name) {
-			register := e.accumulator(operand.line, operand.col)!
-			frame := e.slot_base_register(slot, operand.line, operand.col)!
+	if operand.kind == .ident {
+		node := e.unit.arena.ident(operand)
+		if slot := e.lookup(node.name) {
+			register := e.accumulator(node.line, node.col)!
+			frame := e.slot_base_register(slot, node.line, node.col)!
 			e.append(e.target.address_of_slot(frame, slot.offset, register))
 			return
 		}
-		if object := e.global_of(operand.name) {
+		if object := e.global_of(node.name) {
 			if object.count > 0 || object.object || object.width == wide_bytes {
-				e.diagnostics << problem(operand.line, operand.col, 'unsupported: ${operand.name} is not a scalar object, and this compiler steps a scalar object only')
+				e.diagnostics << problem(node.line, node.col, 'unsupported: ${node.name} is not a scalar object, and this compiler steps a scalar object only')
 				return error('not a scalar object')
 			}
-			register := e.accumulator(operand.line, operand.col)!
-			e.reference_object_address(register, operand.name)
+			register := e.accumulator(node.line, node.col)!
+			e.reference_object_address(register, node.name)
 			return
 		}
-		e.diagnostics << problem(operand.line, operand.col, 'unsupported: ${operand.name} is stepped, and no declaration of that name is in scope')
+		e.diagnostics << problem(node.line, node.col, 'unsupported: ${node.name} is stepped, and no declaration of that name is in scope')
 		return error('unknown inc-dec target')
 	}
-	if operand is ast.Index {
-		e.emit_element_address(operand, depth)!
+	if operand.kind == .index {
+		e.emit_element_address(*e.unit.arena.index(operand), depth)!
 		return
 	}
-	if operand is ast.Field {
-		e.field_address(operand, depth, operand.line, operand.col)!
+	if operand.kind == .field {
+		member := e.unit.arena.field(operand)
+		e.field_address(*member, depth, member.line, member.col)!
 		return
 	}
-	if operand is ast.Unary {
-		if operand.op == '*' {
-			e.emit_expr_at(operand.expr, depth)!
+	if operand.kind == .unary {
+		node := e.unit.arena.unary(operand)
+		if node.op == '*' {
+			e.emit_expr_at(node.expr, depth)!
 			return
 		}
 	}
-	e.diagnostics << problem(expr_line(operand), expr_col(operand), 'unsupported: this object cannot be stepped, and this compiler steps a name, an element, a member or what a pointer points at only')
+	e.diagnostics << problem(e.expr_line(operand), e.expr_col(operand), 'unsupported: this object cannot be stepped, and this compiler steps a name, an element, a member or what a pointer points at only')
 	return error('not a step target')
 }
 
@@ -8375,12 +8453,12 @@ fn (mut e Emitter) inc_dec_address(operand ast.Expr, depth int) !void {
 // are the same read, so both of them come through here rather than each keeping its
 // own copy of the sequence.
 fn (mut e Emitter) low_word_of_object(expr ast.Expr, width int, line int, col int, depth int) !void {
-	match expr {
-		ast.Index {
+	match expr.kind {
+		.index {
 			// An element of an array of 128-bit objects, or of any other
 			// element whose low word a conversion asked for: the address of the
 			// element, and the word read through it at the width named.
-			e.emit_element_address(expr, depth + 1)!
+			e.emit_element_address(*e.unit.arena.index(expr), depth + 1)!
 			register := e.accumulator(line, col)!
 			e.append(e.target.load_indirect(register, register, width)!)
 			if width == 1 {
@@ -8407,7 +8485,8 @@ fn (mut e Emitter) low_word_of_object(expr ast.Expr, width int, line int, col in
 	}
 }
 
-fn (mut e Emitter) emit_cast(cast ast.Cast, depth int) !void {
+fn (mut e Emitter) emit_cast(expr ast.Expr, depth int) !void {
+	cast := e.unit.arena.cast(expr)
 	// A cast to an enumerated type is a cast to the integer type its
 	// enumerators require: the value a program gets is that type's, and the
 	// width and signedness come from it. Measured, `(unsigned int)(enum c)0`
@@ -8420,7 +8499,7 @@ fn (mut e Emitter) emit_cast(cast ast.Cast, depth int) !void {
 	// here where a cast is written. Both values are an address of the machine's
 	// word, so the conversion is the operand itself and writes no instruction,
 	// and the operand is emitted as it stands.
-	if message := types.function_void_pointer_problem(cast.typ, cast.expr.typ) {
+	if message := types.function_void_pointer_problem(cast.typ, e.expr_type(cast.expr)) {
 		e.diagnostics << pedantic(cast.line, cast.col, message)
 		return e.emit_expr_at(cast.expr, depth + 1)
 	}
@@ -8432,16 +8511,16 @@ fn (mut e Emitter) emit_cast(cast ast.Cast, depth int) !void {
 		// a decimal object's value is the bytes it holds and not a number the
 		// reader folded. A step the registry leaves uncovered, and a conversion
 		// whose result is a decimal object, are refused by name here.
-		match e.decimal_step(cast) {
+		match e.decimal_step(expr) {
 			.value {
 				return e.emit_decimal_conversion(cast, target, depth)
 			}
 			.uncovered {
-				e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${cast.expr.typ.describe()} to ${cast.spelling} is not one this back end makes')
+				e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${e.expr_type(cast.expr).describe()} to ${cast.spelling} is not one this back end makes')
 				return error('decimal conversion')
 			}
 			.object {
-				e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${cast.expr.typ.describe()} to ${cast.spelling} is wanted as a value here, and this back end writes the conversion into an object')
+				e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${e.expr_type(cast.expr).describe()} to ${cast.spelling} is wanted as a value here, and this back end writes the conversion into an object')
 				return error('decimal conversion value')
 			}
 		}
@@ -8468,22 +8547,22 @@ fn (mut e Emitter) emit_cast(cast ast.Cast, depth int) !void {
 		// because those two words are the value. Measured on gcc 16.2.1:
 		// `(__int128)(char)200` is -56 and `(unsigned __int128)(int)-1` is the
 		// 128-bit value of all ones.
-		if cast.expr.typ.kind == .double {
-			e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${cast.expr.typ.describe()} to ${cast.spelling} is not one this back end makes, and no instruction here converts a double to a 128-bit value')
+		if e.expr_type(cast.expr).kind == .double {
+			e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${e.expr_type(cast.expr).describe()} to ${cast.spelling} is not one this back end makes, and no instruction here converts a double to a 128-bit value')
 			return error('double to 128 bits')
 		}
 		if e.wide_value(cast.expr) {
 			return e.emit_value(cast.expr, depth)
 		}
 		e.emit_value(cast.expr, depth + 1)!
-		width := e.storage_width(cast.expr.typ) or {
-			e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${cast.expr.typ.describe()} to ${cast.spelling} is not one this back end makes, and the narrower type has no width here to widen from')
+		width := e.storage_width(e.expr_type(cast.expr)) or {
+			e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${e.expr_type(cast.expr).describe()} to ${cast.spelling} is not one this back end makes, and the narrower type has no width here to widen from')
 			return error('no width to widen from')
 		}
 		// The slot holds the pair the widening writes, which is two words whatever
 		// the narrower type's width was: widen_into_pair stores both of them.
 		slot := e.reserve(wide_bytes)
-		e.widen_into_pair(slot, cast.expr.typ.is_unsigned_type(), width, cast.line, cast.col)!
+		e.widen_into_pair(slot, e.expr_type(cast.expr).is_unsigned_type(), width, cast.line, cast.col)!
 		return e.load_pair(slot, cast.line, cast.col)
 	}
 	if target.kind !in [.int_, .unsigned_int, .bool_, .char_, .signed_char, .unsigned_char, .short,
@@ -8560,7 +8639,7 @@ fn (mut e Emitter) emit_cast(cast ast.Cast, depth int) !void {
 	// The width of the value in the register now, which decides whether a
 	// conversion writes anything: a value already as wide as the target is the
 	// one the target asks for, and a char is the int its load widened it to.
-	source := e.converted_width(cast.expr.typ) or { 0 }
+	source := e.converted_width(e.expr_type(cast.expr)) or { 0 }
 	if e.eight_byte_integer(target) {
 		// A conversion to a 64-bit integer widens a narrower value to the whole
 		// register. Which extension applies is the signedness of the *source*
@@ -8569,7 +8648,7 @@ fn (mut e Emitter) emit_cast(cast ast.Cast, depth int) !void {
 		// widens an int to a long with cltq and an unsigned int with a 32-bit
 		// move.
 		if source == 4 {
-			if cast.expr.typ.is_unsigned_type() {
+			if e.expr_type(cast.expr).is_unsigned_type() {
 				e.append(e.target.move_register32(register, register)!)
 			} else {
 				e.append(e.target.sign_extend_word(register, register)!)
@@ -8592,7 +8671,7 @@ fn (mut e Emitter) emit_cast(cast ast.Cast, depth int) !void {
 				// int keeps its sign, and an unsigned int takes zeros. Measured
 				// on gcc 16.2.1: `(char *)0xffffffffu` is the address
 				// 0xffffffff, which sign-extending would have made all ones.
-				if cast.expr.typ.is_unsigned_type() {
+				if e.expr_type(cast.expr).is_unsigned_type() {
 					e.append(e.target.move_register32(register, register)!)
 				} else {
 					e.append(e.target.sign_extend_word(register, register)!)
@@ -8601,7 +8680,7 @@ fn (mut e Emitter) emit_cast(cast ast.Cast, depth int) !void {
 				// A source this back end cannot size is not a value an address
 				// is made of, and answering with a plausible one would be a
 				// wrong address rather than a refusal.
-				e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${cast.expr.typ.describe()} to ${cast.spelling} is not one this back end makes, and the value has no width here to widen into an address')
+				e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${e.expr_type(cast.expr).describe()} to ${cast.spelling} is not one this back end makes, and the value has no width here to widen into an address')
 				return error('no width for the address')
 			}
 		}
@@ -8629,7 +8708,7 @@ fn (mut e Emitter) emit_cast(cast ast.Cast, depth int) !void {
 		// asked at the width the value has in the register, so a long or a
 		// pointer is tested as a whole word and the top half of 4294967296 is
 		// not read as a zero word.
-		if (e.storage_width(cast.expr.typ) or { 4 }) == 8 {
+		if (e.storage_width(e.expr_type(cast.expr)) or { 4 }) == 8 {
 			e.append(e.target.test_word(register)!)
 		} else {
 			e.append(e.target.test(register)!)
@@ -8638,7 +8717,7 @@ fn (mut e Emitter) emit_cast(cast ast.Cast, depth int) !void {
 		e.append(e.target.widen_byte(register)!)
 		return
 	}
-	if e.eight_byte_integer(cast.expr.typ) && target.kind in [.int_, .unsigned_int] {
+	if e.eight_byte_integer(e.expr_type(cast.expr)) && target.kind in [.int_, .unsigned_int] {
 		// A narrowing from eight bytes to four: the low half is the value taken
 		// modulo 2^32, and what sits above it is that half's sign when the target
 		// is signed and zero when it is not, because every later read of the
@@ -8734,9 +8813,9 @@ fn (e Emitter) eight_byte_integer(t types.Type) bool {
 // because a comparison of two 64-bit integers is a value of int width.
 fn (e Emitter) step_is_wide(step ast.Binary) bool {
 	if step.op in ['<<', '>>'] {
-		return e.eight_byte_integer(step.left.typ)
+		return e.eight_byte_integer(e.expr_type(step.left))
 	}
-	return e.eight_byte_integer(step.left.typ) || e.eight_byte_integer(step.right.typ)
+	return e.eight_byte_integer(e.expr_type(step.left)) || e.eight_byte_integer(e.expr_type(step.right))
 }
 
 // comparison_is_unsigned says whether the order a comparison asks for is the
@@ -8747,7 +8826,7 @@ fn (e Emitter) step_is_wide(step ast.Binary) bool {
 // answered signed, which is the pairing a comparison of two addresses has. Measured
 // on gcc 16.2.1: `-1 < 0u` is 0 and `-1 < 0` is 1.
 fn (e Emitter) comparison_is_unsigned(step ast.Binary) bool {
-	common := types.usual_arithmetic_conversions(step.left.typ, step.right.typ, e.representation) or {
+	common := types.usual_arithmetic_conversions(e.expr_type(step.left), e.expr_type(step.right), e.representation) or {
 		return false
 	}
 	return common.is_unsigned_type()
@@ -8951,8 +9030,8 @@ fn (mut e Emitter) widen_into_pair(slot Slot, unsigned bool, width int, line int
 // there, so it moves aside first: a load of the low word into the accumulator
 // would otherwise be a load through the low word.
 fn (mut e Emitter) load_wide_object(expr ast.Expr, depth int) !void {
-	line := expr_line(expr)
-	col := expr_col(expr)
+	line := e.expr_line(expr)
+	col := e.expr_col(expr)
 	e.address_of_object(expr, depth)!
 	pointer := e.scratch(line, col)!
 	low := e.accumulator(line, col)!
@@ -8973,8 +9052,8 @@ fn (mut e Emitter) emit_value(expr ast.Expr, depth int) !void {
 	if !e.wide_value(expr) {
 		return e.emit_expr_at(expr, depth)
 	}
-	match expr {
-		ast.Ident, ast.Field, ast.Index {
+	match expr.kind {
+		.ident, .field, .index {
 			return e.load_wide_object(expr, depth)
 		}
 		else {
@@ -8990,7 +9069,7 @@ fn (mut e Emitter) emit_value(expr ast.Expr, depth int) !void {
 // type, so the narrow operand's own signedness does not make the comparison an
 // unsigned one.
 fn (e Emitter) wide_unsigned(expr ast.Expr) bool {
-	return expr.typ.kind == .unsigned_int128
+	return e.expr_type(expr).kind == .unsigned_int128
 }
 
 // word_operation is one word's part of a two-word operation. The low word takes
@@ -9038,7 +9117,7 @@ fn (mut e Emitter) emit_wide_step(step ast.Binary, depth int) !void {
 	if e.wide_value(step.left) {
 		e.store_pair(left, step.line, step.col)!
 	} else {
-		e.widen_into_pair(left, step.left.typ.is_unsigned_type(), e.narrow_width(step.left.typ), step.line, step.col)!
+		e.widen_into_pair(left, e.expr_type(step.left).is_unsigned_type(), e.narrow_width(e.expr_type(step.left)), step.line, step.col)!
 	}
 	if step.op in ['<<', '>>'] {
 		// The right operand of a shift is a count rather than a value of the pair's
@@ -9080,7 +9159,7 @@ fn (mut e Emitter) emit_wide_step(step ast.Binary, depth int) !void {
 	if e.wide_value(step.right) {
 		e.store_pair(right, step.line, step.col)!
 	} else {
-		e.widen_into_pair(right, step.right.typ.is_unsigned_type(), e.narrow_width(step.right.typ), step.line, step.col)!
+		e.widen_into_pair(right, e.expr_type(step.right).is_unsigned_type(), e.narrow_width(e.expr_type(step.right)), step.line, step.col)!
 	}
 	e.load_pair(left, step.line, step.col)!
 	return e.apply_wide_binary(step, left, right, depth)
@@ -9386,18 +9465,19 @@ fn (e Emitter) is_pointer_step(step ast.Binary) bool {
 // its elements, a pointer by the size of what it points at, and a string by the
 // byte a char is.
 fn (e Emitter) pointed_size(expr ast.Expr) ?int {
-	if expr.typ.is_array() {
-		element := expr.typ.element() or { return none }
+	typ := e.expr_type(expr)
+	if typ.is_array() {
+		element := typ.element() or { return none }
 		return e.representation.size_of(element)
 	}
-	if expr.typ.is_pointer() {
-		pointee := expr.typ.pointee() or { return none }
+	if typ.is_pointer() {
+		pointee := typ.pointee() or { return none }
 		return e.representation.size_of(pointee)
 	}
-	if expr is ast.StrLit {
+	if expr.kind == .str_lit {
 		// A string is scaled by the size of one of its characters: a byte for an
 		// ordinary string and four for a wide one, whose elements are wchar_t.
-		element := expr.typ.element() or { return none }
+		element := typ.element() or { return none }
 		return e.representation.size_of(element)
 	}
 	return none
@@ -9425,9 +9505,9 @@ fn (mut e Emitter) emit_pointer_step(step ast.Binary, depth int) !void {
 	}
 	stride := e.pointed_size(if left_is_address { step.left } else { step.right }) or {
 		spelling := if left_is_address {
-			step.left.typ.describe()
+			e.expr_type(step.left).describe()
 		} else {
-			step.right.typ.describe()
+			e.expr_type(step.right).describe()
 		}
 		e.diagnostics << problem(step.line, step.col, 'unsupported: ${step.op} scales the index by the size of one element of ${spelling}, and this back end has no size for it')
 		return error('no pointee size')
@@ -9496,7 +9576,7 @@ fn (mut e Emitter) emit_pointer_difference(step ast.Binary, depth int) !void {
 		return error('sum of two addresses')
 	}
 	stride := e.difference_stride(step) or {
-		e.diagnostics << problem(step.line, step.col, 'unsupported: the difference of two addresses counts elements of ${step.left.typ.describe()}, and this back end has no size for one')
+		e.diagnostics << problem(step.line, step.col, 'unsupported: the difference of two addresses counts elements of ${e.expr_type(step.left).describe()}, and this back end has no size for one')
 		return error('no element size for a difference')
 	}
 	base := e.value_slot(depth)
@@ -9521,8 +9601,8 @@ fn (mut e Emitter) emit_pointer_difference(step ast.Binary, depth int) !void {
 // steps by one. Measured on gcc 16.2.1 with `-std=gnu99`: `void *a = b, *c = b + 5;`
 // gives `c - a` as 5.
 fn (e Emitter) difference_stride(step ast.Binary) ?int {
-	if step.left.typ.is_pointer() {
-		pointee := step.left.typ.pointee() or { return none }
+	if e.expr_type(step.left).is_pointer() {
+		pointee := e.expr_type(step.left).pointee() or { return none }
 		if pointee.is_void() {
 			return 1
 		}
@@ -9530,7 +9610,8 @@ fn (e Emitter) difference_stride(step ast.Binary) ?int {
 	return e.pointed_size(step.left)
 }
 
-fn (mut e Emitter) emit_binary(binary ast.Binary, depth int) !void {
+fn (mut e Emitter) emit_binary(expr ast.Expr, depth int) !void {
+	binary := e.unit.arena.binary(expr)
 	if binary.typ.is_vector() {
 		// A vector value in an expression position other than the initializer
 		// of a vector declaration is not implemented here. The parser lowers
@@ -9541,7 +9622,7 @@ fn (mut e Emitter) emit_binary(binary ast.Binary, depth int) !void {
 		e.diagnostics << problem(binary.line, binary.col, 'unsupported: the vector value ${binary.typ.describe()} is used where this back end does not compute it, and a vector is implemented only as the initialized object of a declaration')
 		return error('vector value')
 	}
-	if binary.left.typ.kind.is_decimal() || binary.right.typ.kind.is_decimal() {
+	if e.expr_type(binary.left).kind.is_decimal() || e.expr_type(binary.right).kind.is_decimal() {
 		// decimal_step is the one place that answers which routines cover a
 		// decimal step. A covered step is written where it is written: an
 		// object routine by a store that has a destination to write into, a
@@ -9557,7 +9638,7 @@ fn (mut e Emitter) emit_binary(binary ast.Binary, depth int) !void {
 		// decimals of different widths are refused inside that emitter, by name,
 		// and a comparison whose other operand is not a decimal is a step no
 		// routine covers, refused just below.
-		match e.decimal_step(binary) {
+		match e.decimal_step(expr) {
 			.uncovered {
 				e.diagnostics << problem(binary.line, binary.col, 'unsupported: ${binary.op} has a decimal operand, and this back end has no arithmetic or comparison for a decimal')
 				return error('decimal operand')
@@ -9575,7 +9656,7 @@ fn (mut e Emitter) emit_binary(binary ast.Binary, depth int) !void {
 	// the complex paths into an object, and a step that reaches here is one whose
 	// value is wanted in the accumulator, which is a comparison and nothing else,
 	// because C99 defines no ordering on the complex types.
-	if binary.left.typ.kind.is_complex() || binary.right.typ.kind.is_complex() {
+	if e.expr_type(binary.left).kind.is_complex() || e.expr_type(binary.right).kind.is_complex() {
 		return e.emit_complex_comparison(binary, depth)
 	}
 	if e.extended_step(binary) {
@@ -9585,13 +9666,13 @@ fn (mut e Emitter) emit_binary(binary ast.Binary, depth int) !void {
 		return e.emit_short_circuit(binary, depth)
 	}
 	mut spine := []ast.Binary{}
-	mut node := ast.Expr(binary)
-	for node is ast.Binary {
-		step := node as ast.Binary
+	mut node := expr
+	for node.kind == .binary {
+		step := e.unit.arena.binary(node)
 		if step.op == '&&' || step.op == '||' {
 			break
 		}
-		spine << step
+		spine << *step
 		node = step.left
 	}
 	// The chain is counted before a term of it is classified. A chain is one node
@@ -9601,7 +9682,7 @@ fn (mut e Emitter) emit_binary(binary ast.Binary, depth int) !void {
 	// it starts from, rather than walked and classified term by term.
 	if spine.len > max_emit_chain {
 		start := spine[spine.len - 1].left
-		e.diagnostics << problem(expr_line(start), expr_col(start), 'unsupported: this expression is a chain of ${spine.len} operators, more than the ${max_emit_chain} this back end emits')
+		e.diagnostics << problem(e.expr_line(start), e.expr_col(start), 'unsupported: this expression is a chain of ${spine.len} operators, more than the ${max_emit_chain} this back end emits')
 		return error('operator chain too long')
 	}
 	for step in spine {
@@ -9691,11 +9772,11 @@ fn (mut e Emitter) extend_operand_to_word(operand ast.Expr, line int, col int) !
 	if e.floating_of(operand) || e.is_a_pointer(operand) {
 		return
 	}
-	if (e.converted_width(operand.typ) or { 8 }) == 8 {
+	if (e.converted_width(e.expr_type(operand)) or { 8 }) == 8 {
 		return
 	}
 	register := e.accumulator(line, col)!
-	if operand.typ.is_unsigned_type() {
+	if e.expr_type(operand).is_unsigned_type() {
 		e.append(e.target.move_register32(register, register)!)
 	} else {
 		e.append(e.target.sign_extend_word(register, register)!)
@@ -9857,7 +9938,7 @@ fn (e Emitter) comparison_of_an_address(binary ast.Binary) bool {
 	// Two 64-bit integers are eight bytes each and are not addresses: the width
 	// is what this function used to tell an address by, because a pointer was the
 	// only eight-byte value that reached it.
-	if e.eight_byte_integer(binary.left.typ) || e.eight_byte_integer(binary.right.typ) {
+	if e.eight_byte_integer(e.expr_type(binary.left)) || e.eight_byte_integer(e.expr_type(binary.right)) {
 		return false
 	}
 	left := e.width_of(binary.left) or { return false }
@@ -9903,7 +9984,7 @@ fn (mut e Emitter) check_int_operands(binary ast.Binary) !void {
 			continue
 		}
 		if width := e.width_of(operand) {
-			if width != 4 && !e.eight_byte_integer(operand.typ) {
+			if width != 4 && !e.eight_byte_integer(e.expr_type(operand)) {
 				// Eight bytes that is not a 64-bit integer is the width of a
 				// pointer and the only other width this back end has, so the
 				// diagnostic can say what it is.
@@ -10034,7 +10115,7 @@ fn (mut e Emitter) apply_binary(binary ast.Binary, wide bool) !void {
 			// cleared, and then the shift reads the sign the language means. A
 			// value eight bytes wide is the whole register already and needs
 			// neither instruction.
-			unsigned_shift := binary.left.typ.is_unsigned_type()
+			unsigned_shift := e.expr_type(binary.left).is_unsigned_type()
 			if !wide {
 				if unsigned_shift {
 					e.append(e.target.move_register32(result, result)!)
@@ -10148,7 +10229,8 @@ fn (mut e Emitter) emit_short_circuit(binary ast.Binary, depth int) !void {
 // statements that happen to share a result: the value one of them leaves has to
 // be read by whatever the conditional is an operand of, so both are converted
 // to the type the conditional is worth before they meet.
-fn (mut e Emitter) emit_conditional(conditional ast.Conditional, depth int) !void {
+fn (mut e Emitter) emit_conditional(expr ast.Expr, depth int) !void {
+	conditional := e.unit.arena.conditional(expr)
 	// 6.5.15 evaluates only the arm the condition selects, and a condition the
 	// reader folded to a literal selects the same arm on every run. Writing the
 	// other arm would hand the back end a construct that never executes, so a
@@ -10156,8 +10238,8 @@ fn (mut e Emitter) emit_conditional(conditional ast.Conditional, depth int) !voi
 	// should accept. `isinf` on a long double is that shape: the type dispatch
 	// its false test carries names a call for a type the machine does not have,
 	// and only the arm the constant does not select is left to be emitted.
-	if conditional.cond is ast.IntLit {
-		value := (conditional.cond as ast.IntLit).value
+	if conditional.cond.kind == .int_lit {
+		value := e.unit.arena.int_lit(conditional.cond).value
 		arm := if value != 0 { conditional.then_expr } else { conditional.else_expr }
 		if conditional.typ.kind.is_extended() {
 			temp := e.extended_temp(arm, depth + 1)!
@@ -10171,7 +10253,7 @@ fn (mut e Emitter) emit_conditional(conditional ast.Conditional, depth int) !voi
 		// of whichever arm ran the way it carries a register elsewhere.
 		return e.emit_extended_conditional(conditional, depth)
 	}
-	if e.wide_value(ast.Expr(conditional)) {
+	if e.wide_value(expr) {
 		// Two arms of a 128-bit type would each have to leave a pair of
 		// registers, and the branch machinery carries one value. Saying so
 		// keeps the arms from being emitted at a width nothing reads.
@@ -10246,14 +10328,14 @@ fn (mut e Emitter) emit_conditional_arm(arm ast.Expr, result types.Type, depth i
 	e.emit_expr_at(arm, depth + 1)!
 	if result.is_floating() {
 		if result.kind == .float {
-			e.convert_to_single(arm, expr_line(arm), expr_col(arm))!
+			e.convert_to_single(arm, e.expr_line(arm), e.expr_col(arm))!
 		} else {
-			e.convert_to_double(arm, expr_line(arm), expr_col(arm))!
+			e.convert_to_double(arm, e.expr_line(arm), e.expr_col(arm))!
 		}
 		return
 	}
 	if e.eight_byte_integer(result) {
-		e.extend_operand_to_word(arm, expr_line(arm), expr_col(arm))!
+		e.extend_operand_to_word(arm, e.expr_line(arm), e.expr_col(arm))!
 	}
 }
 
@@ -10307,32 +10389,33 @@ fn (e Emitter) width_of_at(expr ast.Expr, depth int) ?int {
 	if depth - e.argument_credit > max_emit_depth {
 		return none
 	}
-	return match expr {
-		ast.IntLit {
+	return match expr.kind {
+		.int_lit {
 			// An integer constant is as wide as the type the model gave it: 42
 			// is an int, and a constant past what an int holds is a long now
 			// that the 64-bit widths are carried. A constant the model gave no
 			// type is one the parser refused, and the four bytes are the answer
 			// that keeps a refusal from being emitted at a second width.
-			e.storage_width(expr.typ) or { 4 }
+			e.storage_width(e.expr_type(expr)) or { 4 }
 		}
-		ast.FloatLit {
+		.float_lit {
 			// A floating constant is the width its suffix named: four bytes for
 			// a float, and eight for a double, whose bytes live in the image and
 			// are read into a floating-point register.
-			if expr.typ.kind == .float { 4 } else { 8 }
+			if e.expr_type(expr).kind == .float { 4 } else { 8 }
 		}
-		ast.ComplexLit {
+		.complex_lit {
 			// An imaginary constant is a complex value, so the width a value
 			// of it is sized at is the size the model laid out for its type.
 			// A type the description does not carry has no answer here.
-			e.storage_width(expr.typ)
+			e.storage_width(e.expr_type(expr))
 		}
-		ast.StrLit {
+		.str_lit {
 			// The value of a string is the address of its bytes.
 			e.target.word_size
 		}
-		ast.Field {
+		.field {
+			node := e.unit.arena.field(expr)
 			// What is read at the member's offset is a value of the member's
 			// type, and the member's type is what the reader worked out from
 			// the layout. A char member is an int when it is read, which is the
@@ -10343,24 +10426,25 @@ fn (e Emitter) width_of_at(expr ast.Expr, depth int) ?int {
 			// a pointer to its first element (6.3.2.1p3), so the value it is
 			// worth is the machine's word. A flexible array member is the same,
 			// and it has no width of its own to answer with.
-			if expr.typ.is_array() {
+			if e.expr_type(expr).is_array() {
 				return e.target.word_size
 			}
-			width := e.type_width(expr.spelling) or { return none }
+			width := e.type_width(node.spelling) or { return none }
 			return if width < 4 { 4 } else { width }
 		}
-		ast.Ident {
-			slot := e.lookup(expr.name) or {
+		.ident {
+			node := e.unit.arena.ident(expr)
+			slot := e.lookup(node.name) or {
 				// A top-level object: an array's name is the address of its
 				// first element, a char is the int it is read as, and anything
 				// else is as wide as it was defined.
-				if object := e.global_shape(expr.name) {
-					if expr.typ.is_array() || object.count > 0 {
+				if object := e.global_shape(node.name) {
+					if e.expr_type(expr).is_array() || object.count > 0 {
 						return e.target.word_size
 					}
 					return if object.width < 4 { 4 } else { object.width }
 				}
-				if e.is_function_name(expr.name) {
+				if e.is_function_name(node.name) {
 					// 6.3.2.1: a function designator used as a value is the
 					// pointer to the function, which is the machine's word.
 					return e.target.word_size
@@ -10379,7 +10463,8 @@ fn (e Emitter) width_of_at(expr ast.Expr, depth int) ?int {
 				slot.width
 			}
 		}
-		ast.Call {
+		.call {
+			node := e.unit.arena.call(expr)
 			// A call's value has the width the language returns it with, which
 			// is the type its declaration wrote: a double is eight bytes in the
 			// floating-point file, a long is eight in the general one, and
@@ -10388,7 +10473,7 @@ fn (e Emitter) width_of_at(expr ast.Expr, depth int) ?int {
 			// the way it holds an int, which is the width every use of it reads.
 			// A call through an expression reads the same answer off the type the
 			// parser resolved onto the call.
-			if typ := indirect_call_returns(expr) {
+			if typ := indirect_call_returns(*node) {
 				width := e.type_width(typ.describe()) or { 4 }
 				return if width < 4 { 4 } else { width }
 			}
@@ -10399,43 +10484,44 @@ fn (e Emitter) width_of_at(expr ast.Expr, depth int) ?int {
 			// wide its value is, and a 64-bit fetch whose result was sized at
 			// four bytes would be refused where it is stored in a 64-bit
 			// object.
-			if expr.name !in e.returns {
-				if width := e.converted_width(expr.typ) {
+			if node.name !in e.returns {
+				if width := e.converted_width(e.expr_type(expr)) {
 					return width
 				}
 			}
-			width := e.type_width(e.returns[expr.name]) or { 4 }
+			width := e.type_width(e.returns[node.name]) or { 4 }
 			if width < 4 { 4 } else { width }
 		}
-		ast.Index {
+		.index {
 			// An element is the width of the element's type, with a char
 			// promoted to the int the load widens it to. An element that is
 			// itself an array is worth the address of its first element.
-			if expr.typ.is_array() {
+			if e.expr_type(expr).is_array() {
 				return e.target.word_size
 			}
-			width := e.storage_width(expr.typ) or { return none }
+			width := e.storage_width(e.expr_type(expr)) or { return none }
 			if width < 4 {
 				4
 			} else {
 				width
 			}
 		}
-		ast.Unary {
-			if expr.op == '&&' {
+		.unary {
+			node := e.unit.arena.unary(expr)
+			if node.op == '&&' {
 				// The address of a label is a `void *`, so the machine's word.
 				e.target.word_size
-			} else if expr.op == '!' {
+			} else if node.op == '!' {
 				4
-			} else if expr.op == '&' {
+			} else if node.op == '&' {
 				// The address of a value is a pointer, whatever the width of the
 				// value that lives there.
 				e.target.word_size
-			} else if expr.op == '*' {
+			} else if node.op == '*' {
 				// A read through an address has the width of the class the value
 				// at it belongs to: a char arrives as the int it is promoted to,
 				// an int as itself, and a pointer as the machine's word.
-				if expr.typ.is_function() {
+				if e.expr_type(expr).is_function() {
 					// A read through an operand that points at a function is the
 					// function designator again (6.5.3.2p4), and a designator used
 					// where a value is wanted is the pointer to the function
@@ -10443,24 +10529,24 @@ fn (e Emitter) width_of_at(expr ast.Expr, depth int) ?int {
 					// nothing at an address to read.
 					return e.target.word_size
 				}
-				e.converted_width(expr.typ)
-			} else if expr.op == '__real__' || expr.op == '__imag__' {
+				e.converted_width(e.expr_type(expr))
+			} else if node.op == '__real__' || node.op == '__imag__' {
 				// One component of a complex value, at the component's own
 				// width: a part is a real value of the component's type, so the
 				// node's own type answers the same way a converted value's does.
-				e.converted_width(expr.typ)
+				e.converted_width(e.expr_type(expr))
 			} else {
-				e.width_of_at(expr.expr, depth + 1) or { return none }
+				e.width_of_at(node.expr, depth + 1) or { return none }
 			}
 		}
-		ast.Cast {
+		.cast {
 			// The width of a converted value is the class of the type it was
 			// converted to and not the width of its storage: a char in a register
 			// is the int the language promotes it to, and a pointer is the
 			// machine's word whatever it points at.
-			e.converted_width(expr.typ)
+			e.converted_width(e.expr_type(expr))
 		}
-		ast.Binary {
+		.binary {
 			// Walk the left spine with a loop. Each step on it is asked the
 			// same four questions in the same order, and the walk stops at the
 			// first step whose answer the step alone decides, or at the operand
@@ -10468,11 +10554,11 @@ fn (e Emitter) width_of_at(expr ast.Expr, depth int) ?int {
 			// where that asked-for width equals the step's right operand's, so
 			// the answers are folded back up the spine once the leaf is known.
 			mut spine := []ast.Binary{}
-			mut node := ast.Expr(expr)
+			mut under := expr
 			mut decided := false
 			mut answer := 0
-			for node is ast.Binary {
-				step := node as ast.Binary
+			for under.kind == .binary {
+				step := e.unit.arena.binary(under)
 				if step.op in ['==', '!=', '<', '>', '<=', '>=', '&&', '||'] {
 					// A comparison is a value of int width however wide its
 					// operands are.
@@ -10487,7 +10573,7 @@ fn (e Emitter) width_of_at(expr ast.Expr, depth int) ?int {
 					decided = true
 					break
 				}
-				if e.floating_of(step) {
+				if e.floating_of(under) {
 					// An arithmetic step with a floating operand on either side
 					// is a step of that class, whichever class the other operand
 					// was: the two widths are not equal in the tree, and the
@@ -10510,13 +10596,13 @@ fn (e Emitter) width_of_at(expr ast.Expr, depth int) ?int {
 					decided = true
 					break
 				}
-				spine << step
-				node = step.left
+				spine << *step
+				under = step.left
 			}
 			mut width := if decided {
 				answer
 			} else {
-				e.width_of_at(node, depth + 1) or { return none }
+				e.width_of_at(under, depth + 1) or { return none }
 			}
 			for i := spine.len - 1; i >= 0; i-- {
 				right := e.width_of_at(spine[i].right, depth + 1) or { return none }
@@ -10526,28 +10612,32 @@ fn (e Emitter) width_of_at(expr ast.Expr, depth int) ?int {
 			}
 			width
 		}
-		ast.IncDec {
+		.inc_dec {
+			node := e.unit.arena.inc_dec(expr)
 			// The value is the one the operand holds, so it is sized the way
 			// the operand is: a char is the int the load widens it to, which
 			// is the promotion the operator's value gets in an expression.
-			e.width_of_at(expr.operand, depth + 1) or { return none }
+			e.width_of_at(node.operand, depth + 1) or { return none }
 		}
-		ast.Conditional {
+		.conditional {
 			// Both arms are converted to the type the conditional is worth
 			// before they meet, so the width is that type's and not the width
 			// of whichever arm the tree happens to hold first.
-			e.converted_width(expr.typ)
+			e.converted_width(e.expr_type(expr))
 		}
-		ast.Assign, ast.Comma {
+		.assign, .comma {
 			// An assignment is worth the object's value after the store and a
 			// comma the value of its right operand; both are the type the
 			// reader resolved for the node, which is what the width comes from.
-			e.converted_width(expr.typ)
+			e.converted_width(e.expr_type(expr))
 		}
-		ast.StmtExpr {
+		.stmt_expr {
 			// A statement expression is worth its last expression statement's
 			// value, whose type the reader resolved for the node.
-			e.converted_width(expr.typ)
+			e.converted_width(e.expr_type(expr))
+		}
+		else {
+			none
 		}
 	}
 }
@@ -10572,15 +10662,15 @@ fn (e Emitter) constant_at(expr ast.Expr, depth int) ?i64 {
 	}
 	mut spine := []ast.Binary{}
 	mut node := expr
-	for node is ast.Binary {
-		step := node as ast.Binary
+	for node.kind == .binary {
+		step := e.unit.arena.binary(node)
 		if step.op == '&&' || step.op == '||' {
 			// The short-circuit operators are a branch, not a value: what they
 			// come to depends on which side was evaluated, so they are not
 			// constants even when both sides are.
 			return none
 		}
-		spine << step
+		spine << *step
 		node = step.left
 	}
 	mut value := e.constant_leaf(node, depth + 1) or { return none }
@@ -10593,13 +10683,14 @@ fn (e Emitter) constant_at(expr ast.Expr, depth int) ?i64 {
 }
 
 fn (e Emitter) constant_leaf(expr ast.Expr, depth int) ?i64 {
-	return match expr {
-		ast.IntLit {
-			expr.value
+	return match expr.kind {
+		.int_lit {
+			e.unit.arena.int_lit(expr).value
 		}
-		ast.Unary {
-			operand := e.constant_at(expr.expr, depth + 1) or { return none }
-			match expr.op {
+		.unary {
+			node := e.unit.arena.unary(expr)
+			operand := e.constant_at(node.expr, depth + 1) or { return none }
+			match node.op {
 				'-' { wrap_sub(i64(0), operand) }
 				'+' { operand }
 				'!' {
@@ -10609,7 +10700,7 @@ fn (e Emitter) constant_leaf(expr ast.Expr, depth int) ?i64 {
 				else { return none }
 			}
 		}
-		ast.Binary {
+		.binary {
 			e.constant_at(expr, depth + 1)
 		}
 		else {
@@ -10733,11 +10824,11 @@ fn (mut e Emitter) emit_nested_trampoline(name string, owner string, line int, c
 // of the label, so a name no label statement writes is reported once the whole
 // function has been emitted, exactly as a goto to one is.
 fn (mut e Emitter) emit_label_address(unary ast.Unary) !void {
-	if unary.expr !is ast.Ident {
+	if unary.expr.kind != .ident {
 		e.diagnostics << problem(unary.line, unary.col, 'unsupported: the address of a label is taken with && and what follows must be a label name')
 		return error('no label name')
 	}
-	name := unary.expr.name
+	name := e.unit.arena.ident(unary.expr).name
 	if !(name in e.goto_used) {
 		e.goto_used[name] = LabelUse{
 			line: unary.line
@@ -10762,16 +10853,18 @@ fn (e Emitter) is_function_name(name string) bool {
 // that pointer itself, because `(*fp)(1, 2)` calls the address fp holds and a
 // value of a function type is not something this machine reads out of memory.
 fn (mut e Emitter) emit_callee_value(callee ast.Expr, depth int) !void {
-	if callee is ast.Unary {
-		if callee.op == '*' {
-			return e.emit_expr_at(callee.expr, depth)
+	if callee.kind == .unary {
+		node := e.unit.arena.unary(callee)
+		if node.op == '*' {
+			return e.emit_expr_at(node.expr, depth)
 		}
 	}
-	if callee is ast.Ident {
+	if callee.kind == .ident {
+		node := e.unit.arena.ident(callee)
 		// A local of the same name is the object it names, so the designator is
 		// read as a function only when nothing in scope holds that name.
-		if e.lookup(callee.name) == none && e.is_function_name(callee.name) {
-			return e.emit_function_address(callee.name, callee.line, callee.col)
+		if e.lookup(node.name) == none && e.is_function_name(node.name) {
+			return e.emit_function_address(node.name, node.line, node.col)
 		}
 	}
 	return e.emit_expr_at(callee, depth)
@@ -10857,7 +10950,7 @@ fn (mut e Emitter) emit_va_start(call ast.Call) !void {
 		return error('no save area')
 	}
 	list := abi.argument_list()
-	name := (call.args[0] as ast.Ident).name
+	name := e.unit.arena.ident(call.args[0]).name
 	destination := e.the_argument_list(name, '__builtin_va_start', line, col) or {
 		return error('no argument list')
 	}
@@ -10910,7 +11003,7 @@ fn (mut e Emitter) emit_va_arg(call ast.Call) !void {
 	area := abi.register_area()
 	floating := call.typ.kind == .double
 	width := if floating { e.target.word_size } else { e.storage_width(call.typ) or { 0 } }
-	name := (call.args[0] as ast.Ident).name
+	name := e.unit.arena.ident(call.args[0]).name
 	source := e.the_argument_list(name, '__builtin_va_arg', line, col) or {
 		return error('no argument list')
 	}
@@ -11002,7 +11095,7 @@ fn (mut e Emitter) emit_va_copy(call ast.Call) !void {
 	line := call.line
 	col := call.col
 	list := abi.argument_list()
-	name := (call.args[0] as ast.Ident).name
+	name := e.unit.arena.ident(call.args[0]).name
 	destination := e.the_argument_list(name, '__builtin_va_copy', line, col) or {
 		return error('no argument list')
 	}
@@ -11071,7 +11164,7 @@ fn (mut e Emitter) emit_va_end(call ast.Call) !void {
 // instruction for is refused by name rather than read at the width of something
 // smaller.
 fn (mut e Emitter) atomic_target_width(call ast.Call, spelling string) ?int {
-	pointer := types.decay(call.args[0].typ)
+	pointer := types.decay(e.expr_type(call.args[0]))
 	pointee := pointer.pointee() or {
 		e.diagnostics << problem(call.line, call.col, 'unsupported: ${spelling} operates through ${pointer.describe()}, and this back end reads and writes what a pointer names')
 		return none
@@ -11088,9 +11181,9 @@ fn (mut e Emitter) atomic_target_width(call ast.Call, spelling string) ?int {
 }
 
 // atomic_order_value is the memory order the reader folded into the call.
-fn atomic_order_value(expr ast.Expr) int {
-	if expr is ast.IntLit {
-		return int(expr.value)
+fn (e Emitter) atomic_order_value(expr ast.Expr) int {
+	if expr.kind == .int_lit {
+		return int(e.unit.arena.int_lit(expr).value)
 	}
 	return -1
 }
@@ -11143,7 +11236,7 @@ fn (mut e Emitter) emit_atomic_store(call ast.Call, depth int) !void {
 	width := e.atomic_target_width(call, '__atomic_store_n') or {
 		return error('the width of __atomic_store_n')
 	}
-	order := atomic_order_value(call.args[2])
+	order := e.atomic_order_value(call.args[2])
 	base := e.frame_pointer(call.line, call.col)!
 	address_slot := e.reserve(e.target.word_size)
 	e.emit_expr_at(call.args[0], depth + 1)!
@@ -11266,7 +11359,7 @@ fn (mut e Emitter) emit_atomic_compare_exchange(call ast.Call, depth int) !void 
 // on this machine; an acquire or a release fence orders nothing the instruction
 // stream does not already, so nothing is emitted for one, which is what gcc does.
 fn (mut e Emitter) emit_atomic_thread_fence(call ast.Call) !void {
-	if atomic_order_value(call.args[0]) == 5 {
+	if e.atomic_order_value(call.args[0]) == 5 {
 		e.append(e.target.memory_fence())
 	}
 }
@@ -11433,7 +11526,7 @@ fn (mut e Emitter) emit_assume_aligned(call ast.Call, depth int) !void {
 fn (mut e Emitter) emit_overflow(call ast.Call, depth int) !void {
 	multiply := call.name == '__builtin_mul_overflow'
 	subtract := call.name == '__builtin_sub_overflow'
-	result := call.args[2].typ.pointee() or {
+	result := e.expr_type(call.args[2]).pointee() or {
 		e.diagnostics << problem(call.line, call.col, '${e.target.name}: ${call.name} stores its result through a pointer, and this one names no object')
 		return error('no result type')
 	}
@@ -11647,7 +11740,7 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 			// rather than importing a name nothing holds. A unit that defines
 			// its own atexit is left alone: the call then binds to that
 			// definition.
-			if call.callee == none && call.args.len == 1 && call.name !in e.program.defined {
+			if call.callee.is_none() && call.args.len == 1 && call.name !in e.program.defined {
 				return e.emit_atexit(call, depth)
 			}
 		}
@@ -11675,7 +11768,8 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 	// argument is loaded through, and the argument registers are loaded last.
 	mut indirect := false
 	mut callee_slot := Slot{}
-	if expression := call.callee {
+	expression := call.callee
+	if !expression.is_none() {
 		callee_slot = e.callee_slot(depth)
 		e.emit_callee_value(expression, depth + call.args.len + 1)!
 		e.store_accumulator(callee_slot, call.line, call.col)!
@@ -11694,7 +11788,7 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 	mut doubles := 0
 	mut stacked := 0
 	for i, arg in call.args {
-		if e.object_of_no_bytes(arg.typ) {
+		if e.object_of_no_bytes(e.expr_type(arg)) {
 			// An object of no bytes is handed over as nothing: it is not
 			// computed into a slot, because there is nothing to load, and it
 			// spends no register, because the callee's parameter of the same
@@ -11772,12 +11866,12 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 			// not a decimal, and this back end has no conversion, so a
 			// mismatch is refused by name rather than passed with whatever the
 			// accumulator held.
-			if !arg.typ.kind.is_decimal() {
-				e.diagnostics << problem(expr_line(arg), expr_col(arg), 'unsupported: argument ${i + 1} of the call to ${call.name} is a ${arg.typ.describe()} handed to a decimal parameter, and this back end has no conversion')
+			if !e.expr_type(arg).kind.is_decimal() {
+				e.diagnostics << problem(e.expr_line(arg), e.expr_col(arg), 'unsupported: argument ${i + 1} of the call to ${call.name} is a ${e.expr_type(arg).describe()} handed to a decimal parameter, and this back end has no conversion')
 				return error('decimal argument type')
 			}
-			if decimal_width_of(arg.typ) != width {
-				e.diagnostics << problem(expr_line(arg), expr_col(arg), 'unsupported: argument ${i + 1} of the call to ${call.name} is a ${arg.typ.describe()} handed to a parameter of a decimal type of a different width')
+			if decimal_width_of(e.expr_type(arg)) != width {
+				e.diagnostics << problem(e.expr_line(arg), e.expr_col(arg), 'unsupported: argument ${i + 1} of the call to ${call.name} is a ${e.expr_type(arg).describe()} handed to a parameter of a decimal type of a different width')
 				return error('decimal argument width')
 			}
 			if width == 16 {
@@ -11832,12 +11926,12 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 			stacked++
 			continue
 		}
-		if arg.typ.kind.is_decimal() {
+		if e.expr_type(arg).kind.is_decimal() {
 			// A decimal handed to a parameter that is not of a decimal type
 			// would travel as its own bytes and be read as something else, and
 			// this back end has no conversion from a decimal to anything but a
 			// double.
-			e.diagnostics << problem(expr_line(arg), expr_col(arg), 'unsupported: argument ${i + 1} of the call to ${call.name} is a ${arg.typ.describe()} handed to a parameter that is not of a decimal type, and this back end has no conversion')
+			e.diagnostics << problem(e.expr_line(arg), e.expr_col(arg), 'unsupported: argument ${i + 1} of the call to ${call.name} is a ${e.expr_type(arg).describe()} handed to a parameter that is not of a decimal type, and this back end has no conversion')
 			return error('decimal argument to a non-decimal parameter')
 		}
 		class := e.aggregate_argument(call, i)
@@ -11891,7 +11985,7 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 			// the convention passes in memory, and this back end does not do
 			// that: the refusal names the argument and its place in the file.
 			if e.pair_argument_registers(integers) == none {
-				e.diagnostics << problem(expr_line(arg), expr_col(arg), 'unsupported: argument ${i + 1} of the call to ${call.name} is a 128-bit value, and the pair it is passed in takes two argument registers at once, which this machine has not got at position ${integers}: the convention passes such a pair in memory, which this back end does not do')
+				e.diagnostics << problem(e.expr_line(arg), e.expr_col(arg), 'unsupported: argument ${i + 1} of the call to ${call.name} is a 128-bit value, and the pair it is passed in takes two argument registers at once, which this machine has not got at position ${integers}: the convention passes such a pair in memory, which this back end does not do')
 				return error('128-bit argument in memory')
 			}
 			places << ArgPlace{
@@ -11953,9 +12047,9 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 	widths := e.call_widths(call)
 	for i, arg in call.args {
 		place := places[i]
-		line := expr_line(arg)
-		col := expr_col(arg)
-		if e.object_of_no_bytes(arg.typ) {
+		line := e.expr_line(arg)
+		col := e.expr_col(arg)
+		if e.object_of_no_bytes(e.expr_type(arg)) {
 			// An object of no bytes is not computed and not parked: an empty
 			// structure has no bytes for a load to bring into a register, and
 			// the callee reads nothing for it.
@@ -12010,7 +12104,7 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 			if e.wide_value(arg) {
 				e.store_pair(pair, line, col)!
 			} else {
-				e.widen_into_pair(pair, arg.typ.is_unsigned_type(), e.narrow_width(arg.typ), line,
+				e.widen_into_pair(pair, e.expr_type(arg).is_unsigned_type(), e.narrow_width(e.expr_type(arg)), line,
 					col)!
 			}
 			continue
@@ -12101,8 +12195,8 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 				continue
 			}
 			arg := call.args[i]
-			line := expr_line(arg)
-			col := expr_col(arg)
+			line := e.expr_line(arg)
+			col := e.expr_col(arg)
 			if place.extended {
 				// The parameter is of the extended type, so the argument is
 				// materialized as a value of it: the argument's own bytes when
@@ -12140,8 +12234,8 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 				continue
 			}
 			arg := call.args[i]
-			line := expr_line(arg)
-			col := expr_col(arg)
+			line := e.expr_line(arg)
+			col := e.expr_col(arg)
 			if place.decimal {
 				// A decimal on the stack is the words of the value that the
 				// value pass parked, pushed from the last to the first so the
@@ -12262,8 +12356,8 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 	}
 	for i, arg in call.args {
 		place := places[i]
-		line := expr_line(arg)
-		col := expr_col(arg)
+		line := e.expr_line(arg)
+		col := e.expr_col(arg)
 		if place.extended {
 			// A long double was pushed whole in the stack pass; no register is
 			// loaded for it.
@@ -12440,8 +12534,8 @@ fn (mut e Emitter) emit_atexit(call ast.Call, depth int) !void {
 // the call passes a whole word for it the way it passes the handler: the value
 // the argument is worth is the address zero, and the width the argument is
 // handed over at is the width a pointer argument has.
-fn (e Emitter) null_pointer(line int, col int) ast.Expr {
-	return ast.Expr(ast.IntLit{
+fn (mut e Emitter) null_pointer(line int, col int) ast.Expr {
+	return e.unit.arena.put_int_lit(ast.IntLit{
 		value: 0
 		text:  '0'
 		typ:   types.pointer_to(types.void_type())
@@ -12674,7 +12768,7 @@ fn (mut e Emitter) copy_stack_object(object Slot, at int, line int, col int) !vo
 // parameters has no parameter type to consult, so the argument's own type is
 // the answer.
 fn (e Emitter) argument_is_double(call ast.Call, position int, arg ast.Expr) bool {
-	if parameter := call_parameter(call, position) {
+	if parameter := e.call_parameter(call, position) {
 		// The callee's parameter list is in front of the call, so it decides:
 		// a float parameter is a floating-class argument, and an int one is not.
 		return parameter.is_floating()
@@ -12700,7 +12794,7 @@ fn (e Emitter) argument_is_double(call ast.Call, position int, arg ast.Expr) boo
 // whether the value is a float before the call is not whether it is one at the
 // parameter.
 fn (e Emitter) argument_is_single(call ast.Call, position int) bool {
-	if parameter := call_parameter(call, position) {
+	if parameter := e.call_parameter(call, position) {
 		return parameter.kind == .float
 	}
 	if singles := e.single_params[call.name] {
@@ -12718,7 +12812,7 @@ fn (e Emitter) argument_is_single(call ast.Call, position int) bool {
 // argument's own type is the answer, which is the same fallback
 // argument_is_double makes.
 fn (e Emitter) argument_is_unsigned(call ast.Call, position int, arg ast.Expr) bool {
-	if parameter := call_parameter(call, position) {
+	if parameter := e.call_parameter(call, position) {
 		return parameter.is_unsigned_type()
 	}
 	if unsigneds := e.unsigned_params[call.name] {
@@ -12726,7 +12820,7 @@ fn (e Emitter) argument_is_unsigned(call ast.Call, position int, arg ast.Expr) b
 			return unsigneds[position]
 		}
 	}
-	return arg.typ.is_unsigned_type()
+	return e.expr_type(arg).is_unsigned_type()
 }
 
 // pair_argument_registers are the two consecutive general registers that carry a
@@ -12751,7 +12845,7 @@ fn (e Emitter) pair_argument_registers(position int) ?[]backend.Register {
 // handed over as two words, and a parameter of an int with a 128-bit argument
 // written for it is a call the type model refuses before this sees it.
 fn (e Emitter) wide_argument(call ast.Call, position int, arg ast.Expr) bool {
-	if parameter := call_parameter(call, position) {
+	if parameter := e.call_parameter(call, position) {
 		return parameter.kind in [types.Kind.int128, .unsigned_int128]
 	}
 	if wides := e.wide_params[call.name] {
@@ -12769,8 +12863,8 @@ fn (e Emitter) wide_argument(call ast.Call, position int, arg ast.Expr) bool {
 // pointer has a prototype in front of it the way a call to a declared name does.
 // A callee that is a function type names its parameters directly; one that is a
 // pointer is followed to the function it points at.
-fn call_parameter(call ast.Call, position int) ?types.Type {
-	signature := call_signature(call) or { return none }
+fn (e Emitter) call_parameter(call ast.Call, position int) ?types.Type {
+	signature := e.call_signature(call) or { return none }
 	if position >= signature.params().len {
 		return none
 	}
@@ -12785,7 +12879,7 @@ fn call_parameter(call ast.Call, position int) ?types.Type {
 // that from the tables the declarations filled instead, which is why this answers
 // none for one.
 fn indirect_call_returns(call ast.Call) ?types.Type {
-	if call.callee == none || call.typ.kind == .unknown {
+	if call.callee.is_none() || call.typ.kind == .unknown {
 		return none
 	}
 	return call.typ
@@ -12816,9 +12910,12 @@ fn (e Emitter) call_return_class(call ast.Call) ?abi.Class {
 // none when the callee names no parameters at all. A call written to a name has
 // its parameters in the table the declarations filled, so this answers none and
 // the caller reads that table instead.
-fn call_signature(call ast.Call) ?types.Type {
-	callee := call.callee or { return none }
-	mut signature := callee.typ
+fn (e Emitter) call_signature(call ast.Call) ?types.Type {
+	callee := call.callee
+	if callee.is_none() {
+		return none
+	}
+	mut signature := e.expr_type(callee)
 	if signature.is_pointer() {
 		signature = signature.pointee() or { return none }
 	}
@@ -12837,10 +12934,10 @@ fn call_signature(call ast.Call) ?types.Type {
 // back to the argument's own width the way it does for a library function with no
 // prototype here.
 fn (e Emitter) call_widths(call ast.Call) []int {
-	if call.callee == none {
+	if call.callee.is_none() {
 		return e.signatures[call.name] or { []int{} }
 	}
-	signature := call_signature(call) or { return []int{} }
+	signature := e.call_signature(call) or { return []int{} }
 	mut widths := []int{cap: signature.params().len}
 	for parameter in signature.params() {
 		class := abi.class_of(e.representation, parameter.typ)
@@ -12881,7 +12978,7 @@ fn (mut e Emitter) passed_width(call ast.Call, widths []int, position int, arg a
 	// the call, and what travels is the object's bytes.
 	if class := e.aggregate_argument(call, position) {
 		if class.first_floating && class.bytes != e.target.word_size {
-			e.diagnostics << problem(expr_line(arg), expr_col(arg), 'unsupported: argument ${position + 1} of the call to ${call.name} is an object of ${class.bytes} bytes whose class is the floating-point one, and this compiler moves such an object as eight bytes')
+			e.diagnostics << problem(e.expr_line(arg), e.expr_col(arg), 'unsupported: argument ${position + 1} of the call to ${call.name} is an object of ${class.bytes} bytes whose class is the floating-point one, and this compiler moves such an object as eight bytes')
 			return error('aggregate floating class width')
 		}
 		return class.bytes
@@ -12893,13 +12990,13 @@ fn (mut e Emitter) passed_width(call ast.Call, widths []int, position int, arg a
 	// is the same answer the parameter's own declaration takes it as: no
 	// register and no word of the stack. Its value is not read here, because
 	// an object of no bytes has no bytes to read.
-	if e.object_of_no_bytes(arg.typ) {
+	if e.object_of_no_bytes(e.expr_type(arg)) {
 		return 0
 	}
 	actual := e.width_of(arg)
 	if e.floating_of(arg) {
 		if position < widths.len && widths[position] == e.target.word_size {
-			e.diagnostics << problem(expr_line(arg), expr_col(arg), 'unsupported: argument ${position + 1} of the call to ${call.name} is a double and the parameter holds an address, and there is no conversion between them')
+			e.diagnostics << problem(e.expr_line(arg), e.expr_col(arg), 'unsupported: argument ${position + 1} of the call to ${call.name} is a double and the parameter holds an address, and there is no conversion between them')
 			return error('double into a pointer')
 		}
 		return 4
@@ -12908,14 +13005,14 @@ fn (mut e Emitter) passed_width(call ast.Call, widths []int, position int, arg a
 		expected := widths[position]
 		if actual != none && actual != expected {
 			if e.constant(arg) == none && !e.widening_or_narrowing_integer(actual, expected, arg) {
-				e.diagnostics << problem(expr_line(arg), expr_col(arg), 'unsupported: argument ${position + 1} of the call to ${call.name} is a value of ${actual} bytes and the parameter is ${expected}')
+				e.diagnostics << problem(e.expr_line(arg), e.expr_col(arg), 'unsupported: argument ${position + 1} of the call to ${call.name} is a value of ${actual} bytes and the parameter is ${expected}')
 				return error('argument width')
 			}
 		}
 		return expected
 	}
 	return actual or {
-		e.diagnostics << problem(expr_line(arg), expr_col(arg), 'unsupported: the width of argument ${position + 1} of the call to ${call.name} is one this back end cannot size')
+		e.diagnostics << problem(e.expr_line(arg), e.expr_col(arg), 'unsupported: the width of argument ${position + 1} of the call to ${call.name} is one this back end cannot size')
 		return error('unknown argument width')
 	}
 }
@@ -12928,7 +13025,7 @@ fn (e Emitter) parameter_wants_a_word(widths []int, position int, arg ast.Expr) 
 	if position >= widths.len || widths[position] != 8 {
 		return false
 	}
-	return (e.converted_width(arg.typ) or { 8 }) == 4
+	return (e.converted_width(e.expr_type(arg)) or { 8 }) == 4
 }
 
 // widening_or_narrowing_integer says whether the two widths are a conversion
@@ -13872,45 +13969,71 @@ fn wrap_mul(a i64, b i64) i64 {
 // expr_line and expr_col are the position an expression was written at. Every
 // node carries it, so a diagnostic can say where the construct is no matter
 // which node it turned out to be.
-fn expr_line(expr ast.Expr) int {
-	return match expr {
-		ast.IntLit { expr.line }
-		ast.FloatLit { expr.line }
-		ast.ComplexLit { expr.line }
-		ast.StrLit { expr.line }
-		ast.Ident { expr.line }
-		ast.Unary { expr.line }
-		ast.Cast { expr.line }
-		ast.Binary { expr.line }
-		ast.Call { expr.line }
-		ast.Index { expr.line }
-		ast.Field { expr.line }
-		ast.IncDec { expr.line }
-		ast.Conditional { expr.line }
-		ast.Assign { expr.line }
-		ast.Comma { expr.line }
-		ast.StmtExpr { expr.line }
+fn (e Emitter) expr_line(expr ast.Expr) int {
+	return match expr.kind {
+		.int_lit { e.unit.arena.int_lit(expr).line }
+		.float_lit { e.unit.arena.float_lit(expr).line }
+		.complex_lit { e.unit.arena.complex_lit(expr).line }
+		.str_lit { e.unit.arena.str_lit(expr).line }
+		.ident { e.unit.arena.ident(expr).line }
+		.unary { e.unit.arena.unary(expr).line }
+		.cast { e.unit.arena.cast(expr).line }
+		.binary { e.unit.arena.binary(expr).line }
+		.call { e.unit.arena.call(expr).line }
+		.index { e.unit.arena.index(expr).line }
+		.field { e.unit.arena.field(expr).line }
+		.inc_dec { e.unit.arena.inc_dec(expr).line }
+		.conditional { e.unit.arena.conditional(expr).line }
+		.assign { e.unit.arena.assign(expr).line }
+		.comma { e.unit.arena.comma(expr).line }
+		.stmt_expr { e.unit.arena.stmt_expr(expr).line }
+		.none { 0 }
 	}
 }
 
-fn expr_col(expr ast.Expr) int {
-	return match expr {
-		ast.IntLit { expr.col }
-		ast.FloatLit { expr.col }
-		ast.ComplexLit { expr.col }
-		ast.StrLit { expr.col }
-		ast.Ident { expr.col }
-		ast.Unary { expr.col }
-		ast.Cast { expr.col }
-		ast.Binary { expr.col }
-		ast.Call { expr.col }
-		ast.Index { expr.col }
-		ast.Field { expr.col }
-		ast.IncDec { expr.col }
-		ast.Conditional { expr.col }
-		ast.Assign { expr.col }
-		ast.Comma { expr.col }
-		ast.StmtExpr { expr.col }
+fn (e Emitter) expr_col(expr ast.Expr) int {
+	return match expr.kind {
+		.int_lit { e.unit.arena.int_lit(expr).col }
+		.float_lit { e.unit.arena.float_lit(expr).col }
+		.complex_lit { e.unit.arena.complex_lit(expr).col }
+		.str_lit { e.unit.arena.str_lit(expr).col }
+		.ident { e.unit.arena.ident(expr).col }
+		.unary { e.unit.arena.unary(expr).col }
+		.cast { e.unit.arena.cast(expr).col }
+		.binary { e.unit.arena.binary(expr).col }
+		.call { e.unit.arena.call(expr).col }
+		.index { e.unit.arena.index(expr).col }
+		.field { e.unit.arena.field(expr).col }
+		.inc_dec { e.unit.arena.inc_dec(expr).col }
+		.conditional { e.unit.arena.conditional(expr).col }
+		.assign { e.unit.arena.assign(expr).col }
+		.comma { e.unit.arena.comma(expr).col }
+		.stmt_expr { e.unit.arena.stmt_expr(expr).col }
+		.none { 0 }
+	}
+}
+
+// expr_type is the type clause an expression carries. Every node carries one,
+// so a reader handed a position rather than a payload asks here.
+fn (e Emitter) expr_type(expr ast.Expr) types.Type {
+	return match expr.kind {
+		.int_lit { e.unit.arena.int_lit(expr).typ }
+		.float_lit { e.unit.arena.float_lit(expr).typ }
+		.complex_lit { e.unit.arena.complex_lit(expr).typ }
+		.str_lit { e.unit.arena.str_lit(expr).typ }
+		.ident { e.unit.arena.ident(expr).typ }
+		.unary { e.unit.arena.unary(expr).typ }
+		.cast { e.unit.arena.cast(expr).typ }
+		.binary { e.unit.arena.binary(expr).typ }
+		.call { e.unit.arena.call(expr).typ }
+		.index { e.unit.arena.index(expr).typ }
+		.field { e.unit.arena.field(expr).typ }
+		.inc_dec { e.unit.arena.inc_dec(expr).typ }
+		.conditional { e.unit.arena.conditional(expr).typ }
+		.assign { e.unit.arena.assign(expr).typ }
+		.comma { e.unit.arena.comma(expr).typ }
+		.stmt_expr { e.unit.arena.stmt_expr(expr).typ }
+		.none { types.Type{} }
 	}
 }
 
@@ -14049,7 +14172,7 @@ fn (mut e Emitter) complex_step(value backend.Register, other backend.Register, 
 fn (mut e Emitter) emit_complex_part(unary ast.Unary, depth int) !void {
 	line := unary.line
 	col := unary.col
-	value := unary.expr.typ
+	value := e.expr_type(unary.expr)
 	if !value.kind.is_complex() {
 		e.diagnostics << problem(line, col, 'unsupported: ${unary.op} reads one part of a complex value, and this operand is ${value.describe()}')
 		return error('not a complex operand')
@@ -14083,22 +14206,22 @@ fn (mut e Emitter) emit_complex_part(unary ast.Unary, depth int) !void {
 // temporary of this level, because there is no register that holds both
 // components.
 fn (mut e Emitter) complex_object(expr ast.Expr, depth int) !Slot {
-	return e.complex_object_as(expr, expr.typ, depth)
+	return e.complex_object_as(expr, e.expr_type(expr), depth)
 }
 
 // complex_object_as is complex_object with the type the object is to have, which
 // is the expression's own except where 6.3.2.2 converts a real value, or a
 // complex value of the other width, into that type.
 fn (mut e Emitter) complex_object_as(expr ast.Expr, destination types.Type, depth int) !Slot {
-	if expr is ast.Ident {
-		if source := e.lookup(expr.name) {
+	if expr.kind == .ident {
+		if source := e.lookup(e.unit.arena.ident(expr).name) {
 			if source.complex && source.width == (e.complex_bytes(destination) or { 0 }) {
 				return source
 			}
 		}
 	}
 	width := e.complex_bytes(destination) or {
-		e.diagnostics << problem(expr_line(expr), expr_col(expr), 'unsupported: ${destination.describe()} is not a complex type this back end moves')
+		e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: ${destination.describe()} is not a complex type this back end moves')
 		return error('not a complex type')
 	}
 	object := e.reserve(width)
@@ -14112,72 +14235,74 @@ fn (mut e Emitter) complex_object_as(expr ast.Expr, destination types.Type, dept
 // makes a real value a complex one with a zero imaginary part, and makes a
 // complex value of the other width the same shape at the wider component type.
 fn (mut e Emitter) emit_complex_into_type(dest Slot, destination types.Type, expr ast.Expr, depth int) !void {
-	line := expr_line(expr)
-	col := expr_col(expr)
+	line := e.expr_line(expr)
+	col := e.expr_col(expr)
+	typ := e.expr_type(expr)
 	if destination.kind == .complex_long_double {
 		// The extended complex type travels and computes differently from the
 		// two register-sized ones, so it takes a path of its own.
 		return e.emit_long_double_complex_into(dest, expr, depth)
 	}
-	if expr.typ.kind == .complex_long_double {
+	if typ.kind == .complex_long_double {
 		// The other direction: a value of the extended complex type is
 		// narrowed to one of the two register widths, one component at a
 		// time. This is not the same question as the two register widths
 		// converting between each other, because an extended component is
 		// sixteen bytes and lives in memory rather than in a floating-point
 		// register.
-		source := e.complex_object_as(expr, expr.typ, depth + 1)!
+		source := e.complex_object_as(expr, typ, depth + 1)!
 		return e.convert_extended_to_complex(dest, destination, source, line, col)
 	}
 	// A real value is the case a hand-over needs, and the imaginary part is
 	// written as zero rather than left: the object may be storage that held
 	// something else, and a program reading the imaginary part would read it.
-	if expr.typ.is_arithmetic() && !expr.typ.kind.is_complex() {
+	if typ.is_arithmetic() && !typ.kind.is_complex() {
 		return e.emit_real_into_complex(dest, destination, expr, depth)
 	}
-	if !expr.typ.kind.is_complex() {
-		e.diagnostics << problem(line, col, 'unsupported: a value of type ${expr.typ.describe()} is not converted to ${destination.describe()}, and this back end converts a real value and a complex value to a complex type')
+	if !typ.kind.is_complex() {
+		e.diagnostics << problem(line, col, 'unsupported: a value of type ${typ.describe()} is not converted to ${destination.describe()}, and this back end converts a real value and a complex value to a complex type')
 		return error('not a complex conversion')
 	}
-	if expr.typ.kind != destination.kind {
+	if typ.kind != destination.kind {
 		// The value is materialised at its own width first and then converted,
 		// because the two are different questions: what the expression is worth,
 		// and what the destination holds.
-		source := e.complex_object_as(expr, expr.typ, depth + 1)!
-		return e.convert_complex(dest, destination, source, expr.typ, line, col)
+		source := e.complex_object_as(expr, typ, depth + 1)!
+		return e.convert_complex(dest, destination, source, typ, line, col)
 	}
-	if expr is ast.Ident {
-		if local := e.lookup(expr.name) {
+	if expr.kind == .ident {
+		if local := e.lookup(e.unit.arena.ident(expr).name) {
 			if local.complex {
 				return e.copy_complex_frame(local, dest, dest.width, line, col)
 			}
 		}
 	}
-	if expr is ast.ComplexLit {
-		return e.store_imaginary_constant(dest, destination, expr)
+	if expr.kind == .complex_lit {
+		return e.store_imaginary_constant(dest, destination, *e.unit.arena.complex_lit(expr))
 	}
-	if expr is ast.Binary {
-		return e.emit_complex_arithmetic(dest, expr, depth)
+	if expr.kind == .binary {
+		return e.emit_complex_arithmetic(dest, *e.unit.arena.binary(expr), depth)
 	}
-	if expr is ast.Call {
-		return e.emit_complex_call(dest, expr, depth)
+	if expr.kind == .call {
+		return e.emit_complex_call(dest, *e.unit.arena.call(expr), depth)
 	}
-	if expr is ast.Cast {
+	if expr.kind == .cast {
 		// A cast to a complex type converts what it wraps, which is this same
 		// conversion at the same destination type.
-		return e.emit_complex_into_type(dest, destination, expr.expr, depth)
+		return e.emit_complex_into_type(dest, destination, e.unit.arena.cast(expr).expr, depth)
 	}
-	if expr is ast.Unary {
-		if expr.op == '-' {
-			source := e.complex_object(expr.expr, depth + 1)!
+	if expr.kind == .unary {
+		node := e.unit.arena.unary(expr)
+		if node.op == '-' {
+			source := e.complex_object(node.expr, depth + 1)!
 			return e.negate_complex(dest, destination, source, line, col)
 		}
-		if expr.op == '+' {
-			source := e.complex_object(expr.expr, depth + 1)!
+		if node.op == '+' {
+			source := e.complex_object(node.expr, depth + 1)!
 			return e.copy_complex_frame(source, dest, dest.width, line, col)
 		}
 	}
-	if expr is ast.Conditional {
+	if expr.kind == .conditional {
 		// 6.5.15 evaluates only the arm the condition selects. glibc's
 		// <tgmath.h> spells every complex dispatch as a conditional whose
 		// condition the reader folds and whose arms name calls at each of the
@@ -14188,9 +14313,10 @@ fn (mut e Emitter) emit_complex_into_type(dest Slot, destination types.Type, exp
 		// Writing both arms would hand the emitter a type it refuses, so the
 		// constant condition is folded to the arm it selects, which is the
 		// fold emit_conditional makes for a scalar.
-		if expr.cond is ast.IntLit {
-			value := (expr.cond as ast.IntLit).value
-			arm := if value != 0 { expr.then_expr } else { expr.else_expr }
+		node := e.unit.arena.conditional(expr)
+		if node.cond.kind == .int_lit {
+			value := e.unit.arena.int_lit(node.cond).value
+			arm := if value != 0 { node.then_expr } else { node.else_expr }
 			return e.emit_complex_into_type(dest, destination, arm, depth)
 		}
 		// A complex value is two components in the frame and never one
@@ -14198,18 +14324,18 @@ fn (mut e Emitter) emit_complex_into_type(dest Slot, destination types.Type, exp
 		// writes the same destination object and the object holds whichever
 		// arm ran. The condition is evaluated before either arm, which is the
 		// order 6.5.15 gives it.
-		e.emit_condition(expr.cond, depth + 1, expr.line, expr.col)!
+		e.emit_condition(node.cond, depth + 1, node.line, node.col)!
 		else_label := e.label()
 		end_label := e.label()
-		e.branch(.branch_zero, else_label, expr.line, expr.col)!
-		e.emit_complex_into_type(dest, destination, expr.then_expr, depth + 1)!
+		e.branch(.branch_zero, else_label, node.line, node.col)!
+		e.emit_complex_into_type(dest, destination, node.then_expr, depth + 1)!
 		e.jump(end_label)!
 		e.place(else_label)
-		e.emit_complex_into_type(dest, destination, expr.else_expr, depth + 1)!
+		e.emit_complex_into_type(dest, destination, node.else_expr, depth + 1)!
 		e.place(end_label)
 		return
 	}
-	if expr is ast.Ident || expr is ast.Field || expr is ast.Index {
+	if expr.kind == .ident || expr.kind == .field || expr.kind == .index {
 		// Storage that is not the frame: a member, an element, or a name whose
 		// storage is in the image. Its address is taken and the bytes copied,
 		// the same copy an object hand-over makes.
@@ -14232,8 +14358,8 @@ fn (mut e Emitter) emit_complex_into_type(dest Slot, destination types.Type, exp
 // 6.3.2.2 is the rule, and the zero is written rather than left alone, because
 // the object is storage that may have held something else.
 fn (mut e Emitter) emit_real_into_complex(dest Slot, destination types.Type, expr ast.Expr, depth int) !void {
-	line := expr_line(expr)
-	col := expr_col(expr)
+	line := e.expr_line(expr)
+	col := e.expr_col(expr)
 	if e.is_a_pointer(expr) {
 		e.diagnostics << problem(line, col, 'unsupported: a pointer is not converted to ${destination.describe()}')
 		return error('pointer to complex')
@@ -14864,7 +14990,11 @@ fn (mut e Emitter) emit_complex_comparison(binary ast.Binary, depth int) !void {
 	// at, which is the complex one when the other side is real: 6.3.2.2 makes a
 	// real value a complex one with a zero imaginary part, and that is what the
 	// comparison reads.
-	kind := if binary.left.typ.kind.is_complex() { binary.left.typ } else { binary.right.typ }
+	kind := if e.expr_type(binary.left).kind.is_complex() {
+		e.expr_type(binary.left)
+	} else {
+		e.expr_type(binary.right)
+	}
 	left := e.complex_object_as(binary.left, kind, depth + 1)!
 	right := e.complex_object_as(binary.right, kind, depth + 1)!
 	frame := e.frame_pointer(binary.line, binary.col)!
@@ -14914,8 +15044,8 @@ fn (mut e Emitter) emit_complex_condition(cond ast.Expr, line int, col int) !voi
 	zero := e.float_scratch(line, col)!
 	result := e.accumulator(line, col)!
 	bits := e.scratch(line, col)!
-	single := complex_component_single(cond.typ)
-	width := complex_component_width(cond.typ)
+	single := complex_component_single(e.expr_type(cond))
+	width := complex_component_width(e.expr_type(cond))
 	keep := e.reserve(e.target.word_size)
 	e.append(e.target.zero_double(zero)!)
 	e.load_complex_component(frame, value, object.offset, single)!
@@ -14991,19 +15121,19 @@ fn (mut e Emitter) object_hand_over_address(expr ast.Expr, class abi.Class, dept
 		} else {
 			types.complex_float_type()
 		}
-		if expr.typ.is_arithmetic() && !expr.typ.kind.is_complex() {
+		if e.expr_type(expr).is_arithmetic() && !e.expr_type(expr).kind.is_complex() {
 			object := e.reserve(class.bytes)
 			e.emit_real_into_complex(object, destination, expr, depth + 1)!
-			frame := e.frame_pointer(expr_line(expr), expr_col(expr))!
-			register := e.accumulator(expr_line(expr), expr_col(expr))!
+			frame := e.frame_pointer(e.expr_line(expr), e.expr_col(expr))!
+			register := e.accumulator(e.expr_line(expr), e.expr_col(expr))!
 			e.append(e.target.address_of_slot(frame, i32(object.offset), register))
 			return
 		}
-		if expr.typ.kind.is_complex() && expr.typ.kind != destination.kind {
+		if e.expr_type(expr).kind.is_complex() && e.expr_type(expr).kind != destination.kind {
 			object := e.reserve(class.bytes)
 			e.emit_complex_into_type(object, destination, expr, depth + 1)!
-			frame := e.frame_pointer(expr_line(expr), expr_col(expr))!
-			register := e.accumulator(expr_line(expr), expr_col(expr))!
+			frame := e.frame_pointer(e.expr_line(expr), e.expr_col(expr))!
+			register := e.accumulator(e.expr_line(expr), e.expr_col(expr))!
 			e.append(e.target.address_of_slot(frame, i32(object.offset), register))
 			return
 		}
@@ -15026,10 +15156,11 @@ fn (mut e Emitter) store_complex_local(slot Slot, written string, init ast.Expr,
 
 // assign_complex_local writes a value into a complex object named by a local.
 fn (mut e Emitter) assign_complex_local(stmt ast.Stmt, target Slot, depth int) !void {
-	expr := stmt.expr or {
+	if stmt.expr.is_none() {
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.target} is assigned without a value')
 		return error('assignment without a value')
 	}
+	expr := stmt.expr
 	destination := if target.width == 8 {
 		types.complex_float_type()
 	} else {
@@ -15043,7 +15174,7 @@ fn (mut e Emitter) assign_complex_local(stmt ast.Stmt, target Slot, depth int) !
 // one. A complex condition is the one that is not a value the accumulator can
 // hold, so it is computed here rather than read out of a register.
 fn (mut e Emitter) emit_condition(cond ast.Expr, depth int, line int, col int) !void {
-	if cond.typ.kind.is_complex() {
+	if e.expr_type(cond).kind.is_complex() {
 		return e.emit_complex_condition(cond, line, col)
 	}
 	e.emit_expr_at(cond, depth)!

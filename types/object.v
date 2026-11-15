@@ -69,10 +69,11 @@ pub:
 // the answer is not known: a description that does not carry the kind, an
 // incomplete type, a function or a type this compiler never resolved.
 pub fn (r Representation) size_of(t Type) ?int {
-	if t.layout != unsafe { nil } {
+	lay := t.layout()
+	if !isnil(lay) {
 		// A completed aggregate carries the layout it was given when it was
 		// read, so the members it was built from are not walked again.
-		return t.layout.size
+		return lay.size
 	}
 	if t.kind == .array {
 		if t.count < 0 || t.base == unsafe { nil } {
@@ -82,8 +83,8 @@ pub fn (r Representation) size_of(t Type) ?int {
 		return element * t.count
 	}
 	if t.kind == .struct_ || t.kind == .union_ {
-		lay := r.layout(t) or { return none }
-		return lay.size
+		measured := r.layout(t) or { return none }
+		return measured.size
 	}
 	if t.kind == .enum_ {
 		// An enumerated type has the representation of the integer type its
@@ -99,8 +100,9 @@ pub fn (r Representation) size_of(t Type) ?int {
 // align_of is the boundary a value of this type has to start on, and none when
 // the description does not carry it.
 pub fn (r Representation) align_of(t Type) ?int {
-	if t.layout != unsafe { nil } {
-		return t.layout.align
+	lay := t.layout()
+	if !isnil(lay) {
+		return lay.align
 	}
 	if t.kind == .array {
 		if t.is_vector() {
@@ -119,8 +121,8 @@ pub fn (r Representation) align_of(t Type) ?int {
 		return r.align_of(*t.base)
 	}
 	if t.kind == .struct_ || t.kind == .union_ {
-		lay := r.layout(t) or { return none }
-		return lay.align
+		measured := r.layout(t) or { return none }
+		return measured.align
 	}
 	if t.kind == .enum_ {
 		return r.aligns[t.enum_underlying()] or { return none }
@@ -139,8 +141,9 @@ pub fn (r Representation) align_of(t Type) ?int {
 // unit at the current position. The object's alignment is the largest alignment
 // of its members, and its size is rounded up to that.
 pub fn (r Representation) layout(t Type) ?Layout {
-	if t.layout != unsafe { nil } {
-		return *t.layout
+	lay := t.layout()
+	if !isnil(lay) {
+		return *lay
 	}
 	if t.kind != .struct_ && t.kind != .union_ {
 		size := r.size_of(t) or { return none }

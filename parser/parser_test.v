@@ -1,6 +1,5 @@
 module parser
 
-import ast
 import tokenize
 import types
 
@@ -48,24 +47,26 @@ fn test_the_128_bit_type_is_read_by_name() {
 	// `signed` in front of it. Measured on gcc 16.2.1.
 	result := parsed('int main(void) { return sizeof(__int128) + sizeof(unsigned __int128) + sizeof(signed __int128); }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	sum := expr as ast.Binary
-	within := sum.left as ast.Binary
-	assert (within.left as ast.IntLit).value == 16
-	assert (within.right as ast.IntLit).value == 16
-	assert (sum.right as ast.IntLit).value == 16
+	sum := result.unit.arena.binary(expr)
+	within := result.unit.arena.binary(sum.left)
+	assert result.unit.arena.int_lit(within.left).value == 16
+	assert result.unit.arena.int_lit(within.right).value == 16
+	assert result.unit.arena.int_lit(sum.right).value == 16
 	// A qualifier written in front of it does not change the type, which is what
 	// makes `const __int128` the same width.
 	qualified := parsed('int main(void) { return sizeof(const __int128); }')
 	assert qualified.diagnostics.len == 0
-	alone := qualified.unit.decls[0].body[0].expr or {
+	alone := qualified.unit.decls[0].body[0].expr
+	if alone.is_none() {
 		assert false
 		return
 	}
-	assert (alone as ast.IntLit).value == 16
+	assert qualified.unit.arena.int_lit(alone).value == 16
 }
 
 // An object of the 128-bit type is storage: a declaration of one is read, and the
@@ -121,12 +122,13 @@ fn test_a_function_that_returns_a_constant() {
 	assert decl.ret == 'int'
 	assert decl.body.len == 1
 	assert decl.body[0].kind == .return_stmt
-	expr := decl.body[0].expr or {
+	expr := decl.body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.IntLit
-	assert (expr as ast.IntLit).value == 42
+	assert expr.kind == .int_lit
+	assert result.unit.arena.int_lit(expr).value == 42
 }
 
 // The parser recurses through parentheses, so a file with thousands of them used
@@ -147,36 +149,39 @@ fn test_deeply_nested_parentheses_are_reported() {
 fn test_operators_bind_by_precedence() {
 	result := parsed('int main() { return 2 + 3 * 4; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Binary
-	binary := expr as ast.Binary
+	assert expr.kind == .binary
+	binary := result.unit.arena.binary(expr)
 	assert binary.op == '+'
-	assert binary.right is ast.Binary
-	assert (binary.right as ast.Binary).op == '*'
+	assert binary.right.kind == .binary
+	assert result.unit.arena.binary(binary.right).op == '*'
 }
 
 fn test_parentheses_override_precedence() {
 	result := parsed('int main() { return (2 + 3) * 4; }')
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	binary := expr as ast.Binary
+	binary := result.unit.arena.binary(expr)
 	assert binary.op == '*'
-	assert binary.left is ast.Binary
+	assert binary.left.kind == .binary
 }
 
 fn test_unary_minus_is_kept() {
 	result := parsed('int main() { return -7; }')
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Unary
-	assert (expr as ast.Unary).op == '-'
+	assert expr.kind == .unary
+	assert result.unit.arena.unary(expr).op == '-'
 }
 
 fn test_a_prototype_and_a_definition_both_parse() {
@@ -241,16 +246,17 @@ fn test_the_narrow_integer_spellings_are_read_as_the_types_they_name() {
 fn test_sizeof_answers_the_size_of_a_type() {
 	result := parsed('int main(void) { return sizeof(char) * 4; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Binary
-	binary := expr as ast.Binary
+	assert expr.kind == .binary
+	binary := result.unit.arena.binary(expr)
 	assert binary.op == '*'
 	assert binary.typ.describe() == 'unsigned long'
-	left := binary.left as ast.IntLit
-	right := binary.right as ast.IntLit
+	left := result.unit.arena.int_lit(binary.left)
+	right := result.unit.arena.int_lit(binary.right)
 	assert left.value == 1
 	assert left.typ.describe() == 'unsigned long'
 	assert right.value == 4
@@ -262,13 +268,14 @@ fn test_sizeof_answers_the_size_of_a_type() {
 fn test_sizeof_of_an_expression_is_the_size_of_its_type() {
 	result := parsed('int main(void) { double d = 0; return sizeof d + sizeof "vcc"; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[1].expr or {
+	expr := result.unit.decls[0].body[1].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	binary := expr as ast.Binary
-	assert (binary.left as ast.IntLit).value == 8
-	assert (binary.right as ast.IntLit).value == 4
+	binary := result.unit.arena.binary(expr)
+	assert result.unit.arena.int_lit(binary.left).value == 8
+	assert result.unit.arena.int_lit(binary.right).value == 4
 }
 
 // A size this compiler cannot answer is refused where the operator is written,
@@ -296,11 +303,12 @@ fn test_sizeof_of_a_tag_that_is_never_completed_is_refused_by_name() {
 fn test_sizeof_of_a_parenthesised_name_is_the_size_of_the_variable() {
 	result := parsed('int main(void) { char x = 0; return sizeof(x); }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[1].expr or {
+	expr := result.unit.decls[0].body[1].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert (expr as ast.IntLit).value == 1
+	assert result.unit.arena.int_lit(expr).value == 1
 }
 
 // `_Countof` answers the number of elements of the outermost dimension of an
@@ -311,32 +319,35 @@ fn test_sizeof_of_a_parenthesised_name_is_the_size_of_the_variable() {
 fn test_countof_answers_the_element_count_of_an_array() {
 	named := parsed('int main(void) { int a[7]; return _Countof(a); }')
 	assert named.diagnostics.len == 0
-	from_name := named.unit.decls[0].body[1].expr or {
+	from_name := named.unit.decls[0].body[1].expr
+	if from_name.is_none() {
 		assert false
 		return
 	}
-	assert (from_name as ast.IntLit).value == 7
-	assert (from_name as ast.IntLit).typ.describe() == 'unsigned long'
+	assert named.unit.arena.int_lit(from_name).value == 7
+	assert named.unit.arena.int_lit(from_name).typ.describe() == 'unsigned long'
 	// A type name written as the operand carries its own outermost bound, and
 	// the bound is the outer one and not the product of every dimension.
 	from_type := parsed('int main(void) { return _Countof(int[7][3]); }')
 	assert from_type.diagnostics.len == 0
-	typed := from_type.unit.decls[0].body[0].expr or {
+	typed := from_type.unit.decls[0].body[0].expr
+	if typed.is_none() {
 		assert false
 		return
 	}
-	assert (typed as ast.IntLit).value == 7
+	assert from_type.unit.arena.int_lit(typed).value == 7
 	// An array whose bound the initializer gave keeps that bound, terminator and
 	// all, rather than decaying to the address of its first element.
 	from_string := parsed('int main(void) { char s[] = "hello"; return _Countof(s); }')
 	assert from_string.diagnostics.len == 0
 	// The initializer is written as one store per character plus the terminator,
 	// so the return is the statement the body ends with.
-	texted := from_string.unit.decls[0].body[from_string.unit.decls[0].body.len - 1].expr or {
+	texted := from_string.unit.decls[0].body[from_string.unit.decls[0].body.len - 1].expr
+	if texted.is_none() {
 		assert false
 		return
 	}
-	assert (texted as ast.IntLit).value == 6
+	assert from_string.unit.arena.int_lit(texted).value == 6
 }
 
 // An operand that is not an array type is a constraint violation, and the
@@ -359,19 +370,21 @@ fn test_countof_of_a_non_array_is_a_constraint_violation() {
 fn test_alignof_answers_the_alignment_of_a_type_and_of_a_member() {
 	from_member := parsed('int main(void) { struct foo { int x; char y; } foo1; return __alignof__(foo1.y); }')
 	assert from_member.diagnostics.len == 0
-	member := from_member.unit.decls[0].body[1].expr or {
+	member := from_member.unit.decls[0].body[1].expr
+	if member.is_none() {
 		assert false
 		return
 	}
-	assert (member as ast.IntLit).value == 1
-	assert (member as ast.IntLit).typ.describe() == 'unsigned long'
+	assert from_member.unit.arena.int_lit(member).value == 1
+	assert from_member.unit.arena.int_lit(member).typ.describe() == 'unsigned long'
 	from_type := parsed('int main(void) { return __alignof__(struct foo { int x; char y; }); }')
 	assert from_type.diagnostics.len == 0
-	typed := from_type.unit.decls[0].body[0].expr or {
+	typed := from_type.unit.decls[0].body[0].expr
+	if typed.is_none() {
 		assert false
 		return
 	}
-	assert (typed as ast.IntLit).value == 4
+	assert from_type.unit.arena.int_lit(typed).value == 4
 }
 
 // typeof is a specifier whose operand is a type name or an expression, and what
@@ -504,24 +517,26 @@ fn test_an_expression_statement_parses() {
 	body := result.unit.decls[1].body
 	assert body.len == 2
 	assert body[0].kind == .expr_stmt
-	expr := body[0].expr or {
+	expr := body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Call
-	assert (expr as ast.Call).name == 'printf'
+	assert expr.kind == .call
+	assert result.unit.arena.call(expr).name == 'printf'
 	assert body[1].kind == .return_stmt
 }
 
 fn test_a_string_literal_keeps_its_bytes_and_its_spelling() {
 	result := parsed('int main() { return "x\\ty"; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.StrLit
-	literal := expr as ast.StrLit
+	assert expr.kind == .str_lit
+	literal := result.unit.arena.str_lit(expr)
 	assert literal.value == 'x	y'
 	assert literal.text == '"x\\ty"'
 }
@@ -529,12 +544,13 @@ fn test_a_string_literal_keeps_its_bytes_and_its_spelling() {
 fn test_a_string_literal_carries_every_escape_a_character_constant_takes() {
 	result := parsed('int puts(char *s);\nint main() { puts("a\\x41\\102\\n\\\\"); return 0; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[1].body[0].expr or {
+	expr := result.unit.decls[1].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	args := (expr as ast.Call).args
-	assert (args[0] as ast.StrLit).value == 'aAB\n\\'
+	args := result.unit.arena.call(expr).args
+	assert result.unit.arena.str_lit(args[0]).value == 'aAB\n\\'
 }
 
 fn test_an_escape_that_names_more_than_a_byte_is_reported() {
@@ -550,11 +566,12 @@ fn test_a_universal_character_name_in_a_string_literal_is_utf8() {
 	// f0 9f 98 80, and a literal can mix them with ordinary characters.
 	result := parsed('int main() { return "\\u00E9\\U0001F600"; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	literal := expr as ast.StrLit
+	literal := result.unit.arena.str_lit(expr)
 	assert literal.value == '\xc3\xa9\xf0\x9f\x98\x80'
 	assert literal.value.len == 6
 }
@@ -586,11 +603,12 @@ fn test_a_universal_character_name_in_a_wide_literal_is_its_code_point() {
 	// gcc 16.2.1: L"\u00E9\U0001F600" is two wchar_t, 0xE9 and 0x1F600.
 	result := parsed('int take(int *p);\nint main() { take(L"\\u00E9\\U0001F600"); return 0; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[1].body[0].expr or {
+	expr := result.unit.decls[1].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	literal := (expr as ast.Call).args[0] as ast.StrLit
+	literal := result.unit.arena.str_lit(result.unit.arena.call(expr).args[0])
 	assert literal.unit == 4
 	assert literal.value == '\xe9\x00\x00\x00\x00\xf6\x01\x00'
 }
@@ -602,25 +620,28 @@ fn test_a_universal_character_name_in_a_character_constant_is_packed() {
 	// point, so L'\u00E9' is 233.
 	narrow := parsed("int main() { return '\\u00E9'; }")
 	assert narrow.diagnostics.len == 0
-	narrow_expr := narrow.unit.decls[0].body[0].expr or {
+	narrow_expr := narrow.unit.decls[0].body[0].expr
+	if narrow_expr.is_none() {
 		assert false
 		return
 	}
-	assert (narrow_expr as ast.IntLit).value == 50089
+	assert narrow.unit.arena.int_lit(narrow_expr).value == 50089
 	emoji := parsed("int main() { return '\\U0001F600'; }")
 	assert emoji.diagnostics.len == 0
-	emoji_expr := emoji.unit.decls[0].body[0].expr or {
+	emoji_expr := emoji.unit.decls[0].body[0].expr
+	if emoji_expr.is_none() {
 		assert false
 		return
 	}
-	assert (emoji_expr as ast.IntLit).value == -257976192
+	assert emoji.unit.arena.int_lit(emoji_expr).value == -257976192
 	wide := parsed("int main() { return L'\\u00E9'; }")
 	assert wide.diagnostics.len == 0
-	wide_expr := wide.unit.decls[0].body[0].expr or {
+	wide_expr := wide.unit.decls[0].body[0].expr
+	if wide_expr.is_none() {
 		assert false
 		return
 	}
-	assert (wide_expr as ast.IntLit).value == 233
+	assert wide.unit.arena.int_lit(wide_expr).value == 233
 }
 
 fn test_a_bad_integer_literal_is_reported() {
@@ -638,11 +659,12 @@ fn test_an_integer_that_does_not_fit_is_reported() {
 fn test_character_constants_are_values() {
 	result := parsed("int main() { return 'A'; }")
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert (expr as ast.IntLit).value == 65
+	assert result.unit.arena.int_lit(expr).value == 65
 }
 
 fn test_a_declaration_inside_a_body_is_storage_in_the_frame() {
@@ -654,7 +676,7 @@ fn test_a_declaration_inside_a_body_is_storage_in_the_frame() {
 	assert body[0].decl_name() == 'x'
 	assert body[0].decl_type() == 'int'
 	mut initialized := false
-	if _ := body[0].initializer() {
+	if !body[0].initializer().is_none() {
 		initialized = true
 	}
 	assert !initialized
@@ -665,18 +687,20 @@ fn test_a_declaration_keeps_its_initializer() {
 	result := parsed('int main() { int x = 5; return x; }')
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
-	init := body[0].initializer() or {
+	init := body[0].initializer()
+	if init.is_none() {
 		assert false
 		return
 	}
-	assert init is ast.IntLit
-	assert (init as ast.IntLit).value == 5
-	returned := body[1].expr or {
+	assert init.kind == .int_lit
+	assert result.unit.arena.int_lit(init).value == 5
+	returned := body[1].expr
+	if returned.is_none() {
 		assert false
 		return
 	}
-	assert returned is ast.Ident
-	assert (returned as ast.Ident).name == 'x'
+	assert returned.kind == .ident
+	assert result.unit.arena.ident(returned).name == 'x'
 }
 
 fn test_a_pointer_declaration_keeps_the_stars_and_the_literal() {
@@ -686,12 +710,13 @@ fn test_a_pointer_declaration_keeps_the_stars_and_the_literal() {
 	assert decl.kind == .var_decl
 	assert decl.decl_name() == 's'
 	assert decl.decl_type() == 'char *'
-	init := decl.initializer() or {
+	init := decl.initializer()
+	if init.is_none() {
 		assert false
 		return
 	}
-	assert init is ast.StrLit
-	assert (init as ast.StrLit).value == 'text'
+	assert init.kind == .str_lit
+	assert result.unit.arena.str_lit(init).value == 'text'
 }
 
 // A statement names one object, so a declaration of two is two statements in
@@ -795,7 +820,7 @@ fn test_a_local_array_whose_size_is_not_a_number_is_reported() {
 	assert result.diagnostics[0].msg.contains('constraint violation')
 	assert !result.diagnostics[0].warning
 	assert result.unit.decls[0].body.len == 2
-	assert result.unit.decls[0].body[0].decl_vla_size() != none
+	assert !result.unit.decls[0].body[0].decl_vla_size().is_none()
 }
 
 fn test_an_assignment_writes_to_a_name() {
@@ -804,27 +829,29 @@ fn test_an_assignment_writes_to_a_name() {
 	body := result.unit.decls[0].body
 	assert body[1].kind == .assign
 	assert body[1].target == 'x'
-	value := body[1].expr or {
+	value := body[1].expr
+	if value.is_none() {
 		assert false
 		return
 	}
-	assert value is ast.IntLit
-	assert (value as ast.IntLit).value == 5
+	assert value.kind == .int_lit
+	assert result.unit.arena.int_lit(value).value == 5
 }
 
 fn test_an_assignment_takes_a_variable_on_each_side() {
 	result := parsed('int main() { int x = 1; int y = 2; x = y + 1; return x; }')
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
-	value := body[2].expr or {
+	value := body[2].expr
+	if value.is_none() {
 		assert false
 		return
 	}
-	assert value is ast.Binary
-	binary := value as ast.Binary
+	assert value.kind == .binary
+	binary := result.unit.arena.binary(value)
 	assert binary.op == '+'
-	assert binary.left is ast.Ident
-	assert (binary.left as ast.Ident).name == 'y'
+	assert binary.left.kind == .ident
+	assert result.unit.arena.ident(binary.left).name == 'y'
 }
 
 // `x += 1` reads and writes the same name, so it is the assignment it means,
@@ -835,16 +862,17 @@ fn test_a_compound_assignment_is_the_assignment_it_means() {
 	body := result.unit.decls[0].body
 	assert body[1].kind == .assign
 	assert body[1].target == 'x'
-	value := body[1].expr or {
+	value := body[1].expr
+	if value.is_none() {
 		assert false
 		return
 	}
-	assert value is ast.Binary
-	binary := value as ast.Binary
+	assert value.kind == .binary
+	binary := result.unit.arena.binary(value)
 	assert binary.op == '+'
-	assert binary.left is ast.Ident
-	assert (binary.left as ast.Ident).name == 'x'
-	assert binary.right is ast.IntLit
+	assert binary.left.kind == .ident
+	assert result.unit.arena.ident(binary.left).name == 'x'
+	assert binary.right.kind == .int_lit
 }
 
 // A parenthesised expression is a primary-expression, and 6.5.16 and 6.5.17 put
@@ -854,16 +882,17 @@ fn test_a_compound_assignment_is_the_assignment_it_means() {
 fn test_a_parenthesised_assignment_expression_is_read_as_an_assignment() {
 	result := parsed('int main() { int a = 0; return (a = 1) == 1; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[1].expr or {
+	expr := result.unit.decls[0].body[1].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	cmp := expr as ast.Binary
+	cmp := result.unit.arena.binary(expr)
 	assert cmp.op == '=='
-	assign := cmp.left as ast.Assign
+	assign := result.unit.arena.assign(cmp.left)
 	assert assign.op == '='
-	assert (assign.target as ast.Ident).name == 'a'
-	assert (assign.value as ast.IntLit).value == 1
+	assert result.unit.arena.ident(assign.target).name == 'a'
+	assert result.unit.arena.int_lit(assign.value).value == 1
 }
 
 // 6.5.17 makes the comma left associative and worth the value of its right
@@ -872,19 +901,20 @@ fn test_a_parenthesised_assignment_expression_is_read_as_an_assignment() {
 fn test_a_comma_expression_is_left_associative_and_worth_its_right_operand() {
 	result := parsed('int main() { int a = 0; int b = 0; return (a = 1, b = 2, a + b) == 3; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[2].expr or {
+	expr := result.unit.decls[0].body[2].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	cmp := expr as ast.Binary
+	cmp := result.unit.arena.binary(expr)
 	assert cmp.op == '=='
-	comma := cmp.left as ast.Comma
+	comma := result.unit.arena.comma(cmp.left)
 	assert comma.typ.kind == .int_
-	sum := comma.right as ast.Binary
+	sum := result.unit.arena.binary(comma.right)
 	assert sum.op == '+'
-	outer := comma.left as ast.Comma
-	assert (outer.left as ast.Assign).op == '='
-	assert (outer.right as ast.Assign).op == '='
+	outer := result.unit.arena.comma(comma.left)
+	assert result.unit.arena.assign(outer.left).op == '='
+	assert result.unit.arena.assign(outer.right).op == '='
 }
 
 // A comma in a for's init or update is 6.5.17's comma operator written where
@@ -920,12 +950,13 @@ fn test_a_for_condition_reads_a_comma_expression() {
 	assert result.diagnostics.len == 0
 	loop := result.unit.decls[0].body[1].body[1]
 	assert loop.kind == .while_stmt
-	cond := loop.cond or {
+	cond := loop.cond
+	if cond.is_none() {
 		assert false
 		return
 	}
-	assert cond is ast.Comma
-	assert (cond as ast.Comma).typ.kind == .int_
+	assert cond.kind == .comma
+	assert result.unit.arena.comma(cond).typ.kind == .int_
 }
 
 // An expression statement is a full expression (6.8.3), so a comma written
@@ -940,14 +971,15 @@ fn test_an_expression_statement_reads_a_comma_expression() {
 	assert result.diagnostics.len == 0
 	stmt := result.unit.decls[0].body[0]
 	assert stmt.kind == .expr_stmt
-	expr := stmt.expr or {
+	expr := stmt.expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Comma
-	comma := expr as ast.Comma
-	assert comma.left is ast.Cast
-	assert comma.right is ast.Cast
+	assert expr.kind == .comma
+	comma := result.unit.arena.comma(expr)
+	assert comma.left.kind == .cast
+	assert comma.right.kind == .cast
 	assert comma.typ.kind == .void_
 }
 
@@ -960,14 +992,15 @@ fn test_a_comma_after_an_assignment_is_one_statement() {
 	assert result.diagnostics.len == 0
 	stmt := result.unit.decls[0].body[2]
 	assert stmt.kind == .expr_stmt
-	expr := stmt.expr or {
+	expr := stmt.expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Comma
-	comma := expr as ast.Comma
-	assert comma.left is ast.Assign
-	assert comma.right is ast.Assign
+	assert expr.kind == .comma
+	comma := result.unit.arena.comma(expr)
+	assert comma.left.kind == .assign
+	assert comma.right.kind == .assign
 }
 
 // A GNU statement expression is `({ ... })`: a brace-enclosed compound statement
@@ -980,18 +1013,20 @@ fn test_a_comma_after_an_assignment_is_one_statement() {
 fn test_a_statement_expression_keeps_its_body_and_its_value_apart() {
 	result := parsed('int main() { int x = ({ int a = 4; a * 2; }); return x; }')
 	assert result.diagnostics.len == 0
-	init := result.unit.decls[0].body[0].initializer() or {
+	init := result.unit.decls[0].body[0].initializer()
+	if init.is_none() {
 		assert false
 		return
 	}
-	construct := init as ast.StmtExpr
+	construct := result.unit.arena.stmt_expr(init)
 	assert construct.body.len == 1
 	assert construct.body[0].kind == .var_decl
-	value := construct.value or {
+	value := construct.value
+	if value.is_none() {
 		assert false
 		return
 	}
-	assert (value as ast.Binary).op == '*'
+	assert result.unit.arena.binary(value).op == '*'
 	assert construct.typ.kind == .int_
 }
 
@@ -1004,20 +1039,22 @@ fn test_a_statement_expression_keeps_its_body_and_its_value_apart() {
 fn test_a_statement_expression_ending_in_an_assignment_is_worth_its_value() {
 	result := parsed('int main() { int a = 0; int x = ({ a = 5; }); return x; }')
 	assert result.diagnostics.len == 0
-	init := result.unit.decls[0].body[1].initializer() or {
+	init := result.unit.decls[0].body[1].initializer()
+	if init.is_none() {
 		assert false
 		return
 	}
-	construct := init as ast.StmtExpr
+	construct := result.unit.arena.stmt_expr(init)
 	assert construct.body.len == 0
-	value := construct.value or {
+	value := construct.value
+	if value.is_none() {
 		assert false
 		return
 	}
-	assign := value as ast.Assign
+	assign := result.unit.arena.assign(value)
 	assert assign.op == '='
-	assert (assign.target as ast.Ident).name == 'a'
-	assert (assign.value as ast.IntLit).value == 5
+	assert result.unit.arena.ident(assign.target).name == 'a'
+	assert result.unit.arena.int_lit(assign.value).value == 5
 	assert construct.typ.kind == .int_
 }
 
@@ -1027,12 +1064,13 @@ fn test_a_statement_expression_ending_in_an_assignment_is_worth_its_value() {
 fn test_a_statement_expression_whose_last_statement_is_not_an_expression_is_void() {
 	result := parsed('int main() { int x = 0; ({ x = 3; if (x) { x = 4; } }); return x; }')
 	assert result.diagnostics.len == 0
-	raw := result.unit.decls[0].body[1].expr or {
+	raw := result.unit.decls[0].body[1].expr
+	if raw.is_none() {
 		assert false
 		return
 	}
-	construct := raw as ast.StmtExpr
-	assert construct.value == none
+	construct := result.unit.arena.stmt_expr(raw)
+	assert construct.value.is_none()
 	assert construct.typ.kind == .void_
 	assert construct.body.len == 2
 	assert construct.body[0].kind == .assign
@@ -1048,12 +1086,13 @@ fn test_the_function_name_spellings_read_the_enclosing_function_name() {
 	for spelling in ['__func__', '__FUNCTION__', '__PRETTY_FUNCTION__'] {
 		result := parsed('int main() { return ${spelling}[0]; }')
 		assert result.diagnostics.len == 0
-		expr := result.unit.decls[0].body[0].expr or {
+		expr := result.unit.decls[0].body[0].expr
+		if expr.is_none() {
 			assert false
 			return
 		}
-		index := expr as ast.Index
-		name := index.base as ast.StrLit
+		index := result.unit.arena.index(expr)
+		name := result.unit.arena.str_lit(index.base)
 		assert name.value == 'main'
 		assert name.typ.kind == .array
 	}
@@ -1065,15 +1104,16 @@ fn test_the_function_name_spellings_read_the_enclosing_function_name() {
 fn test_an_assignment_expression_is_right_associative() {
 	result := parsed('int main() { int a = 0; int b = 0; return (a = b = 3) == 3; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[2].expr or {
+	expr := result.unit.decls[0].body[2].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assign := (expr as ast.Binary).left as ast.Assign
-	assert (assign.target as ast.Ident).name == 'a'
-	inner := assign.value as ast.Assign
-	assert (inner.target as ast.Ident).name == 'b'
-	assert (inner.value as ast.IntLit).value == 3
+	assign := result.unit.arena.assign(result.unit.arena.binary(expr).left)
+	assert result.unit.arena.ident(assign.target).name == 'a'
+	inner := result.unit.arena.assign(assign.value)
+	assert result.unit.arena.ident(inner.target).name == 'b'
+	assert result.unit.arena.int_lit(inner.value).value == 3
 }
 
 // The same assignment written as a statement: `a = b = 5;` writes the value
@@ -1085,13 +1125,14 @@ fn test_a_chained_assignment_statement_nests_its_value() {
 	body := result.unit.decls[0].body
 	assert body[2].kind == .assign
 	assert body[2].target == 'a'
-	value := body[2].expr or {
+	value := body[2].expr
+	if value.is_none() {
 		assert false
 		return
 	}
-	inner := value as ast.Assign
-	assert (inner.target as ast.Ident).name == 'b'
-	assert (inner.value as ast.IntLit).value == 5
+	inner := result.unit.arena.assign(value)
+	assert result.unit.arena.ident(inner.target).name == 'b'
+	assert result.unit.arena.int_lit(inner.value).value == 5
 }
 
 // An assignment is an expression in a condition, not only where a statement
@@ -1100,15 +1141,16 @@ fn test_a_chained_assignment_statement_nests_its_value() {
 fn test_an_assignment_in_a_condition_nests_its_value() {
 	result := parsed('int main() { int x = 1; int y = 1; while (x = y = 0) {} return x; }')
 	assert result.diagnostics.len == 0
-	cond := result.unit.decls[0].body[2].cond or {
+	cond := result.unit.decls[0].body[2].cond
+	if cond.is_none() {
 		assert false
 		return
 	}
-	outer := cond as ast.Assign
-	assert (outer.target as ast.Ident).name == 'x'
-	inner := outer.value as ast.Assign
-	assert (inner.target as ast.Ident).name == 'y'
-	assert (inner.value as ast.IntLit).value == 0
+	outer := result.unit.arena.assign(cond)
+	assert result.unit.arena.ident(outer.target).name == 'x'
+	inner := result.unit.arena.assign(outer.value)
+	assert result.unit.arena.ident(inner.target).name == 'y'
+	assert result.unit.arena.int_lit(inner.value).value == 0
 }
 
 // A compound spelling is read as the assignment it means, the way the statement
@@ -1117,17 +1159,18 @@ fn test_an_assignment_in_a_condition_nests_its_value() {
 fn test_a_compound_assignment_expression_is_the_assignment_it_means() {
 	result := parsed('int main() { int a = 1; return (a <<= 1) == 2; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[1].expr or {
+	expr := result.unit.decls[0].body[1].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assign := (expr as ast.Binary).left as ast.Assign
+	assign := result.unit.arena.assign(result.unit.arena.binary(expr).left)
 	assert assign.op == '<<='
-	assert (assign.target as ast.Ident).name == 'a'
-	sum := assign.value as ast.Binary
+	assert result.unit.arena.ident(assign.target).name == 'a'
+	sum := result.unit.arena.binary(assign.value)
 	assert sum.op == '<<'
-	assert (sum.left as ast.Ident).name == 'a'
-	assert (sum.right as ast.IntLit).value == 1
+	assert result.unit.arena.ident(sum.left).name == 'a'
+	assert result.unit.arena.int_lit(sum.right).value == 1
 }
 
 // An assignment writes to a place, so a value that is not one is refused at the
@@ -1149,15 +1192,16 @@ fn test_an_assignment_through_a_dereference_writes_what_the_pointer_points_at() 
 	body := result.unit.decls[0].body
 	assert body[2].kind == .assign
 	assert body[2].target == ''
-	target := body[2].deref() or {
+	target := body[2].deref()
+	if target.is_none() {
 		assert false
 		return
 	}
-	assert target is ast.Unary
-	assert (target as ast.Unary).op == '*'
-	operand := (target as ast.Unary).expr
-	assert operand is ast.Ident
-	assert (operand as ast.Ident).name == 'p'
+	assert target.kind == .unary
+	assert result.unit.arena.unary(target).op == '*'
+	operand := result.unit.arena.unary(target).expr
+	assert operand.kind == .ident
+	assert result.unit.arena.ident(operand).name == 'p'
 }
 
 // The operand of the outer dereference is another dereference: `**pp = 7` is a
@@ -1166,14 +1210,15 @@ fn test_an_assignment_through_a_pointer_to_a_pointer_keeps_both_dereferences() {
 	result := parsed('int main() { int x = 1; int *p = &x; int **pp = &p; **pp = 7; return x; }')
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
-	target := body[3].deref() or {
+	target := body[3].deref()
+	if target.is_none() {
 		assert false
 		return
 	}
-	assert target is ast.Unary
-	inner := (target as ast.Unary).expr
-	assert inner is ast.Unary
-	assert (inner as ast.Unary).op == '*'
+	assert target.kind == .unary
+	inner := result.unit.arena.unary(target).expr
+	assert inner.kind == .unary
+	assert result.unit.arena.unary(inner).op == '*'
 }
 
 // The pointer an assignment writes through is a use of the name, so a name
@@ -1197,16 +1242,17 @@ fn test_a_compound_assignment_through_a_dereference_is_the_assignment_it_means()
 	statement := body[2]
 	assert statement.kind == .assign
 	assert statement.compound() == '+'
-	assert statement.deref() != none
-	value := statement.expr or {
+	assert !statement.deref().is_none()
+	value := statement.expr
+	if value.is_none() {
 		assert false
 		return
 	}
-	assert value is ast.Binary
-	binary := value as ast.Binary
+	assert value.kind == .binary
+	binary := result.unit.arena.binary(value)
 	assert binary.op == '+'
-	assert binary.left is ast.Unary
-	assert (binary.left as ast.Unary).op == '*'
+	assert binary.left.kind == .unary
+	assert result.unit.arena.unary(binary.left).op == '*'
 }
 
 // A compound assignment to a member is the same assignment with the operator
@@ -1220,12 +1266,13 @@ fn test_a_compound_assignment_to_a_member_is_the_assignment_it_means() {
 	assert statement.kind == .assign
 	assert statement.compound() == '+'
 	assert statement.field != none
-	value := statement.expr or {
+	value := statement.expr
+	if value.is_none() {
 		assert false
 		return
 	}
-	assert value is ast.Binary
-	assert (value as ast.Binary).left is ast.Field
+	assert value.kind == .binary
+	assert direct.unit.arena.binary(value).left.kind == .field
 	arrow := parsed('struct S { int a; };\nint main(void) { struct S s; struct S *p = &s; p->a |= 1; return 0; }')
 	assert arrow.diagnostics.len == 0
 	through := arrow.unit.decls[0].body[2]
@@ -1247,45 +1294,48 @@ fn test_an_assignment_to_something_that_is_not_a_place_is_refused() {
 fn test_a_comparison_binds_looser_than_arithmetic() {
 	result := parsed('int main() { return 1 + 2 < 3 * 4; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Binary
-	binary := expr as ast.Binary
+	assert expr.kind == .binary
+	binary := result.unit.arena.binary(expr)
 	assert binary.op == '<'
-	assert binary.left is ast.Binary
-	assert (binary.left as ast.Binary).op == '+'
-	assert binary.right is ast.Binary
-	assert (binary.right as ast.Binary).op == '*'
+	assert binary.left.kind == .binary
+	assert result.unit.arena.binary(binary.left).op == '+'
+	assert binary.right.kind == .binary
+	assert result.unit.arena.binary(binary.right).op == '*'
 }
 
 fn test_an_equality_binds_looser_than_a_comparison() {
 	result := parsed('int main() { return a == b < c; }')
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Binary
-	binary := expr as ast.Binary
+	assert expr.kind == .binary
+	binary := result.unit.arena.binary(expr)
 	assert binary.op == '=='
-	assert binary.right is ast.Binary
-	assert (binary.right as ast.Binary).op == '<'
+	assert binary.right.kind == .binary
+	assert result.unit.arena.binary(binary.right).op == '<'
 }
 
 fn test_the_operators_that_join_conditions_bind_loosest() {
 	result := parsed('int main() { return a && b || c != d; }')
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Binary
-	binary := expr as ast.Binary
+	assert expr.kind == .binary
+	binary := result.unit.arena.binary(expr)
 	assert binary.op == '||'
-	assert binary.left is ast.Binary
-	assert (binary.left as ast.Binary).op == '&&'
-	assert binary.right is ast.Binary
-	assert (binary.right as ast.Binary).op == '!='
+	assert binary.left.kind == .binary
+	assert result.unit.arena.binary(binary.left).op == '&&'
+	assert binary.right.kind == .binary
+	assert result.unit.arena.binary(binary.right).op == '!='
 }
 
 // A shift is an operator between two values, and the tree holds it as one with
@@ -1294,27 +1344,29 @@ fn test_the_operators_that_join_conditions_bind_loosest() {
 fn test_a_shift_is_a_binary_operator() {
 	left := parsed('int main(void) { return 1 << 2; }')
 	assert left.diagnostics.len == 0
-	expr := left.unit.decls[0].body[0].expr or {
+	expr := left.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Binary
-	shift := expr as ast.Binary
+	assert expr.kind == .binary
+	shift := left.unit.arena.binary(expr)
 	assert shift.op == '<<'
-	assert (shift.left as ast.IntLit).value == 1
-	assert (shift.right as ast.IntLit).value == 2
+	assert left.unit.arena.int_lit(shift.left).value == 1
+	assert left.unit.arena.int_lit(shift.right).value == 2
 	assert shift.typ.describe() == 'int'
 	right := parsed('int main(void) { return 4 >> 1; }')
 	assert right.diagnostics.len == 0
-	other := right.unit.decls[0].body[0].expr or {
+	other := right.unit.decls[0].body[0].expr
+	if other.is_none() {
 		assert false
 		return
 	}
-	assert other is ast.Binary
-	shifted := other as ast.Binary
+	assert other.kind == .binary
+	shifted := right.unit.arena.binary(other)
 	assert shifted.op == '>>'
-	assert (shifted.left as ast.IntLit).value == 4
-	assert (shifted.right as ast.IntLit).value == 1
+	assert right.unit.arena.int_lit(shifted.left).value == 4
+	assert right.unit.arena.int_lit(shifted.right).value == 1
 }
 
 // The three bitwise operators are binary operators with the same shape, and each
@@ -1324,15 +1376,16 @@ fn test_the_bitwise_operators_keep_their_own_spellings() {
 	for pair in [['|', '1 | 2'], ['^', '1 ^ 2'], ['&', '1 & 2']] {
 		result := parsed('int main(void) { return ${pair[1]}; }')
 		assert result.diagnostics.len == 0
-		expr := result.unit.decls[0].body[0].expr or {
+		expr := result.unit.decls[0].body[0].expr
+		if expr.is_none() {
 			assert false
 			return
 		}
-		assert expr is ast.Binary
-		binary := expr as ast.Binary
+		assert expr.kind == .binary
+		binary := result.unit.arena.binary(expr)
 		assert binary.op == pair[0]
-		assert (binary.left as ast.IntLit).value == 1
-		assert (binary.right as ast.IntLit).value == 2
+		assert result.unit.arena.int_lit(binary.left).value == 1
+		assert result.unit.arena.int_lit(binary.right).value == 2
 	}
 }
 
@@ -1341,27 +1394,29 @@ fn test_the_bitwise_operators_keep_their_own_spellings() {
 fn test_a_shift_binds_between_addition_and_a_comparison() {
 	added := parsed('int main(void) { return 1 + 2 << 3; }')
 	assert added.diagnostics.len == 0
-	expr := added.unit.decls[0].body[0].expr or {
+	expr := added.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Binary
-	shift := expr as ast.Binary
+	assert expr.kind == .binary
+	shift := added.unit.arena.binary(expr)
 	assert shift.op == '<<'
-	assert shift.left is ast.Binary
-	assert (shift.left as ast.Binary).op == '+'
-	assert (shift.right as ast.IntLit).value == 3
+	assert shift.left.kind == .binary
+	assert added.unit.arena.binary(shift.left).op == '+'
+	assert added.unit.arena.int_lit(shift.right).value == 3
 	compared := parsed('int main(void) { return 1 << 2 < 3; }')
 	assert compared.diagnostics.len == 0
-	other := compared.unit.decls[0].body[0].expr or {
+	other := compared.unit.decls[0].body[0].expr
+	if other.is_none() {
 		assert false
 		return
 	}
-	assert other is ast.Binary
-	less := other as ast.Binary
+	assert other.kind == .binary
+	less := compared.unit.arena.binary(other)
 	assert less.op == '<'
-	assert less.left is ast.Binary
-	assert (less.left as ast.Binary).op == '<<'
+	assert less.left.kind == .binary
+	assert compared.unit.arena.binary(less.left).op == '<<'
 }
 
 // `&` binds looser than `==`, so `1 & 2 == 3` is `1 & (2 == 3)`: the and is the
@@ -1369,16 +1424,17 @@ fn test_a_shift_binds_between_addition_and_a_comparison() {
 fn test_a_bitwise_and_binds_looser_than_equality() {
 	result := parsed('int main(void) { return 1 & 2 == 3; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Binary
-	binary := expr as ast.Binary
+	assert expr.kind == .binary
+	binary := result.unit.arena.binary(expr)
 	assert binary.op == '&'
-	assert (binary.left as ast.IntLit).value == 1
-	assert binary.right is ast.Binary
-	assert (binary.right as ast.Binary).op == '=='
+	assert result.unit.arena.int_lit(binary.left).value == 1
+	assert binary.right.kind == .binary
+	assert result.unit.arena.binary(binary.right).op == '=='
 }
 
 // The three bitwise operators bind in C's order, `&` tightest of them and `|`
@@ -1386,23 +1442,24 @@ fn test_a_bitwise_and_binds_looser_than_equality() {
 fn test_the_bitwise_operators_bind_in_c_order() {
 	result := parsed('int main(void) { return 1 | 2 ^ 3 & 4; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Binary
-	pipe := expr as ast.Binary
+	assert expr.kind == .binary
+	pipe := result.unit.arena.binary(expr)
 	assert pipe.op == '|'
-	assert (pipe.left as ast.IntLit).value == 1
-	assert pipe.right is ast.Binary
-	xor := pipe.right as ast.Binary
+	assert result.unit.arena.int_lit(pipe.left).value == 1
+	assert pipe.right.kind == .binary
+	xor := result.unit.arena.binary(pipe.right)
 	assert xor.op == '^'
-	assert (xor.left as ast.IntLit).value == 2
-	assert xor.right is ast.Binary
-	amp := xor.right as ast.Binary
+	assert result.unit.arena.int_lit(xor.left).value == 2
+	assert xor.right.kind == .binary
+	amp := result.unit.arena.binary(xor.right)
 	assert amp.op == '&'
-	assert (amp.left as ast.IntLit).value == 3
-	assert (amp.right as ast.IntLit).value == 4
+	assert result.unit.arena.int_lit(amp.left).value == 3
+	assert result.unit.arena.int_lit(amp.right).value == 4
 }
 
 // `~` is a prefix operator and not a binary one, and the reader already has the
@@ -1436,17 +1493,18 @@ fn test_a_compound_assignment_is_the_binary_operator_it_names() {
 		statement := body[1]
 		assert statement.kind == .assign
 		assert statement.target == 'x'
-		expr := statement.expr or {
+		expr := statement.expr
+		if expr.is_none() {
 			assert false
 			return
 		}
-		assert expr is ast.Binary
-		binary := expr as ast.Binary
+		assert expr.kind == .binary
+		binary := result.unit.arena.binary(expr)
 		assert binary.op == spelling
-		assert binary.left is ast.Ident
-		assert (binary.left as ast.Ident).name == 'x'
-		assert binary.right is ast.IntLit
-		assert (binary.right as ast.IntLit).value == 3
+		assert binary.left.kind == .ident
+		assert result.unit.arena.ident(binary.left).name == 'x'
+		assert binary.right.kind == .int_lit
+		assert result.unit.arena.int_lit(binary.right).value == 3
 		// The node carries the type of the operator, which is the type the rest of
 		// the compiler reads rather than the spelling. A node of the zero type is
 		// what made `v *= 7` on an object of 128 bits refuse a store the object was
@@ -1457,33 +1515,38 @@ fn test_a_compound_assignment_is_the_binary_operator_it_names() {
 	wide := parsed('int main(void) { __int128 v = 1;\n\tv *= 7;\n\treturn 0; }')
 	assert wide.diagnostics.len == 0
 	compound := wide.unit.decls[0].body[1]
-	value := (compound.expr or {
+	value := compound.expr
+	if value.is_none() {
 		assert false
 		return
-	}) as ast.Binary
-	assert value.op == '*'
-	assert value.typ.kind == .int128
+	}
+	node := wide.unit.arena.binary(value)
+	assert node.op == '*'
+	assert node.typ.kind == .int128
 	// The compound spelling governs the whole expression on its right.
-	grouped := parsed('int main(void) { int x = 6;\n\tx &= 1 | 2;\n\treturn x;\n}\n')
+	grouped := parsed('int main(void) { int x = 6;\n	x &= 1 | 2;\n	return x;\n}\n')
 	assert grouped.diagnostics.len == 0
 	statement := grouped.unit.decls[0].body[1]
-	outer := (statement.expr or {
+	outer := statement.expr
+	if outer.is_none() {
 		assert false
 		return
-	}) as ast.Binary
-	assert outer.op == '&'
-	assert (outer.right as ast.Binary).op == '|'
+	}
+	outer_node := grouped.unit.arena.binary(outer)
+	assert outer_node.op == '&'
+	assert grouped.unit.arena.binary(outer_node.right).op == '|'
 }
 
 fn test_a_complement_is_a_unary_operator() {
 	result := parsed('int main(void) { return ~1; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Unary
-	complement := expr as ast.Unary
+	assert expr.kind == .unary
+	complement := result.unit.arena.unary(expr)
 	assert complement.op == '~'
 	assert complement.typ.describe() == 'int'
 	// Where `~` is a prefix operator, `&` is both: the position decides. The
@@ -1492,34 +1555,37 @@ fn test_a_complement_is_a_unary_operator() {
 	// pointer, and `x & 1` reads as the bitwise and.
 	address := parsed('int main(void) { int x = 1; int *p = &x; return p != 0; }')
 	assert address.diagnostics.len == 0
-	init := address.unit.decls[0].body[1].initializer() or {
+	init := address.unit.decls[0].body[1].initializer()
+	if init.is_none() {
 		assert false
 		return
 	}
-	assert init is ast.Unary
-	unary := init as ast.Unary
+	assert init.kind == .unary
+	unary := address.unit.arena.unary(init)
 	assert unary.op == '&'
-	assert unary.expr is ast.Ident
-	assert (unary.expr as ast.Ident).name == 'x'
+	assert unary.expr.kind == .ident
+	assert address.unit.arena.ident(unary.expr).name == 'x'
 	assert unary.typ.describe() == 'int *'
 	bitwise := parsed('int main(void) { int x = 1; x = x & 1; return x; }')
 	assert bitwise.diagnostics.len == 0
-	assignment := bitwise.unit.decls[0].body[1].expr or {
+	assignment := bitwise.unit.decls[0].body[1].expr
+	if assignment.is_none() {
 		assert false
 		return
 	}
-	assert assignment is ast.Binary
-	assert (assignment as ast.Binary).op == '&'
+	assert assignment.kind == .binary
+	assert bitwise.unit.arena.binary(assignment).op == '&'
 }
 
 fn test_a_negation_is_a_unary_node() {
 	result := parsed('int main() { return !x; }')
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Unary
-	assert (expr as ast.Unary).op == '!'
+	assert expr.kind == .unary
+	assert result.unit.arena.unary(expr).op == '!'
 }
 
 // The second token is what tells an assignment from a comparison, so `==` is
@@ -1529,12 +1595,13 @@ fn test_an_expression_that_compares_is_not_an_assignment() {
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
 	assert body[1].kind == .expr_stmt
-	expr := body[1].expr or {
+	expr := body[1].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Binary
-	assert (expr as ast.Binary).op == '=='
+	assert expr.kind == .binary
+	assert result.unit.arena.binary(expr).op == '=='
 }
 
 fn test_an_if_keeps_its_condition_and_both_branches() {
@@ -1542,12 +1609,13 @@ fn test_an_if_keeps_its_condition_and_both_branches() {
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
 	assert body[1].kind == .if_stmt
-	cond := body[1].cond or {
+	cond := body[1].cond
+	if cond.is_none() {
 		assert false
 		return
 	}
-	assert cond is ast.Binary
-	assert (cond as ast.Binary).op == '<'
+	assert cond.kind == .binary
+	assert result.unit.arena.binary(cond).op == '<'
 	assert body[1].then_body().len == 1
 	assert body[1].then_body()[0].kind == .return_stmt
 	assert body[1].else_body().len == 1
@@ -1590,12 +1658,13 @@ fn test_a_branch_that_is_a_block_is_a_block_statement() {
 fn test_a_condition_may_be_a_call() {
 	result := parsed('int x;\nint is_even(int n);\nint main() { if (is_even(x)) return 1; return 0; }')
 	assert result.diagnostics.len == 0
-	cond := result.unit.decls[1].body[0].cond or {
+	cond := result.unit.decls[1].body[0].cond
+	if cond.is_none() {
 		assert false
 		return
 	}
-	assert cond is ast.Call
-	assert (cond as ast.Call).name == 'is_even'
+	assert cond.kind == .call
+	assert result.unit.arena.call(cond).name == 'is_even'
 }
 
 fn test_a_while_keeps_its_condition_and_its_body() {
@@ -1603,12 +1672,13 @@ fn test_a_while_keeps_its_condition_and_its_body() {
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
 	assert body[1].kind == .while_stmt
-	cond := body[1].cond or {
+	cond := body[1].cond
+	if cond.is_none() {
 		assert false
 		return
 	}
-	assert cond is ast.Binary
-	assert (cond as ast.Binary).op == '<'
+	assert cond.kind == .binary
+	assert result.unit.arena.binary(cond).op == '<'
 	assert body[1].body.len == 1
 	assert body[1].body[0].kind == .assign
 	assert body[1].body[0].target == 'x'
@@ -1690,24 +1760,26 @@ fn test_a_for_is_a_block_holding_a_while() {
 	assert loop.body[0].target == 'i'
 	spelled := loop.body[1]
 	assert spelled.kind == .while_stmt
-	cond := spelled.cond or {
+	cond := spelled.cond
+	if cond.is_none() {
 		assert false
 		return
 	}
-	assert cond is ast.Binary
-	assert (cond as ast.Binary).op == '<'
+	assert cond.kind == .binary
+	assert result.unit.arena.binary(cond).op == '<'
 	assert spelled.body.len == 1
 	assert spelled.body[0].kind == .assign
 	assert spelled.body[0].target == 'x'
 	step := spelled.step()[0]
 	assert step.kind == .assign
 	assert step.target == 'i'
-	value := step.expr or {
+	value := step.expr
+	if value.is_none() {
 		assert false
 		return
 	}
-	assert value is ast.Binary
-	assert (value as ast.Binary).op == '+'
+	assert value.kind == .binary
+	assert result.unit.arena.binary(value).op == '+'
 }
 
 fn test_a_for_may_declare_its_counter() {
@@ -1739,12 +1811,13 @@ fn test_a_for_with_no_condition_spells_the_constant() {
 	assert loop.body.len == 1
 	spelled := loop.body[0]
 	assert spelled.kind == .while_stmt
-	cond := spelled.cond or {
+	cond := spelled.cond
+	if cond.is_none() {
 		assert false
 		return
 	}
-	assert cond is ast.IntLit
-	assert (cond as ast.IntLit).value == 1
+	assert cond.kind == .int_lit
+	assert result.unit.arena.int_lit(cond).value == 1
 	assert spelled.body.len == 1
 	assert spelled.body[0].kind == .block
 	assert spelled.body[0].body[0].kind == .break_stmt
@@ -1827,23 +1900,25 @@ fn test_an_element_of_an_array_is_read_and_written() {
 	body := result.unit.decls[0].body
 	assert body[1].kind == .assign
 	assert body[1].target == 'a'
-	index := body[1].index or {
+	index := body[1].index
+	if index.is_none() {
 		assert false
 		return
 	}
-	assert index is ast.IntLit
-	assert (index as ast.IntLit).value == 0
-	init := body[2].initializer() or {
+	assert index.kind == .int_lit
+	assert result.unit.arena.int_lit(index).value == 0
+	init := body[2].initializer()
+	if init.is_none() {
 		assert false
 		return
 	}
-	assert init is ast.Binary
-	binary := init as ast.Binary
-	assert binary.left is ast.Index
-	element := binary.left as ast.Index
-	base := element.base as ast.Ident
+	assert init.kind == .binary
+	binary := result.unit.arena.binary(init)
+	assert binary.left.kind == .index
+	element := result.unit.arena.index(binary.left)
+	base := result.unit.arena.ident(element.base)
 	assert base.name == 'a'
-	assert (element.index as ast.IntLit).value == 2
+	assert result.unit.arena.int_lit(element.index).value == 2
 }
 
 fn test_a_compound_assignment_to_an_element_reads_the_element() {
@@ -1851,13 +1926,14 @@ fn test_a_compound_assignment_to_an_element_reads_the_element() {
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
 	assert body[1].kind == .assign
-	assert body[1].index != none
-	value := body[1].expr or {
+	assert !body[1].index.is_none()
+	value := body[1].expr
+	if value.is_none() {
 		assert false
 		return
 	}
-	assert value is ast.Binary
-	assert (value as ast.Binary).left is ast.Index
+	assert value.kind == .binary
+	assert result.unit.arena.binary(value).left.kind == .index
 }
 
 fn test_an_array_declaration_without_a_size_is_reported() {
@@ -1931,12 +2007,13 @@ fn test_an_undeclared_name_costs_one_diagnostic() {
 fn test_a_name_declared_later_in_the_file_is_not_refused() {
 	result := parsed('int main(void) { return f(); }\nint f(void) { return 0; }')
 	assert result.diagnostics.len == 0
-	call := result.unit.decls[0].body[0].expr or {
+	call := result.unit.decls[0].body[0].expr
+	if call.is_none() {
 		assert false
 		return
 	}
-	assert call is ast.Call
-	assert (call as ast.Call).typ.kind == .unknown
+	assert call.kind == .call
+	assert result.unit.arena.call(call).typ.kind == .unknown
 }
 
 // `++` and `--` are operators and not statements, so each is read as an
@@ -1950,37 +2027,41 @@ fn test_the_increment_and_decrement_are_read_as_prefix_and_postfix_values() {
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
 	assert body.len == 6
-	post_increment := body[1].expr or {
+	post_increment := body[1].expr
+	if post_increment.is_none() {
 		assert false
 		return
 	}
-	assert post_increment is ast.IncDec
-	post_operand := (post_increment as ast.IncDec).operand
-	assert post_operand is ast.Ident
-	assert (post_operand as ast.Ident).name == 'i'
-	assert (post_increment as ast.IncDec).op == '++'
-	assert (post_increment as ast.IncDec).postfix
-	pre_increment := body[2].expr or {
+	assert post_increment.kind == .inc_dec
+	post_operand := result.unit.arena.inc_dec(post_increment).operand
+	assert post_operand.kind == .ident
+	assert result.unit.arena.ident(post_operand).name == 'i'
+	assert result.unit.arena.inc_dec(post_increment).op == '++'
+	assert result.unit.arena.inc_dec(post_increment).postfix
+	pre_increment := body[2].expr
+	if pre_increment.is_none() {
 		assert false
 		return
 	}
-	assert (pre_increment as ast.IncDec).op == '++'
-	assert !(pre_increment as ast.IncDec).postfix
-	post_decrement := body[3].expr or {
+	assert result.unit.arena.inc_dec(pre_increment).op == '++'
+	assert !result.unit.arena.inc_dec(pre_increment).postfix
+	post_decrement := body[3].expr
+	if post_decrement.is_none() {
 		assert false
 		return
 	}
-	assert (post_decrement as ast.IncDec).op == '--'
-	assert (post_decrement as ast.IncDec).postfix
-	pre_decrement := body[4].expr or {
+	assert result.unit.arena.inc_dec(post_decrement).op == '--'
+	assert result.unit.arena.inc_dec(post_decrement).postfix
+	pre_decrement := body[4].expr
+	if pre_decrement.is_none() {
 		assert false
 		return
 	}
-	assert (pre_decrement as ast.IncDec).op == '--'
-	assert !(pre_decrement as ast.IncDec).postfix
+	assert result.unit.arena.inc_dec(pre_decrement).op == '--'
+	assert !result.unit.arena.inc_dec(pre_decrement).postfix
 	// The value the node is worth is the type of the name, which is what makes
 	// `i++` an int the expression around it can use.
-	assert (post_increment as ast.IncDec).typ.kind == .int_
+	assert result.unit.arena.inc_dec(post_increment).typ.kind == .int_
 }
 
 // The step of a for is the third part of the header, and `i++` there is a
@@ -1999,12 +2080,13 @@ fn test_an_increment_is_read_as_the_step_of_a_for() {
 	assert loop.step().len == 1
 	step := loop.step()[0]
 	assert step.kind == .expr_stmt
-	expr := step.expr or {
+	expr := step.expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.IncDec
-	assert (expr as ast.IncDec).postfix
+	assert expr.kind == .inc_dec
+	assert result.unit.arena.inc_dec(expr).postfix
 }
 
 // Every operand that is not an object is refused where the operator is written,
@@ -2100,19 +2182,21 @@ fn test_an_increment_of_an_undeclared_name_is_reported_as_a_missing_declaration(
 fn test_a_conditional_carries_the_type_its_two_arms_share() {
 	ints := parsed('int main(void) { int x = 1 ? 2 : 3; return 0; }')
 	assert ints.diagnostics.len == 0
-	init := ints.unit.decls[0].body[0].initializer() or {
+	init := ints.unit.decls[0].body[0].initializer()
+	if init.is_none() {
 		assert false
 		return
 	}
-	conditional := init as ast.Conditional
+	conditional := ints.unit.arena.conditional(init)
 	assert conditional.typ.kind == types.Kind.int_
 	mixed := parsed('int main(void) { return sizeof(1 ? 1 : 1.0); }')
 	assert mixed.diagnostics.len == 0
-	size := mixed.unit.decls[0].body[0].expr or {
+	size := mixed.unit.decls[0].body[0].expr
+	if size.is_none() {
 		assert false
 		return
 	}
-	assert (size as ast.IntLit).value == 8
+	assert mixed.unit.arena.int_lit(size).value == 8
 }
 
 // 6.5.15p3 pairs two arms of the same structure or union type and gives the
@@ -2125,29 +2209,32 @@ fn test_a_conditional_of_two_same_structure_arms_has_that_type() {
 	structured := parsed('typedef struct { int a; int b; } S;\nS x;\nS y;\nint c;\nS f(void) { return c ? x : y; }')
 	assert structured.diagnostics.len == 0
 	declaration := structured.unit.decls[structured.unit.decls.len - 1]
-	expr := declaration.body[0].expr or {
+	expr := declaration.body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert (expr as ast.Conditional).typ.kind == types.Kind.struct_
+	assert structured.unit.arena.conditional(expr).typ.kind == types.Kind.struct_
 	// `sizeof` reads the same answer, which is the eight bytes of the two ints.
 	sized := parsed('typedef struct { int a; int b; } S;\nS x;\nS y;\nint c;\nint main(void) { return sizeof(c ? x : y); }')
 	assert sized.diagnostics.len == 0
 	size_decl := sized.unit.decls[sized.unit.decls.len - 1]
-	size_expr := size_decl.body[0].expr or {
+	size_expr := size_decl.body[0].expr
+	if size_expr.is_none() {
 		assert false
 		return
 	}
-	assert (size_expr as ast.IntLit).value == 8
+	assert sized.unit.arena.int_lit(size_expr).value == 8
 	// Two names for one struct are one type: `T` and `U` are both `S`.
 	aliased := parsed('typedef struct { int a; int b; } S;\ntypedef S T;\ntypedef S U;\nT x;\nU y;\nint c;\nS f(void) { return c ? x : y; }')
 	assert aliased.diagnostics.len == 0
 	alias_decl := aliased.unit.decls[aliased.unit.decls.len - 1]
-	alias_expr := alias_decl.body[0].expr or {
+	alias_expr := alias_decl.body[0].expr
+	if alias_expr.is_none() {
 		assert false
 		return
 	}
-	assert (alias_expr as ast.Conditional).typ.kind == types.Kind.struct_
+	assert aliased.unit.arena.conditional(alias_expr).typ.kind == types.Kind.struct_
 }
 
 // The two arms have to be that one type. Measured on gcc 16.2.1, two different
@@ -2182,32 +2269,36 @@ fn test_a_conditional_of_a_structure_beside_a_non_structure_is_still_refused() {
 fn test_the_other_pairs_a_conditional_accepts_still_resolve() {
 	void_arms := parsed('void f(void) { 1 ? (void)0 : (void)0; }')
 	assert void_arms.diagnostics.len == 0
-	void_expr := void_arms.unit.decls[void_arms.unit.decls.len - 1].body[0].expr or {
+	void_expr := void_arms.unit.decls[void_arms.unit.decls.len - 1].body[0].expr
+	if void_expr.is_none() {
 		assert false
 		return
 	}
-	assert (void_expr as ast.Conditional).typ.kind == types.Kind.void_
+	assert void_arms.unit.arena.conditional(void_expr).typ.kind == types.Kind.void_
 	two_pointers := parsed('int *p;\nint *q;\nint *g(void) { return 1 ? p : q; }')
 	assert two_pointers.diagnostics.len == 0
-	pointer_expr := two_pointers.unit.decls[two_pointers.unit.decls.len - 1].body[0].expr or {
+	pointer_expr := two_pointers.unit.decls[two_pointers.unit.decls.len - 1].body[0].expr
+	if pointer_expr.is_none() {
 		assert false
 		return
 	}
-	assert (pointer_expr as ast.Conditional).typ.kind == types.Kind.pointer
+	assert two_pointers.unit.arena.conditional(pointer_expr).typ.kind == types.Kind.pointer
 	constant_arm := parsed('int *p;\nint *g(void) { return 1 ? p : 0; }')
 	assert constant_arm.diagnostics.len == 0
-	constant_expr := constant_arm.unit.decls[constant_arm.unit.decls.len - 1].body[0].expr or {
+	constant_expr := constant_arm.unit.decls[constant_arm.unit.decls.len - 1].body[0].expr
+	if constant_expr.is_none() {
 		assert false
 		return
 	}
-	assert (constant_expr as ast.Conditional).typ.kind == types.Kind.pointer
+	assert constant_arm.unit.arena.conditional(constant_expr).typ.kind == types.Kind.pointer
 	void_pointer := parsed('int *g(void) { return 1 ? (void*)0 : (int*)0; }')
 	assert void_pointer.diagnostics.len == 0
-	void_pointer_expr := void_pointer.unit.decls[void_pointer.unit.decls.len - 1].body[0].expr or {
+	void_pointer_expr := void_pointer.unit.decls[void_pointer.unit.decls.len - 1].body[0].expr
+	if void_pointer_expr.is_none() {
 		assert false
 		return
 	}
-	assert (void_pointer_expr as ast.Conditional).typ.kind == types.Kind.pointer
+	assert void_pointer.unit.arena.conditional(void_pointer_expr).typ.kind == types.Kind.pointer
 }
 
 // The middle operand is the whole expression before the `:` and the third is a
@@ -2216,15 +2307,16 @@ fn test_the_other_pairs_a_conditional_accepts_still_resolve() {
 fn test_a_conditional_is_right_associative() {
 	result := parsed('int f(int a, int b, int c, int d, int e) { return a ? b : c ? d : e; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	outer := expr as ast.Conditional
-	assert outer.then_expr is ast.Ident
-	assert outer.else_expr is ast.Conditional
-	inner := outer.else_expr as ast.Conditional
-	assert (inner.cond as ast.Ident).name == 'c'
+	outer := result.unit.arena.conditional(expr)
+	assert outer.then_expr.kind == .ident
+	assert outer.else_expr.kind == .conditional
+	inner := result.unit.arena.conditional(outer.else_expr)
+	assert result.unit.arena.ident(inner.cond).name == 'c'
 }
 
 // The GNU spelling with the middle operand left out, `a ?: b`, is read as the
@@ -2235,15 +2327,16 @@ fn test_a_conditional_is_right_associative() {
 fn test_a_conditional_with_the_middle_operand_left_out_is_read() {
 	result := parsed('int f(int x, int y) { return x ?: y; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	conditional := expr as ast.Conditional
+	conditional := result.unit.arena.conditional(expr)
 	assert conditional.omitted_middle
-	assert conditional.cond is ast.Ident
-	assert (conditional.then_expr as ast.Ident).name == 'x'
-	assert (conditional.else_expr as ast.Ident).name == 'y'
+	assert conditional.cond.kind == .ident
+	assert result.unit.arena.ident(conditional.then_expr).name == 'x'
+	assert result.unit.arena.ident(conditional.else_expr).name == 'y'
 	// The result type is the one the middle operand and the else operand share,
 	// which is the condition's own type beside the else operand's.
 	assert conditional.typ.describe() == 'int'
@@ -2252,13 +2345,14 @@ fn test_a_conditional_with_the_middle_operand_left_out_is_read() {
 	// 2` is a long and not the int the folded condition would give it.
 	folded := parsed('int f(void) { return 1L ?: 2; }')
 	assert folded.diagnostics.len == 0
-	folded_expr := folded.unit.decls[0].body[0].expr or {
+	folded_expr := folded.unit.decls[0].body[0].expr
+	if folded_expr.is_none() {
 		assert false
 		return
 	}
-	folded_conditional := folded_expr as ast.Conditional
+	folded_conditional := folded.unit.arena.conditional(folded_expr)
 	assert folded_conditional.omitted_middle
-	assert folded_conditional.then_expr is ast.IntLit
+	assert folded_conditional.then_expr.kind == .int_lit
 	assert folded_conditional.typ.describe() == 'long'
 }
 
@@ -2267,15 +2361,16 @@ fn test_a_conditional_with_the_middle_operand_left_out_is_read() {
 fn test_a_conditional_binds_looser_than_the_binary_operators() {
 	result := parsed('int f(int a, int b, int c, int d) { return a || b ? c : d; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	conditional := expr as ast.Conditional
-	assert conditional.cond is ast.Binary
-	assert (conditional.cond as ast.Binary).op == '||'
-	assert (conditional.then_expr as ast.Ident).name == 'c'
-	assert (conditional.else_expr as ast.Ident).name == 'd'
+	conditional := result.unit.arena.conditional(expr)
+	assert conditional.cond.kind == .binary
+	assert result.unit.arena.binary(conditional.cond).op == '||'
+	assert result.unit.arena.ident(conditional.then_expr).name == 'c'
+	assert result.unit.arena.ident(conditional.else_expr).name == 'd'
 }
 
 // 6.5.15 evaluates only the arm the condition selects, and a condition the
@@ -2287,30 +2382,33 @@ fn test_a_conditional_binds_looser_than_the_binary_operators() {
 fn test_a_constant_condition_is_folded_to_its_value() {
 	selected := parsed('int main(void) { return (2 > 1) ? 7 : 9; }')
 	assert selected.diagnostics.len == 0
-	selected_expr := selected.unit.decls[0].body[0].expr or {
+	selected_expr := selected.unit.decls[0].body[0].expr
+	if selected_expr.is_none() {
 		assert false
 		return
 	}
-	conditional := selected_expr as ast.Conditional
-	assert conditional.cond is ast.IntLit
-	assert (conditional.cond as ast.IntLit).value != 0
+	conditional := selected.unit.arena.conditional(selected_expr)
+	assert conditional.cond.kind == .int_lit
+	assert selected.unit.arena.int_lit(conditional.cond).value != 0
 	zeroed := parsed('int main(void) { return 0 ? 7 : 9; }')
 	assert zeroed.diagnostics.len == 0
-	zero_expr := zeroed.unit.decls[0].body[0].expr or {
+	zero_expr := zeroed.unit.decls[0].body[0].expr
+	if zero_expr.is_none() {
 		assert false
 		return
 	}
-	is_zero := zero_expr as ast.Conditional
-	assert is_zero.cond is ast.IntLit
-	assert (is_zero.cond as ast.IntLit).value == 0
+	is_zero := zeroed.unit.arena.conditional(zero_expr)
+	assert is_zero.cond.kind == .int_lit
+	assert zeroed.unit.arena.int_lit(is_zero.cond).value == 0
 	runtime := parsed('int f(int c) { return c ? 7 : 9; }')
 	assert runtime.diagnostics.len == 0
-	runtime_expr := runtime.unit.decls[0].body[0].expr or {
+	runtime_expr := runtime.unit.decls[0].body[0].expr
+	if runtime_expr.is_none() {
 		assert false
 		return
 	}
-	kept := runtime_expr as ast.Conditional
-	assert kept.cond is ast.Ident
+	kept := runtime.unit.arena.conditional(runtime_expr)
+	assert kept.cond.kind == .ident
 }
 
 // The GNU spelling with the middle operand left out is read rather than refused:
@@ -2322,14 +2420,15 @@ fn test_a_constant_condition_is_folded_to_its_value() {
 fn test_the_omitted_middle_operand_is_read() {
 	result := parsed('int main(void) { int a = 1; return a ?: 2; }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[1].expr or {
+	expr := result.unit.decls[0].body[1].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	conditional := expr as ast.Conditional
+	conditional := result.unit.arena.conditional(expr)
 	assert conditional.omitted_middle
-	assert (conditional.then_expr as ast.Ident).name == 'a'
-	assert conditional.else_expr is ast.IntLit
+	assert result.unit.arena.ident(conditional.then_expr).name == 'a'
+	assert conditional.else_expr.kind == .int_lit
 }
 
 // Two pointers to compatibly qualified versions of one type give a pointer to
@@ -2489,12 +2588,13 @@ fn test_a_label_and_an_object_of_the_same_name_are_two_names() {
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
 	returned := body[body.len - 1]
-	operand := returned.expr or {
+	operand := returned.expr
+	if operand.is_none() {
 		assert false
 		return
 	}
-	assert (operand as ast.Ident).name == 'label'
-	assert (operand as ast.Ident).typ.kind == .int_
+	assert result.unit.arena.ident(operand).name == 'label'
+	assert result.unit.arena.ident(operand).typ.kind == .int_
 }
 
 // A cast of an integer constant to an integer type is an integer constant
@@ -2532,13 +2632,14 @@ fn test_a_cast_of_a_constant_is_an_integer_constant_expression() {
 fn test_the_real_part_of_a_real_value_is_the_value() {
 	result := parsed('int main(void) { double x = 3.0; double y = __real__ x; return 0; }')
 	assert result.diagnostics.len == 0
-	init := result.unit.decls[0].body[1].initializer() or {
+	init := result.unit.decls[0].body[1].initializer()
+	if init.is_none() {
 		assert false
 		return
 	}
 	// `__real__ x` is x, so the initialiser is the name and not a new node.
-	assert init is ast.Ident
-	assert init.typ.kind == types.Kind.double
+	assert init.kind == .ident
+	assert result.unit.arena.typ(init).kind == types.Kind.double
 }
 
 fn test_the_real_part_is_an_object_and_takes_an_address() {
@@ -2570,18 +2671,19 @@ fn test_the_imaginary_part_of_a_real_value_is_a_zero_of_its_type() {
 	for i, source in shapes {
 		result := parsed(source)
 		assert result.diagnostics.len == 0
-		init := result.unit.decls[0].body[1].initializer() or {
+		init := result.unit.decls[0].body[1].initializer()
+		if init.is_none() {
 			assert false
 			return
 		}
 		if kinds[i] == types.Kind.double {
-			literal := init as ast.FloatLit
+			literal := result.unit.arena.float_lit(init)
 			assert literal.value == 0.0
 		} else {
-			literal := init as ast.IntLit
+			literal := result.unit.arena.int_lit(init)
 			assert literal.value == 0
 		}
-		assert init.typ.kind == kinds[i]
+		assert result.unit.arena.typ(init).kind == kinds[i]
 	}
 }
 
@@ -2591,11 +2693,12 @@ fn test_the_imaginary_part_of_a_real_value_is_a_zero_of_its_type() {
 fn test_the_imaginary_part_keeps_the_operands_own_type() {
 	result := parsed('int main(void) { int n = sizeof(__imag__ (char) 1); return 0; }')
 	assert result.diagnostics.len == 0
-	init := result.unit.decls[0].body[0].initializer() or {
+	init := result.unit.decls[0].body[0].initializer()
+	if init.is_none() {
 		assert false
 		return
 	}
-	literal := init as ast.IntLit
+	literal := result.unit.arena.int_lit(init)
 	assert literal.value == 1
 }
 
@@ -2625,24 +2728,26 @@ fn test_a_part_of_a_complex_value_is_the_component_it_names() {
 	for source in shapes {
 		result := parsed(source)
 		assert result.diagnostics.len == 0
-		init := result.unit.decls[0].body[1].initializer() or {
+		init := result.unit.decls[0].body[1].initializer()
+		if init.is_none() {
 			assert false
 			return
 		}
-		assert init is ast.Unary
-		part := init as ast.Unary
+		assert init.kind == .unary
+		part := result.unit.arena.unary(init)
 		assert part.op == '__real__' || part.op == '__imag__'
 		assert part.typ.kind == types.Kind.double
-		assert part.expr.typ.kind == types.Kind.complex_double
+		assert result.unit.arena.typ(part.expr).kind == types.Kind.complex_double
 	}
 	// A float component is a float, and `sizeof` of the part is four.
 	float_result := parsed('int main(void) { float _Complex f = 0; int n = sizeof(__real__ f); return 0; }')
 	assert float_result.diagnostics.len == 0
-	literal := float_result.unit.decls[0].body[1].initializer() or {
+	literal := float_result.unit.decls[0].body[1].initializer()
+	if literal.is_none() {
 		assert false
 		return
 	}
-	assert (literal as ast.IntLit).value == 4
+	assert float_result.unit.arena.int_lit(literal).value == 4
 }
 
 // A component of a `long double _Complex` is one part of the extended format,
@@ -2700,11 +2805,12 @@ fn test_a_generic_selection_with_two_compatible_associations_is_refused() {
 fn test_a_generic_selection_resolves_an_association_through_a_typedef() {
 	result := parsed('typedef int T; int main(void) { return _Generic(1, T: 7, default: 0); }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert (expr as ast.IntLit).value == 7
+	assert result.unit.arena.int_lit(expr).value == 7
 }
 
 // The controlling expression is matched after the lvalue conversion 6.5.17 asks
@@ -2713,11 +2819,12 @@ fn test_a_generic_selection_resolves_an_association_through_a_typedef() {
 fn test_a_generic_selection_matches_an_unqualified_type_against_a_qualified_operand() {
 	result := parsed('int main(void) { const int x = 3; return _Generic(x, int: 11, default: 99); }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[1].expr or {
+	expr := result.unit.decls[0].body[1].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert (expr as ast.IntLit).value == 11
+	assert result.unit.arena.int_lit(expr).value == 11
 }
 
 // A controlling expression is not part of the tree, because 6.5.17 does not
@@ -2740,11 +2847,12 @@ fn test_a_generic_selection_reports_an_undeclared_controlling_name() {
 fn test_a_generic_selection_selects_a_named_arm_before_the_default() {
 	result := parsed('int main(void) { return _Generic(0, int: 1, default: 2, double: 3); }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert (expr as ast.IntLit).value == 1
+	assert result.unit.arena.int_lit(expr).value == 1
 }
 
 // 6.3.2.1p2 and 6.5.16.1: a value read from a const-qualified aggregate has the

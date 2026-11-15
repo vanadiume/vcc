@@ -1,6 +1,5 @@
 module parser
 
-import ast
 import decimal
 import tokenize
 
@@ -32,14 +31,15 @@ fn folded_decimal(type_name string, expr string) string {
 	result := folded_parse(source)
 	assert result.diagnostics.len == 0, '${source} was refused'
 	stmt := result.unit.decls[0].body[0]
-	init := stmt.initializer() or {
+	init := stmt.initializer()
+	if init.is_none() {
 		assert false, '${source} has no initializer'
 		return ''
 	}
-	if init is ast.Binary {
+	if init.kind == .binary {
 		assert false, '${expr} was not folded: it is still the operation'
 	}
-	lit := init as ast.FloatLit
+	lit := result.unit.arena.float_lit(init)
 	value := lit.decimal_value
 	bytes := decimal.encode(value.value(), value.decimal_format())
 	mut out := ''
@@ -112,14 +112,15 @@ fn folded_comparison(expr string) i64 {
 	result := folded_parse(source)
 	assert result.diagnostics.len == 0, '${source} was refused'
 	stmt := result.unit.decls[0].body[0]
-	init := stmt.initializer() or {
+	init := stmt.initializer()
+	if init.is_none() {
 		assert false, '${source} has no initializer'
 		return 0
 	}
-	if init is ast.Binary {
+	if init.kind == .binary {
 		assert false, '${expr} was not folded: it is still the comparison'
 	}
-	return (init as ast.IntLit).value
+	return result.unit.arena.int_lit(init).value
 }
 
 fn test_a_folded_decimal_comparison_is_the_answer_gcc_gives() {
@@ -170,9 +171,10 @@ fn test_an_operation_without_one_decimal_format_is_not_folded() {
 	if result.diagnostics.len > 0 {
 		return
 	}
-	init := result.unit.decls[0].body[0].initializer() or {
+	init := result.unit.decls[0].body[0].initializer()
+	if init.is_none() {
 		assert false, '${source} has no initializer'
 		return
 	}
-	assert init is ast.Binary, '${source} folded an operation of two formats'
+	assert init.kind == .binary, '${source} folded an operation of two formats'
 }
