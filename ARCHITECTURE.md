@@ -240,8 +240,11 @@ it, and those frees are part of the ownership a stage hands on. A stage frees it
 input when the next one has copied what it needs: the preprocessor frees a file's
 token list when the file ends, the expander frees the run it was given, and a
 block frees the lists a statement came back as once they are in its own. What is
-stored in the tree lives until the process ends, because `ast.Expr` is a boxed
-sum type and V generates no free for one.
+stored in the tree lives until the process ends. The expression nodes are not
+allocated one at a time: they are one stream of megabyte chunks that the unit's
+arena owns, sixteen-byte aligned, and a node is a byte offset into that stream.
+A statement is still a value in a list, because a body is a slice and every
+reader walks it.
 
 An array that grows tells the runtime whether a slice of it can be alive: with no
 collector, `ensure_cap` frees the buffer it copied from only when the array

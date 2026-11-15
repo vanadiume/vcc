@@ -35,9 +35,12 @@ fn returned_fold(unit ast.TranslationUnit) ?i64 {
 		if decl.body.len == 0 {
 			continue
 		}
-		expr := decl.body[0].expr or { return none }
-		if expr is ast.IntLit {
-			return (expr as ast.IntLit).value
+		if decl.body[0].expr.is_none() {
+			return none
+		}
+		expr := decl.body[0].expr
+		if expr.kind == .int_lit {
+			return unit.arena.int_lit(expr).value
 		}
 		return none
 	}
@@ -47,7 +50,10 @@ fn returned_fold(unit ast.TranslationUnit) ?i64 {
 fn first_expression(unit ast.TranslationUnit) ast.Expr {
 	for decl in unit.decls {
 		if decl.body.len > 0 {
-			return decl.body[0].expr or { panic('the statement has no expression') }
+			if decl.body[0].expr.is_none() {
+				panic('the statement has no expression')
+			}
+			return decl.body[0].expr
 		}
 	}
 	panic('no declaration in the unit has a body')
@@ -104,39 +110,40 @@ fn test_the_three_absolute_value_spellings_agree() {
 fn test_a_call_around_a_non_constant_stays_a_call() {
 	opts := options(['-O2'])
 	expr := first_expression(optimize_source('int x;\nint abs(int n);\nint main() { return abs(x); }', opts))
-	assert expr is ast.Call
+	assert expr.kind == .call
 }
 
 fn test_a_call_with_the_wrong_number_of_arguments_stays_a_call() {
 	opts := options(['-O2'])
 	expr := first_expression(optimize_source('int abs();\nint main() { return abs(1, 2); }', opts))
-	assert expr is ast.Call
+	assert expr.kind == .call
 }
 
 fn test_an_unknown_name_stays_a_call() {
 	opts := options(['-O2'])
 	expr := first_expression(optimize_source('int strlen(char *s);\nint main() { return strlen(0); }', opts))
-	assert expr is ast.Call
+	assert expr.kind == .call
 }
 
 fn test_fno_builtin_leaves_every_library_name_alone() {
 	opts := options(['-O2', '-fno-builtin'])
 	assert !opts.folds_builtin('abs')
 	expr := first_expression(optimize_source('int abs(int n);\nint main() { return abs(-7); }', opts))
-	assert expr is ast.Call
+	assert expr.kind == .call
 }
 
 fn test_fno_builtin_name_turns_off_one_name() {
 	opts := options(['-O2', '-fno-builtin-abs'])
 	assert !opts.folds_builtin('abs')
 	assert opts.folds_builtin('labs')
-	expr := first_expression(optimize_source('int abs(int n);\nint labs(int n);\nint main() { return abs(-7) + labs(-9); }', opts))
-	assert expr is ast.Binary
-	binary := expr as ast.Binary
-	assert binary.left is ast.Call
+	unit := optimize_source('int abs(int n);\nint labs(int n);\nint main() { return abs(-7) + labs(-9); }', opts)
+	expr := first_expression(unit)
+	assert expr.kind == .binary
+	binary := unit.arena.binary(expr)
+	assert binary.left.kind == .call
 	folded_right := binary.right
-	assert folded_right is ast.IntLit
-	assert (folded_right as ast.IntLit).value == 9
+	assert folded_right.kind == .int_lit
+	assert unit.arena.int_lit(folded_right).value == 9
 }
 
 fn test_the_reserved_spelling_survives_fno_builtin() {
@@ -173,7 +180,7 @@ fn test_a_return_without_a_value_is_untouched() {
 	opts := options(['-O2'])
 	unit := optimize_source('int main() { return; }', opts)
 	assert unit.decls[0].body.len == 1
-	assert unit.decls[0].body[0].expr == none
+	assert unit.decls[0].body[0].expr.is_none()
 }
 
 fn test_the_summary_names_what_runs() {
@@ -254,20 +261,21 @@ fn test_a_builtin_argument_that_is_a_sum_stays_a_call() {
 	// has to be written out.
 	opts := options(['-O2'])
 	expr := first_expression(optimize_source('int abs(int n);\nint main() { return abs(1 + 2); }', opts))
-	assert expr is ast.Call
+	assert expr.kind == .call
 }
 
 fn test_a_folded_value_is_written_as_the_literal_it_became() {
 	opts := options(['-O2'])
-	expr := first_expression(optimize_source('int abs(int n);\nint main() { return abs(-7); }', opts))
-	assert expr is ast.IntLit
-	folded := expr as ast.IntLit
+	unit := optimize_source('int abs(int n);\nint main() { return abs(-7); }', opts)
+	expr := first_expression(unit)
+	assert expr.kind == .int_lit
+	folded := unit.arena.int_lit(expr)
 	assert folded.value == 7
 	assert folded.text == '7'
 	// The location is the call's, so a diagnostic about what the value became
 	// points at the expression a person wrote.
-	assert folded.line == 2
-	assert folded.col > 0
+	assert unit.arena.span(expr).line == 2
+	assert unit.arena.span(expr).col > 0
 }
 
 fn test_the_argument_count_in_the_table_is_checked_before_the_value() {
@@ -275,7 +283,7 @@ fn test_the_argument_count_in_the_table_is_checked_before_the_value() {
 	// compute and is left for the emitter to report.
 	opts := options(['-O2'])
 	expr := first_expression(optimize_source('int abs();\nint main() { return abs(); }', opts))
-	assert expr is ast.Call
+	assert expr.kind == .call
 }
 
 fn test_the_reserved_spellings_are_in_the_table_too() {
@@ -291,26 +299,22 @@ fn test_a_call_nested_in_an_element_is_reached() {
 	unit := optimize_source('int abs(int n);\nint main() { int a[3]; return a[abs(-1)]; }', opts)
 	body := unit.decls[1].body
 	assert body.len == 2
-	expr := body[1].expr or {
-		assert false
-		return
-	}
-	assert expr is ast.Index
-	index := (expr as ast.Index).index
-	assert index is ast.IntLit
-	assert (index as ast.IntLit).value == 1
+	assert !body[1].expr.is_none()
+	expr := body[1].expr
+	assert expr.kind == .index
+	index := unit.arena.index(expr).index
+	assert index.kind == .int_lit
+	assert unit.arena.int_lit(index).value == 1
 }
 
 fn test_a_builtin_call_in_a_condition_is_folded_and_the_branches_survive() {
 	opts := options(['-O2'])
 	unit := optimize_source('int abs(int n);\nint main() { if (abs(-2)) { return 1; } return 0; }', opts)
 	stmt := unit.decls[1].body[0]
-	cond := stmt.cond or {
-		assert false
-		return
-	}
-	assert cond is ast.IntLit
-	assert (cond as ast.IntLit).value == 2
+	assert !stmt.cond.is_none()
+	cond := stmt.cond
+	assert cond.kind == .int_lit
+	assert unit.arena.int_lit(cond).value == 2
 	// The statement is carried over whole: the rewrite changes the condition and
 	// not the branches or the kind.
 	assert stmt.kind == .if_stmt
@@ -333,25 +337,24 @@ fn test_a_step_keeps_the_type_the_reader_resolved_for_it() {
 	// `x & (x - 1)` over two unsigned long longs was refused at -O1 and up as a
 	// bitwise operation on a pointer: the step had no type of its own, so the
 	// emitter sized the operand it computes at the width of an address.
-	expr := first_expression(optimize_source('unsigned long long f(unsigned long long x) { return x & (x - 1); }',
-		options(['-O2'])))
-	assert expr is ast.Binary
-	step := expr as ast.Binary
+	unit := optimize_source('unsigned long long f(unsigned long long x) { return x & (x - 1); }',
+		options(['-O2']))
+	expr := first_expression(unit)
+	assert expr.kind == .binary
+	step := unit.arena.binary(expr)
 	assert step.op == '&'
 	assert type_name(step.typ) == 'unsigned long long'
-	assert step.right is ast.Binary
-	assert type_name((step.right as ast.Binary).typ) == 'unsigned long long'
+	assert step.right.kind == .binary
+	assert type_name(unit.arena.binary(step.right).typ) == 'unsigned long long'
 }
 
 fn test_an_element_keeps_the_type_the_reader_resolved_for_it() {
 	unit := optimize_source('int main(void) { int a[3]; return a[1]; }', options(['-O2']))
 	stmt := unit.decls[0].body[1]
-	expr := stmt.expr or {
-		assert false
-		return
-	}
-	assert expr is ast.Index
-	assert type_name((expr as ast.Index).typ) == 'int'
+	assert !stmt.expr.is_none()
+	expr := stmt.expr
+	assert expr.kind == .index
+	assert type_name(unit.arena.index(expr).typ) == 'int'
 }
 
 fn test_a_declaration_keeps_the_part_the_emitter_sizes_it_by() {
@@ -413,10 +416,11 @@ fn test_a_folded_value_carries_the_type_of_the_call_it_replaces() {
 	// Without one it is a constant the emitter writes as an int, and a value
 	// wider than that has no type to be written at: `x & llabs(-0x100000001)`
 	// was refused at -O1 and up while the call compiled at -O0.
-	expr := first_expression(optimize_source('long long llabs(long long n);\nint main(void) { return llabs(-5); }',
-		options(['-O2'])))
-	assert expr is ast.IntLit
-	literal := expr as ast.IntLit
+	unit := optimize_source('long long llabs(long long n);\nint main(void) { return llabs(-5); }',
+		options(['-O2']))
+	expr := first_expression(unit)
+	assert expr.kind == .int_lit
+	literal := unit.arena.int_lit(expr)
 	assert literal.value == 5
 	assert type_name(literal.typ) == 'long long'
 }
