@@ -2625,7 +2625,7 @@ fn (mut p Parser) parse_countof(at tokenize.Token) !ast.Expr {
 			// runs, so the count is that expression evaluated where the
 			// `_Countof` is asked. Measured on gcc 16.2.1, `int v[n];
 			// _Countof(v)` is how many elements v has at the time.
-			bounds := p.vla_bound_exprs(declared.vla_id)
+			bounds := p.vla_bound_exprs(declared.vla_id())
 			if bounds.len > 0 {
 				bound = bounds[0]
 			}
@@ -2662,7 +2662,7 @@ fn (mut p Parser) parse_countof(at tokenize.Token) !ast.Expr {
 		if typ.count > 0 {
 			count = typ.count
 		} else if typ.vla {
-			bounds := p.vla_bound_exprs(typ.vla_id)
+			bounds := p.vla_bound_exprs(typ.vla_id())
 			if bounds.len > 0 {
 				bound = bounds[0]
 			}

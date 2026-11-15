@@ -260,7 +260,7 @@ fn test_a_variable_length_array_is_complete_though_its_count_is_not_written() {
 	v := vla_array_of(int_type(), 3)
 	assert v.is_array() && v.vla
 	assert v.count == -1
-	assert v.vla_id == 3
+	assert v.vla_id() == 3
 	assert v.is_complete()
 	assert v.describe() == 'int[]'
 	// The two are not the same type: an object whose size is computed at run

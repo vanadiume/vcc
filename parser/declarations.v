@@ -5023,13 +5023,13 @@ fn (mut p Parser) parse_tag_specifier(keyword tokenize.Token, depth int) !TagTyp
 	// the type, the boundary it starts on, the offset of a member) then reads
 	// the answer rather than walking the members again.
 	if lay := p.representation.layout(clause) {
-		clause.layout = &types.Layout{
+		clause.set_layout(&types.Layout{
 			size:    lay.size
 			align:   lay.align
 			offsets: lay.offsets
 			bits:    lay.bits
 			padding: lay.padding
-		}
+		})
 	}
 	p.scopes.declare_tag(spelling, clause)
 	return TagType{
@@ -5644,7 +5644,7 @@ fn (p Parser) vla_bound_exprs(id int) []ast.Expr {
 // type what its stride is and get the bounds of the element and not of the whole.
 fn (mut p Parser) declared_type(base types.Type, d Declarator) types.Type {
 	mut typ := base
-	mut bounds := p.vla_bound_exprs(base.vla_id).clone()
+	mut bounds := p.vla_bound_exprs(base.vla_id()).clone()
 	for step in d.steps {
 		if step.kind == .array_step {
 			if expr := step.bound_expr {
@@ -5679,7 +5679,7 @@ fn (p Parser) vla_size_expr(typ types.Type, at tokenize.Token) ?ast.Expr {
 		inner := p.vla_size_expr(element, at) or { return none }
 		return p.size_product(p.size_constant(typ.count, at), inner, at)
 	}
-	bounds := p.vla_bound_exprs(typ.vla_id)
+	bounds := p.vla_bound_exprs(typ.vla_id())
 	if bounds.len == 0 {
 		return none
 	}

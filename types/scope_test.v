@@ -151,7 +151,7 @@ fn test_a_tag_does_not_hide_an_object_and_an_object_does_not_hide_a_tag() {
 	// be laid out in it.
 	table.declare_tag('T', Type{
 		kind:  .opaque
-		parts: parts_of([]Member{}, []Param{}, 'T')
+		info:  &TypeInfo{parts: parts_of([]Member{}, []Param{}, 'T')}
 	})
 	incomplete := table.lookup_tag('T') or {
 		assert false
