@@ -2431,7 +2431,10 @@ fn (mut p Parser) file_scope_part_index() ?int {
 
 // file_scope_subscript reads the integer constant between the brackets of a
 // subscript. It reads a written constant as such, and any other expression
-// through the folder, the same two shapes the designator reader takes.
+// through the folder, the same two shapes the designator reader takes. A
+// written constant is taken as the subscript only when the bracket closes
+// straight after it: `1 + 1` begins with a written 1 and is an expression, so
+// it goes to the folder like `(1 + 1)` does.
 fn (mut p Parser) file_scope_subscript() ?int {
 	at := p.peek()
 	saved := p.pos
@@ -2439,7 +2442,9 @@ fn (mut p Parser) file_scope_subscript() ?int {
 	if p.starts_a_written_constant() {
 		if constant := p.number_constant() {
 			if value := constant.number.integer {
-				return int(value)
+				if p.at_punct(']') {
+					return int(value)
+				}
 			}
 		}
 		p.pos = saved
