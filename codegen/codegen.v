@@ -5895,6 +5895,17 @@ fn statement_has_cleanups(stmt ast.Stmt) bool {
 
 fn (e Emitter) lookup(name string) ?Slot {
 	for i := e.scopes.len - 1; i >= 0; i-- {
+		// A block-scope static object is checked at the same level as the
+		// frame slots, because it shadows them the way any block declaration
+		// does while having no slot of its own. Answering none here is what
+		// sends the read to the image: an outer parameter or local of the same
+		// name is still in a level this loop has not reached, and reaching it
+		// would read the shadowed object instead.
+		if i < e.static_scopes.len {
+			if e.static_scopes[i][name].len > 0 {
+				return none
+			}
+		}
 		if slot := e.scopes[i][name] {
 			return slot
 		}
