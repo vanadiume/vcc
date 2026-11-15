@@ -55,7 +55,7 @@ pub fn render(unit ast.TranslationUnit) string {
 			out << '  (declaration without a definition)'
 			continue
 		}
-		dump_statements(decl.body, 1, mut out)
+		dump_statements(decl.body, 1, &unit.arena, mut out)
 	}
 	return out.join('\n')
 }
@@ -76,7 +76,7 @@ fn indent_of(depth int) string {
 	return '  '.repeat(level)
 }
 
-fn dump_statements(body []ast.Stmt, depth int, mut out []string) {
+fn dump_statements(body []ast.Stmt, depth int, arena &ast.Arena, mut out []string) {
 	for stmt in body {
 		indent := indent_of(depth)
 		match stmt.kind {
@@ -97,10 +97,10 @@ fn dump_statements(body []ast.Stmt, depth int, mut out []string) {
 				out << '${indent}declaration of ${stmt.decl_type()} ${stmt.decl_name()}${elements} at ${stmt.line}:${stmt.col}${typed(stmt.resolved())}'
 			}
 			.assign {
-				if stmt.deref() != none {
-					out << '${indent}assignment through a dereference at ${stmt.line}:${stmt.col}'
-				} else {
+				if stmt.deref().is_none() {
 					out << '${indent}assignment to ${stmt.target} at ${stmt.line}:${stmt.col}'
+				} else {
+					out << '${indent}assignment through a dereference at ${stmt.line}:${stmt.col}'
 				}
 			}
 			.if_stmt {
@@ -135,11 +135,11 @@ fn dump_statements(body []ast.Stmt, depth int, mut out []string) {
 				out << '${indent}label ${stmt.label()} at ${stmt.line}:${stmt.col}'
 			}
 			.goto_stmt {
-				if target := stmt.goto_expr() {
-					out << '${indent}computed goto at ${stmt.line}:${stmt.col}'
-					dump_expression(target, depth + 1, mut out)
-				} else {
+				if stmt.goto_expr().is_none() {
 					out << '${indent}goto ${stmt.label()} at ${stmt.line}:${stmt.col}'
+				} else {
+					out << '${indent}computed goto at ${stmt.line}:${stmt.col}'
+					dump_expression(stmt.goto_expr(), depth + 1, arena, mut out)
 				}
 			}
 			.asm_stmt {
@@ -157,33 +157,33 @@ fn dump_statements(body []ast.Stmt, depth int, mut out []string) {
 				out << '${indent}nested function ${fn_decl.name} of ${fn_decl.owner} at ${stmt.line}:${stmt.col}'
 			}
 		}
-		if expr := stmt.expr {
-			dump_expression(expr, depth + 1, mut out)
+		if !stmt.expr.is_none() {
+			dump_expression(stmt.expr, depth + 1, arena, mut out)
 		}
-		if index := stmt.index {
+		if !stmt.index.is_none() {
 			out << '${indent}subscript'
-			dump_expression(index, depth + 1, mut out)
+			dump_expression(stmt.index, depth + 1, arena, mut out)
 		}
-		if deref := stmt.deref() {
+		if !stmt.deref().is_none() {
 			out << '${indent}through'
-			dump_expression(deref, depth + 1, mut out)
+			dump_expression(stmt.deref(), depth + 1, arena, mut out)
 		}
-		if init := stmt.initializer() {
+		if !stmt.initializer().is_none() {
 			out << '${indent}initializer'
-			dump_expression(init, depth + 1, mut out)
+			dump_expression(stmt.initializer(), depth + 1, arena, mut out)
 		}
-		if cond := stmt.cond {
+		if !stmt.cond.is_none() {
 			out << '${indent}condition'
-			dump_expression(cond, depth + 1, mut out)
+			dump_expression(stmt.cond, depth + 1, arena, mut out)
 		}
-		dump_statements(stmt.body, depth + 1, mut out)
-		dump_statements(stmt.then_body(), depth + 1, mut out)
-		dump_statements(stmt.else_body(), depth + 1, mut out)
+		dump_statements(stmt.body, depth + 1, arena, mut out)
+		dump_statements(stmt.then_body(), depth + 1, arena, mut out)
+		dump_statements(stmt.else_body(), depth + 1, arena, mut out)
 		if stmt.step().len > 0 {
 			// The step of a loop is written under its own heading, because it
 			// is a part of the loop and not a part of the body.
 			out << '${indent}step'
-			dump_statements(stmt.step(), depth + 1, mut out)
+			dump_statements(stmt.step(), depth + 1, arena, mut out)
 		}
 	}
 }
@@ -202,135 +202,153 @@ fn dump_statements(body []ast.Stmt, depth int, mut out []string) {
 //	    int 6 at ...
 //	    int 7 at ...
 //	  int 1 at ...
-fn dump_expression(expr ast.Expr, depth int, mut out []string) {
-	mut spine := []ast.Binary{}
+fn dump_expression(expr ast.Expr, depth int, arena &ast.Arena, mut out []string) {
+	mut spine := []ast.Expr{}
 	mut node := expr
-	for node is ast.Binary {
-		binary := node as ast.Binary
-		spine << binary
-		node = binary.left
+	for node.kind == .binary {
+		spine << node
+		node = arena.binary(node).left
 	}
 	mut current := depth
-	for binary in spine {
+	for step in spine {
+		binary := arena.binary(step)
 		out << '${indent_of(current)}binary ${binary.op} at ${binary.line}:${binary.col}${typed(binary.typ)}'
 		current++
 	}
-	dump_leaf(node, current, mut out)
+	dump_leaf(node, current, arena, mut out)
 	// The right sides come after the left spine, innermost first, which is the
 	// order they were written in.
 	for i := spine.len - 1; i >= 0; i-- {
-		dump_expression(spine[i].right, depth + i + 1, mut out)
+		dump_expression(arena.binary(spine[i]).right, depth + i + 1, arena, mut out)
 	}
 }
 
-fn dump_leaf(expr ast.Expr, depth int, mut out []string) {
+fn dump_leaf(expr ast.Expr, depth int, arena &ast.Arena, mut out []string) {
 	indent := indent_of(depth)
-	match expr {
-		ast.IntLit {
-			out << '${indent}int ${expr.value} at ${expr.line}:${expr.col}${typed(expr.typ)}'
+	span := arena.span(expr)
+	typ := arena.typ(expr)
+	match expr.kind {
+		.int_lit {
+			node := arena.int_lit(expr)
+			out << '${indent}int ${node.value} at ${span.line}:${span.col}${typed(typ)}'
 		}
-		ast.FloatLit {
+		.float_lit {
 			// The value is printed as a double rather than as the spelling it
 			// was written with, because what the emitter reads is the value.
 			// A decimal constant is not a double and its double field is
 			// zero, so it prints the value it does hold, which is the digits
 			// and the power of ten, in the form the standard's conversion
 			// writes them.
-			if expr.typ.kind.is_decimal() {
-				out << '${indent}decimal ${expr.decimal_value.text()} at ${expr.line}:${expr.col}${typed(expr.typ)}'
+			node := arena.float_lit(expr)
+			if typ.kind.is_decimal() {
+				out << '${indent}decimal ${node.decimal_value.text()} at ${span.line}:${span.col}${typed(typ)}'
 			} else {
-				out << '${indent}double ${expr.value} at ${expr.line}:${expr.col}${typed(expr.typ)}'
+				out << '${indent}double ${node.value} at ${span.line}:${span.col}${typed(typ)}'
 			}
 		}
-		ast.ComplexLit {
+		.complex_lit {
 			// The imaginary constant's value is its imaginary part, and the
 			// real part is the zero 6.4.4.2 leaves it.
-			out << '${indent}imaginary ${expr.value} at ${expr.line}:${expr.col}${typed(expr.typ)}'
+			node := arena.complex_lit(expr)
+			out << '${indent}imaginary ${node.value} at ${span.line}:${span.col}${typed(typ)}'
 		}
-		ast.Ident {
-			out << '${indent}ident ${expr.name} at ${expr.line}:${expr.col}${typed(expr.typ)}'
+		.ident {
+			node := arena.ident(expr)
+			out << '${indent}ident ${node.name} at ${span.line}:${span.col}${typed(typ)}'
 		}
-		ast.Unary {
-			out << '${indent}unary ${expr.op} at ${expr.line}:${expr.col}${typed(expr.typ)}'
-			dump_expression(expr.expr, depth + 1, mut out)
+		.unary {
+			node := arena.unary(expr)
+			out << '${indent}unary ${node.op} at ${span.line}:${span.col}${typed(typ)}'
+			dump_expression(node.expr, depth + 1, arena, mut out)
 		}
-		ast.Binary {
+		.binary {
 			// The spine loop leaves no Binary for this function to see; the arm
 			// is here because the match covers every node the tree can hold.
-			dump_expression(expr, depth, mut out)
+			dump_expression(expr, depth, arena, mut out)
 		}
-		ast.Call {
-			if callee := expr.callee {
+		.call {
+			node := arena.call(expr)
+			if node.callee.is_none() {
+				out << '${indent}call ${node.name} with ${node.args.len} argument(s) at ${span.line}:${span.col}${typed(typ)}'
+			} else {
 				// A call written to an expression prints the expression, since
 				// the name it would otherwise print is the one thing it is not.
-				out << '${indent}call through an expression with ${expr.args.len} argument(s) at ${expr.line}:${expr.col}${typed(expr.typ)}'
-				dump_expression(callee, depth + 1, mut out)
-			} else {
-				out << '${indent}call ${expr.name} with ${expr.args.len} argument(s) at ${expr.line}:${expr.col}${typed(expr.typ)}'
+				out << '${indent}call through an expression with ${node.args.len} argument(s) at ${span.line}:${span.col}${typed(typ)}'
+				dump_expression(node.callee, depth + 1, arena, mut out)
 			}
-			for arg in expr.args {
-				dump_expression(arg, depth + 1, mut out)
+			for arg in node.args {
+				dump_expression(arg, depth + 1, arena, mut out)
 			}
 		}
-		ast.StrLit {
-			out << '${indent}string ${expr.text} at ${expr.line}:${expr.col}${typed(expr.typ)}'
+		.str_lit {
+			node := arena.str_lit(expr)
+			out << '${indent}string ${node.text} at ${span.line}:${span.col}${typed(typ)}'
 		}
-		ast.Index {
-			out << '${indent}element[] at ${expr.line}:${expr.col}${typed(expr.typ)}'
-			dump_expression(expr.base, depth + 1, mut out)
-			dump_expression(expr.index, depth + 1, mut out)
+		.index {
+			node := arena.index(expr)
+			out << '${indent}element[] at ${span.line}:${span.col}${typed(typ)}'
+			dump_expression(node.base, depth + 1, arena, mut out)
+			dump_expression(node.index, depth + 1, arena, mut out)
 		}
-		ast.Field {
+		.field {
 			// The offset is printed because it is the part of the node the
 			// source does not say: `x.b` is where the layout put b, and that
 			// number is what the emitter reads.
-			object := if _ := expr.index { '${expr.name}[...]' } else { expr.name }
-			out << '${indent}member ${object}.${expr.member} at +${expr.offset} bytes, ${expr.spelling}, at ${expr.line}:${expr.col}${typed(expr.typ)}'
+			node := arena.field(expr)
+			object := if node.index.is_none() { node.name } else { '${node.name}[...]' }
+			out << '${indent}member ${object}.${node.member} at +${node.offset} bytes, ${node.spelling}, at ${span.line}:${span.col}${typed(typ)}'
 		}
-		ast.Cast {
-			out << '${indent}cast to ${expr.spelling} at ${expr.line}:${expr.col}${typed(expr.typ)}'
-			dump_expression(expr.expr, depth + 1, mut out)
+		.cast {
+			node := arena.cast(expr)
+			out << '${indent}cast to ${node.spelling} at ${span.line}:${span.col}${typed(typ)}'
+			dump_expression(node.expr, depth + 1, arena, mut out)
 		}
-		ast.IncDec {
+		.inc_dec {
 			// The form is printed beside the operator because `x++` and `++x`
 			// are the same step and differ only in the value they are worth.
-			form := if expr.postfix { 'postfix' } else { 'prefix' }
-			out << '${indent}${form} ${expr.op} at ${expr.line}:${expr.col}${typed(expr.typ)}'
-			dump_expression(expr.operand, depth + 1, mut out)
+			node := arena.inc_dec(expr)
+			form := if node.postfix { 'postfix' } else { 'prefix' }
+			out << '${indent}${form} ${node.op} at ${span.line}:${span.col}${typed(typ)}'
+			dump_expression(node.operand, depth + 1, arena, mut out)
 		}
-		ast.Conditional {
+		.conditional {
 			// The three operands are printed in the order they were written,
 			// which is what makes the branch the emitter builds readable. The
 			// middle one is marked when the source left it out: the node holds
 			// the condition there as well, and a dump that printed it without a
 			// word would read as one the program wrote.
-			omitted := if expr.omitted_middle { ' middle omitted' } else { '' }
-			out << '${indent}conditional at ${expr.line}:${expr.col}${typed(expr.typ)}${omitted}'
-			dump_expression(expr.cond, depth + 1, mut out)
-			dump_expression(expr.then_expr, depth + 1, mut out)
-			dump_expression(expr.else_expr, depth + 1, mut out)
+			node := arena.conditional(expr)
+			omitted := if node.omitted_middle { ' middle omitted' } else { '' }
+			out << '${indent}conditional at ${span.line}:${span.col}${typed(typ)}${omitted}'
+			dump_expression(node.cond, depth + 1, arena, mut out)
+			dump_expression(node.then_expr, depth + 1, arena, mut out)
+			dump_expression(node.else_expr, depth + 1, arena, mut out)
 		}
-		ast.Assign {
+		.assign {
 			// The target is printed before the value, which is the order they
 			// are written in and the order the store runs them in.
-			out << '${indent}assign ${expr.op} at ${expr.line}:${expr.col}${typed(expr.typ)}'
-			dump_expression(expr.target, depth + 1, mut out)
-			dump_expression(expr.value, depth + 1, mut out)
+			node := arena.assign(expr)
+			out << '${indent}assign ${node.op} at ${span.line}:${span.col}${typed(typ)}'
+			dump_expression(node.target, depth + 1, arena, mut out)
+			dump_expression(node.value, depth + 1, arena, mut out)
 		}
-		ast.Comma {
-			out << '${indent}comma at ${expr.line}:${expr.col}${typed(expr.typ)}'
-			dump_expression(expr.left, depth + 1, mut out)
-			dump_expression(expr.right, depth + 1, mut out)
+		.comma {
+			node := arena.comma(expr)
+			out << '${indent}comma at ${span.line}:${span.col}${typed(typ)}'
+			dump_expression(node.left, depth + 1, arena, mut out)
+			dump_expression(node.right, depth + 1, arena, mut out)
 		}
-		ast.StmtExpr {
+		.stmt_expr {
 			// The statements are printed first, in the order they run, and the
 			// value expression after them, which is the order the emitter
 			// produces for this node.
-			out << '${indent}statement expression at ${expr.line}:${expr.col}${typed(expr.typ)}'
-			dump_statements(expr.body, depth + 1, mut out)
-			if value := expr.value {
-				dump_expression(value, depth + 1, mut out)
+			node := arena.stmt_expr(expr)
+			out << '${indent}statement expression at ${span.line}:${span.col}${typed(typ)}'
+			dump_statements(node.body, depth + 1, arena, mut out)
+			if !node.value.is_none() {
+				dump_expression(node.value, depth + 1, arena, mut out)
 			}
 		}
+		.none {}
 	}
 }

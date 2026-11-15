@@ -122,7 +122,7 @@ const max_declaration_depth = 200
 // starts_declaration says whether a token can open a declaration: one of the
 // specifier words, a name this file has already declared as a type, or the
 // `_Static_assert` spelling, which opens a declaration that produces no object.
-fn (p Parser) starts_declaration(t tokenize.Token) bool {
+fn (mut p Parser) starts_declaration(t tokenize.Token) bool {
 	if t.kind != .identifier {
 		return false
 	}
@@ -150,7 +150,7 @@ fn (p Parser) starts_declaration(t tokenize.Token) bool {
 // question is asked of the two tokens and not of a table of type words, because
 // a name this file typedef'd is a type and this reader cannot tell one from a
 // declarator name by its spelling alone.
-fn (p Parser) auto_is_a_type_specifier() bool {
+fn (mut p Parser) auto_is_a_type_specifier() bool {
 	if p.peek().text != 'auto' {
 		return false
 	}
@@ -177,7 +177,7 @@ fn (p Parser) auto_is_a_type_specifier() bool {
 // cast is what made glibc's tgmath.h macros stop at a `sizeof` read as a
 // declarator name, so a type name and a declaration share the type words but
 // not the storage classes.
-fn (p Parser) starts_type_name(t tokenize.Token) bool {
+fn (mut p Parser) starts_type_name(t tokenize.Token) bool {
 	return t.kind == .identifier && ((is_specifier_word(t.text) && t.text !in storage_classes)
 		|| p.is_type_name(t.text))
 }
@@ -281,7 +281,7 @@ fn (mut s DeclSpec) note_type(t tokenize.Token) {
 // A name this compiler has no definition for becomes an opaque type carrying the
 // name: the type exists, nothing may be laid out in it, and a diagnostic can say
 // which name it was.
-fn (p Parser) specifier_clause(spec DeclSpec, tag_clause types.Type) types.Type {
+fn (mut p Parser) specifier_clause(spec DeclSpec, tag_clause types.Type) types.Type {
 	mut clause := tag_clause
 	if clause.kind == .unknown {
 		if word_type := types.from_words(spec.type_words) {
@@ -306,7 +306,7 @@ fn (p Parser) specifier_clause(spec DeclSpec, tag_clause types.Type) types.Type 
 // name_clause is the type a name written among the specifiers stands for: what a
 // typedef declared it as, or an opaque type carrying the name when there is no
 // declaration of it this reader has met.
-fn (p Parser) name_clause(name string) types.Type {
+fn (mut p Parser) name_clause(name string) types.Type {
 	if symbol := p.scopes.lookup(name) {
 		if symbol.is_typedef() {
 			// The type a name stands for is answered through the tag namespace the
@@ -330,7 +330,7 @@ fn (p Parser) name_clause(name string) types.Type {
 // an alias is spelled out where the declaration is read rather than carried as a
 // name every later stage would have to look up. A name that is not a typedef
 // answers none and stands as written.
-fn (p Parser) alias_spelling(name string) ?string {
+fn (mut p Parser) alias_spelling(name string) ?string {
 	if symbol := p.scopes.lookup(name) {
 		if symbol.is_typedef() && symbol.typ.kind != .unknown {
 			return symbol.typ.describe()
@@ -348,7 +348,7 @@ fn (p Parser) alias_spelling(name string) ?string {
 // asking about the tag while the emitter sizes and signs the object from the
 // underlying type. The spelling is what the object is stored as, and `enum
 // c99_small e` stores four bytes the way gcc 16.2.1 does.
-fn (p Parser) spelling_of(spec DeclSpec, stars int) string {
+fn (mut p Parser) spelling_of(spec DeclSpec, stars int) string {
 	if spec.clause.kind == .enum_ && spec.clause.is_complete() {
 		return with_stars(spec.clause.underlying_type().describe(), stars)
 	}
@@ -699,7 +699,7 @@ fn (mut p Parser) skip_uncalled_static() bool {
 // position begins with the words in front of the type and one of them is
 // `static`. The helper definitions a header writes put `__extension__` or
 // `__inline` in front of it, and any of them may come first.
-fn (p Parser) starts_a_static_declaration() bool {
+fn (mut p Parser) starts_a_static_declaration() bool {
 	mut is_static := false
 	mut i := p.pos
 	for i < p.tokens.len {
@@ -723,7 +723,7 @@ fn (p Parser) starts_a_static_declaration() bool {
 
 // end_of_block is the index of the `}` that closes the brace at `open`, or -1
 // when the tokens run out first.
-fn (p Parser) end_of_block(open int) int {
+fn (mut p Parser) end_of_block(open int) int {
 	mut depth := 0
 	mut i := open
 	for i < p.tokens.len {
@@ -1798,13 +1798,14 @@ fn (mut p Parser) parse_static_assertion() {
 // A division or a remainder by zero answers none rather than a value, and a
 // shift wider than the type is refused the same way instead of folding.
 fn (mut p Parser) static_assert_condition(expr ast.Expr) ?i64 {
-	match expr {
-		ast.IntLit {
-			return expr.value
+	match expr.kind {
+		.int_lit {
+			return p.arena.int_lit(expr).value
 		}
-		ast.Unary {
-			value := p.static_assert_condition(expr.expr)?
-			match expr.op {
+		.unary {
+			unary := p.arena.unary(expr)
+			value := p.static_assert_condition(unary.expr)?
+			match unary.op {
 				'+' {
 					return value
 				}
@@ -1822,10 +1823,11 @@ fn (mut p Parser) static_assert_condition(expr ast.Expr) ?i64 {
 				}
 			}
 		}
-		ast.Binary {
-			a := p.static_assert_condition(expr.left)?
-			b := p.static_assert_condition(expr.right)?
-			match expr.op {
+		.binary {
+			binary := p.arena.binary(expr)
+			a := p.static_assert_condition(binary.left)?
+			b := p.static_assert_condition(binary.right)?
+			match binary.op {
 				'+' {
 					return a + b
 				}
@@ -1948,7 +1950,7 @@ fn (mut p Parser) auto_file_initializer() ?AutoFileInitializer {
 		p.diagnostics = p.diagnostics[..saved_diagnostics]
 		return none
 	}
-	typ := auto_deduced_type(expr)
+	typ := p.auto_deduced_type(expr)
 	if typ.kind == .unknown {
 		p.pos = saved_pos
 		p.diagnostics = p.diagnostics[..saved_diagnostics]
@@ -2512,8 +2514,8 @@ fn (mut p Parser) folded_file_initializer() ?FileConstant {
 	// the address 5, which is what gcc 16.2.1 writes. The value is stored as
 	// the number it is, so a caller that wanted a number and a caller that
 	// wanted a pointer both hold it.
-	if expr is ast.Cast && expr.typ.is_pointer() {
-		if value := p.constant_value(expr.expr) {
+	if expr.kind == .cast && p.arena.typ(expr).is_pointer() {
+		if value := p.constant_value(p.arena.cast(expr).expr) {
 			return FileConstant{
 				integer: value
 			}
@@ -2536,12 +2538,12 @@ fn (mut p Parser) folded_file_initializer() ?FileConstant {
 // operand of `&`, or the bare name of an array or a function, which decays to its
 // address. It is what tells an address difference apart from a subtraction of two
 // numbers the folder reads.
-fn (p Parser) is_an_address(expr ast.Expr) bool {
-	if expr is ast.Unary {
-		return expr.op == '&'
+fn (mut p Parser) is_an_address(expr ast.Expr) bool {
+	if expr.kind == .unary {
+		return p.arena.unary(expr).op == '&'
 	}
-	if expr is ast.Ident {
-		t := p.resolve(expr.name)
+	if expr.kind == .ident {
+		t := p.resolve(p.arena.ident(expr).name)
 		return t.kind == .array || t.kind == .function
 	}
 	return false
@@ -2552,11 +2554,11 @@ fn (p Parser) is_an_address(expr ast.Expr) bool {
 // elements (6.6) but is not a number the image writes: the two terms are
 // relocations, and the difference is settled when they are, which this reader
 // does not fold.
-fn (p Parser) is_address_difference(expr ast.Expr) bool {
-	if expr !is ast.Binary {
+fn (mut p Parser) is_address_difference(expr ast.Expr) bool {
+	if expr.kind != .binary {
 		return false
 	}
-	binary := expr as ast.Binary
+	binary := p.arena.binary(expr)
 	if binary.op != '-' && binary.op != '+' {
 		return false
 	}
@@ -2568,7 +2570,7 @@ fn (p Parser) is_address_difference(expr ast.Expr) bool {
 // declaration after the pair. It reads no token, so a false answer leaves the
 // parser where it was and the initializer is refused by the path that already
 // names what it cannot write.
-fn (p Parser) is_parenthesized_constant() bool {
+fn (mut p Parser) is_parenthesized_constant() bool {
 	if !p.at_punct('(') {
 		return false
 	}
@@ -2910,7 +2912,7 @@ fn (mut p Parser) recover_brace_list(open tokenize.Token, start int) {
 // starts_a_written_constant answers whether the next token begins a written
 // number or character constant, sign included. It reads no token, so a false
 // answer leaves the parser where it was and the element is read by another path.
-fn (p Parser) starts_a_written_constant() bool {
+fn (mut p Parser) starts_a_written_constant() bool {
 	t := p.peek()
 	if t.kind == .number || t.kind == .character {
 		return true
@@ -3707,15 +3709,16 @@ fn (mut p Parser) fill_one(typ types.Type, items []BraceElement, start int, base
 // Only a struct or a union is asked: an array has no value that could be handed
 // an array whole, and an element of scalar type is written by the leaf path on
 // either reading.
-fn (p Parser) element_is_the_subobject(typ types.Type, element BraceElement) bool {
+fn (mut p Parser) element_is_the_subobject(typ types.Type, element BraceElement) bool {
 	if typ.kind !in [types.Kind.struct_, .union_] {
 		return false
 	}
 	expr := element.expr or { return false }
-	if !expr.typ.is_aggregate() {
+	element_type := p.arena.typ(expr)
+	if !element_type.is_aggregate() {
 		return false
 	}
-	return types.unqualified(expr.typ).same(types.unqualified(typ))
+	return types.unqualified(element_type).same(types.unqualified(typ))
 }
 
 // fill_designated applies the designators that follow the one a caller already
@@ -3891,7 +3894,7 @@ fn character_array_element(typ types.Type) ?types.Type {
 // `char s[4] = {{"ab"}}` an element gcc 16.2.1 refuses. A wide literal is not
 // read here: it initializes an array whose element is not a character, which is
 // the element test the caller has already failed.
-fn (p Parser) string_item_bytes(element BraceElement, unwrap bool) ?StringBytes {
+fn (mut p Parser) string_item_bytes(element BraceElement, unwrap bool) ?StringBytes {
 	mut literal := element
 	if list := element.list {
 		if !unwrap || list.elements.len != 1 {
@@ -3917,8 +3920,8 @@ fn (p Parser) string_item_bytes(element BraceElement, unwrap bool) ?StringBytes 
 		}
 	}
 	if expr := literal.expr {
-		if expr is ast.StrLit {
-			lit := expr as ast.StrLit
+		if expr.kind == .str_lit {
+			lit := p.arena.str_lit(expr)
 			return StringBytes{
 				values: bytes_and_terminator(lit.value)
 				at:     tokenize.Token{
@@ -4128,7 +4131,7 @@ fn (mut p Parser) constant_expr(constant NumberConstant) ast.Expr {
 		// and its spelling is not the spelling of a number, so the type is
 		// asked of the token rather than read off the text.
 		if constant.at.kind == .character {
-			return ast.Expr(ast.IntLit{
+			return p.arena.put_int_lit(ast.IntLit{
 				value: value
 				text:  constant.at.text
 				typ:   types.int_type()
@@ -4136,7 +4139,7 @@ fn (mut p Parser) constant_expr(constant NumberConstant) ast.Expr {
 				col:   constant.at.col
 			})
 		}
-		return ast.Expr(ast.IntLit{
+		return p.arena.put_int_lit(ast.IntLit{
 			value: value
 			text:  constant.at.text
 			typ:   p.constant_type(constant.at, value)
@@ -4145,7 +4148,7 @@ fn (mut p Parser) constant_expr(constant NumberConstant) ast.Expr {
 		})
 	}
 	if long_value := constant.number.long_floating {
-		return ast.Expr(ast.FloatLit{
+		return p.arena.put_float_lit(ast.FloatLit{
 			long_value: long_value
 			text:       constant.at.text
 			typ:        types.long_double_type()
@@ -4154,7 +4157,7 @@ fn (mut p Parser) constant_expr(constant NumberConstant) ast.Expr {
 		})
 	}
 	value := constant.number.floating or { f64(0) }
-	return ast.Expr(ast.FloatLit{
+	return p.arena.put_float_lit(ast.FloatLit{
 		value: value
 		text:  constant.at.text
 		typ:   p.floating_type(constant.at, value)
@@ -4216,7 +4219,7 @@ fn initializer_for(written string, integer ?i64, floating ?f64) (?i64, ?f64) {
 // double - and an operand whose class it cannot convert from answer none, so the
 // element is refused by name rather than written as a value the cast did not
 // make.
-fn (p Parser) cast_file_constant(typ types.Type, operand FileConstant) ?FileConstant {
+fn (mut p Parser) cast_file_constant(typ types.Type, operand FileConstant) ?FileConstant {
 	if typ.kind.is_integer() {
 		if value := operand.integer {
 			converted := p.converted_constant(typ, value) or { return none }
@@ -4463,7 +4466,7 @@ fn (mut p Parser) check_definition(spec DeclSpec, d Declarator) {
 // the question to the back end, which only asks it for an object something uses,
 // and an unused object of a type with no form would then be dropped without a
 // word.
-fn (p Parser) word_problem(word string) ?string {
+fn (mut p Parser) word_problem(word string) ?string {
 	if word in supported_types {
 		return none
 	}
@@ -4528,7 +4531,7 @@ fn imaginary_or_first(words []string, spelling string) string {
 // object of it. A pointer to such a type is still a complete object: 6.2.5 lets
 // a pointer name an incomplete type, and the back end sizes a pointer from its
 // star rather than from what it points at.
-fn (p Parser) incomplete_aggregate(spec DeclSpec) bool {
+fn (mut p Parser) incomplete_aggregate(spec DeclSpec) bool {
 	if spec.clause.kind !in [types.Kind.struct_, .union_, .enum_] {
 		return false
 	}
@@ -4542,7 +4545,7 @@ fn (p Parser) incomplete_aggregate(spec DeclSpec) bool {
 // among the specifiers and the element is what decides whether an object of it
 // is storage this compiler has. An element that is itself an array is walked
 // through, since only the scalar at the bottom is stored.
-fn (p Parser) array_element_supported(typ types.Type) bool {
+fn (mut p Parser) array_element_supported(typ types.Type) bool {
 	mut element := typ
 	for element.is_array() {
 		element = element.element() or { return false }
@@ -4573,7 +4576,7 @@ fn (p Parser) array_element_supported(typ types.Type) bool {
 // spellings. A type written as two words is named in full where the answer is
 // about the construct rather than about the word: the parameter list names what a
 // parameter was declared with, and a complex type is refused by name below.
-fn (p Parser) unsupported_type_word(spec DeclSpec, stars int) ?string {
+fn (mut p Parser) unsupported_type_word(spec DeclSpec, stars int) ?string {
 	// The words a type is made of, not the storage class in front of them: an
 	// `extern` or a `static` is not a type, and reporting one as an unsupported
 	// type would be reporting the wrong word for the right reason.
@@ -4926,12 +4929,12 @@ fn (mut p Parser) parse_typeof_specifier(at tokenize.Token, depth int, unqual bo
 		written = name.spelling
 	} else {
 		operand := p.parse_expression()!
-		written = describe_operand(operand)
+		written = describe_operand(operand, &p.arena)
 		if p.is_unresolved(operand) {
 			p.error_at(at, 'unsupported: ${at.text} asks for the type of ${written}, and this compiler did not resolve its type')
 			return error('no type for the operand')
 		}
-		answered = operand.typ
+		answered = p.arena.typ(operand)
 	}
 	if !p.expect_punct(')') {
 		return error('unclosed ${at.text}')
@@ -5023,13 +5026,13 @@ fn (mut p Parser) parse_tag_specifier(keyword tokenize.Token, depth int) !TagTyp
 	// the type, the boundary it starts on, the offset of a member) then reads
 	// the answer rather than walking the members again.
 	if lay := p.representation.layout(clause) {
-		clause.layout = &types.Layout{
+		clause.set_layout(&types.Layout{
 			size:    lay.size
 			align:   lay.align
 			offsets: lay.offsets
 			bits:    lay.bits
 			padding: lay.padding
-		}
+		})
 	}
 	p.scopes.declare_tag(spelling, clause)
 	return TagType{
@@ -5317,7 +5320,7 @@ fn (mut p Parser) parse_member_list(keyword tokenize.Token, open tokenize.Token,
 // is not an anonymous aggregate writes nothing, so `int;`, a tag declared with
 // no body among the members, and a name that stands for an aggregate stay
 // declarations that declare no member.
-fn (p Parser) record_anonymous_member(spec DeclSpec, mut members []types.Member) {
+fn (mut p Parser) record_anonymous_member(spec DeclSpec, mut members []types.Member) {
 	if !spec.anonymous_aggregate {
 		return
 	}
@@ -5622,7 +5625,7 @@ fn (mut p Parser) record_vla_bound(bounds []ast.Expr) int {
 
 // vla_bound_exprs is the bound a handle names, or nothing for the zero handle and
 // for one no type carries.
-fn (p Parser) vla_bound_exprs(id int) []ast.Expr {
+fn (mut p Parser) vla_bound_exprs(id int) []ast.Expr {
 	if id <= 0 || id > p.vla_bounds.len {
 		return []
 	}
@@ -5644,7 +5647,7 @@ fn (p Parser) vla_bound_exprs(id int) []ast.Expr {
 // type what its stride is and get the bounds of the element and not of the whole.
 fn (mut p Parser) declared_type(base types.Type, d Declarator) types.Type {
 	mut typ := base
-	mut bounds := p.vla_bound_exprs(base.vla_id).clone()
+	mut bounds := p.vla_bound_exprs(base.vla_id()).clone()
 	for step in d.steps {
 		if step.kind == .array_step {
 			if expr := step.bound_expr {
@@ -5670,7 +5673,7 @@ fn (mut p Parser) declared_type(base types.Type, d Declarator) types.Type {
 // The result is unsigned long, the type a size_t is, and a bound written as a
 // signed expression is converted to it before it is multiplied, so an unsigned
 // product is what the constant sizeof would have been.
-fn (p Parser) vla_size_expr(typ types.Type, at tokenize.Token) ?ast.Expr {
+fn (mut p Parser) vla_size_expr(typ types.Type, at tokenize.Token) ?ast.Expr {
 	if !typ.is_array() {
 		return none
 	}
@@ -5679,7 +5682,7 @@ fn (p Parser) vla_size_expr(typ types.Type, at tokenize.Token) ?ast.Expr {
 		inner := p.vla_size_expr(element, at) or { return none }
 		return p.size_product(p.size_constant(typ.count, at), inner, at)
 	}
-	bounds := p.vla_bound_exprs(typ.vla_id)
+	bounds := p.vla_bound_exprs(typ.vla_id())
 	if bounds.len == 0 {
 		return none
 	}
@@ -5699,7 +5702,7 @@ fn (p Parser) vla_size_expr(typ types.Type, at tokenize.Token) ?ast.Expr {
 // array's type, which is what one element store is as wide as. The object's own
 // size is a value, but the width of one element is not: the bounds are the only
 // part of such a type that is computed.
-fn (p Parser) vla_element_size(typ types.Type) int {
+fn (mut p Parser) vla_element_size(typ types.Type) int {
 	mut scalar := typ
 	for scalar.is_array() {
 		scalar = scalar.element() or { return 0 }
@@ -5708,8 +5711,8 @@ fn (p Parser) vla_element_size(typ types.Type) int {
 }
 
 // size_constant is a byte count as a constant of the type a size has.
-fn (p Parser) size_constant(value int, at tokenize.Token) ast.Expr {
-	return ast.Expr(ast.IntLit{
+fn (mut p Parser) size_constant(value int, at tokenize.Token) ast.Expr {
+	return p.arena.put_int_lit(ast.IntLit{
 		value: i64(value)
 		text:  '${value}'
 		typ:   types.unsigned_long_type()
@@ -5720,8 +5723,8 @@ fn (p Parser) size_constant(value int, at tokenize.Token) ast.Expr {
 
 // size_product is one size times another, which is the sign of a size: both are
 // unsigned and the product is.
-fn (p Parser) size_product(left ast.Expr, right ast.Expr, at tokenize.Token) ast.Expr {
-	return ast.Expr(ast.Binary{
+fn (mut p Parser) size_product(left ast.Expr, right ast.Expr, at tokenize.Token) ast.Expr {
+	return p.arena.put_binary(ast.Binary{
 		op:    '*'
 		left:  left
 		right: right
@@ -5733,8 +5736,8 @@ fn (p Parser) size_product(left ast.Expr, right ast.Expr, at tokenize.Token) ast
 
 // size_as_unsigned is a bound written as a signed expression, converted to the
 // type a size has before it is folded into one.
-fn (p Parser) size_as_unsigned(expr ast.Expr, at tokenize.Token) ast.Expr {
-	return ast.Expr(ast.Cast{
+fn (mut p Parser) size_as_unsigned(expr ast.Expr, at tokenize.Token) ast.Expr {
+	return p.arena.put_cast(ast.Cast{
 		spelling: 'unsigned long'
 		expr:     expr
 		typ:      types.unsigned_long_type()
@@ -5759,8 +5762,8 @@ fn deduced_specifier_name(spelling string) string {
 // which is the conversion an assignment makes. Measured on gcc 16.2.1, `auto x =
 // 1` is an int, `auto d = 2.5` a double, `auto s = "hi"` a char *, and with
 // `int a[3];` the declaration `auto p = a;` is an int *.
-fn auto_deduced_type(initializer ast.Expr) types.Type {
-	return types.unqualified(types.decay(initializer.typ))
+fn (mut p Parser) auto_deduced_type(initializer ast.Expr) types.Type {
+	return types.unqualified(types.decay(p.arena.typ(initializer)))
 }
 
 // parameter_spelling is the type a parameter was declared with, written the way
@@ -5769,7 +5772,7 @@ fn auto_deduced_type(initializer ast.Expr) types.Type {
 // as a type is spelled as the type it names, so the message says which type has
 // no form rather than which name the parameter used for it, which is the same
 // answer a definition of an object gets.
-fn (p Parser) parameter_spelling(spec DeclSpec) string {
+fn (mut p Parser) parameter_spelling(spec DeclSpec) string {
 	if spec.type_words.len == 1 {
 		if spelling := p.alias_spelling(spec.type_words[0]) {
 			return spelling
@@ -5801,7 +5804,7 @@ fn type_params(params []ast.Param) []types.Param {
 // step but the name's own function suffix applied to it, since a function step
 // says the name is a function rather than making another type. `int *f(void)`
 // returns an int *.
-fn (p Parser) return_type(base types.Type, d Declarator) types.Type {
+fn (mut p Parser) return_type(base types.Type, d Declarator) types.Type {
 	mut typ := base
 	for i, step in d.steps {
 		if i == d.steps.len - 1 && step.kind == .function_step {
@@ -6089,7 +6092,7 @@ fn (mut p Parser) parse_parameter_list(depth int) !Params {
 // rather than about the word, because that type has a width and the model is
 // where the width is: the spelling joins two words, and `unsigned __int128` is
 // not a word this reader has.
-fn (p Parser) parameter_type_is_known(spec DeclSpec, stars int) bool {
+fn (mut p Parser) parameter_type_is_known(spec DeclSpec, stars int) bool {
 	// An object of an aggregate type is one a definition can be handed by value:
 	// the layout says how many bytes it is and what class its first eightbyte
 	// has, which is what the caller and the callee each have to agree on. A tag
@@ -6304,10 +6307,10 @@ fn string_elements(literal ast.StrLit) []i64 {
 // string_elements_at is the elements string_elements answers, written as the
 // integer constants a brace list writes, at the position of the declaration that
 // holds them. A literal and a list then reach the back end as one thing.
-fn string_elements_at(literal ast.StrLit, at tokenize.Token) []ast.Expr {
+fn (mut p Parser) string_elements_at(literal ast.StrLit, at tokenize.Token) []ast.Expr {
 	mut elements := []ast.Expr{}
 	for value in string_elements(literal) {
-		elements << ast.Expr(ast.IntLit{
+		elements << p.arena.put_int_lit(ast.IntLit{
 			value: value
 			text:  '${value}'
 			typ:   types.int_type()

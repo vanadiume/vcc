@@ -28,13 +28,14 @@ fn nested_decls(result Result) []ast.FnDecl {
 // call_named says whether an expression tree writes a call to a symbol, which is
 // how a call to a nested function is recognised: the call carries the symbol and
 // not the name that was written.
-fn call_named(expr ast.Expr, name string) bool {
-	if expr is ast.Call {
-		if expr.name == name {
+fn call_named(arena &ast.Arena, expr ast.Expr, name string) bool {
+	if expr.kind == .call {
+		node := arena.call(expr)
+		if node.name == name {
 			return true
 		}
-		for arg in expr.args {
-			if call_named(arg, name) {
+		for arg in node.args {
+			if call_named(arena, arg, name) {
 				return true
 			}
 		}
@@ -57,8 +58,9 @@ fn test_a_function_defined_in_a_body_is_a_nested_function_of_its_enclosing_one()
 	// against the symbol.
 	mut call_found := false
 	for stmt in result.unit.decls[0].body {
-		if expr := stmt.expr {
-			if call_named(expr, 'main.add') {
+		expr := stmt.expr
+		if !expr.is_none() {
+			if call_named(result.unit.arena, expr, 'main.add') {
 				call_found = true
 			}
 		}
@@ -119,9 +121,9 @@ fn test_a_function_declared_in_a_body_is_the_name_the_block_calls() {
 	assert result.diagnostics.len == 0
 	assert nested_decls(result).len == 0
 	stmt := result.unit.decls[1].body[1]
-	expr := stmt.expr or { panic('the return carries an expression') }
-	assert call_named(expr, 'f')
-	assert !call_named(expr, 'main.f')
+	expr := stmt.expr
+	assert call_named(result.unit.arena, expr, 'f')
+	assert !call_named(result.unit.arena, expr, 'main.f')
 }
 
 fn test_a_function_declared_in_a_body_with_static_is_refused() {

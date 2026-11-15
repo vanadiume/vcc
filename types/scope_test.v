@@ -150,8 +150,8 @@ fn test_a_tag_does_not_hide_an_object_and_an_object_does_not_hide_a_tag() {
 	// A tag declared with no body is declared and not complete, so nothing may
 	// be laid out in it.
 	table.declare_tag('T', Type{
-		kind:  .opaque
-		parts: parts_of([]Member{}, []Param{}, 'T')
+		kind: .opaque
+		info: &TypeInfo{ parts: parts_of([]Member{}, []Param{}, 'T') }
 	})
 	incomplete := table.lookup_tag('T') or {
 		assert false
