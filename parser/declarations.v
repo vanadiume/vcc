@@ -974,10 +974,11 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 	// the constant is written at the beginning of the storage, and the rest
 	// stays the zeros the object starts as.
 	mut data_union_first := false
-	// data_struct_brace says the brace initializer is a struct's, and
-	// data_member_inits is the constant for each member the list wrote, at the
-	// offset and width the layout gave that member. The members the list did
-	// not reach are the zeros the storage starts as.
+	// data_struct_brace says the initializer wrote member writes to lay out,
+	// whether the list was a struct's, a nested array's, or a flat list spread
+	// over an array of arrays, and data_member_inits is the constant for each
+	// subobject the list wrote, at the offset and width the layout gave it.
+	// The subobjects the list did not reach are the zeros the storage starts as.
 	mut data_struct_brace := false
 	mut data_member_inits := []ast.MemberInit{}
 	// data_resolved is the type a nested or designated list was walked against,
@@ -1243,6 +1244,32 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 									number.number.floating)
 								data_init_long = number.number.long_floating
 							}
+						}
+					}
+				} else if flat := p.flat_rows_for(data_clause, list) {
+					// A flat list initializing an array of arrays fills the
+					// scalar subobjects in row-major order (6.7.9p20): the
+					// outer bound counts the rows the list reaches, and value
+					// i lands at i * element_size rather than at a row
+					// boundary. A written outer bound is the rows it holds,
+					// and a list that reaches past them is a violation.
+					capacity := data_count * flat.per_row
+					if d.array_sized() && list.elements.len > capacity {
+						p.error_at(list.at, 'a constraint violation: ${data_name} holds ${capacity} values and its initializer writes ${list.elements.len}')
+						data_problem = true
+					} else {
+						rows := if d.array_sized() {
+							data_count
+						} else {
+							(list.elements.len + flat.per_row - 1) / flat.per_row
+						}
+						data_count = rows
+						data_bytes = flat.bytes
+						data_resolved = types.array_of(flat.element, rows)
+						data_member_inits = p.flat_scalar_members(flat, list.elements)
+						data_struct_brace = true
+						if !d.array_sized() && !data_clause.is_complete() {
+							data_complete = data_resolved
 						}
 					}
 				} else {
@@ -4298,6 +4325,81 @@ fn (mut p Parser) initializer_list_for(written string, elements []BraceElement, 
 		integers << (integer or { i64(0) })
 	}
 	return integers, []f64{}
+}
+
+// FlatRows is the row a flat brace list fills when the object is an array of
+// arrays: the type of one outer element, the scalar at the bottom of it, and
+// how many of those scalars one element holds. 6.7.9p20 lets a list with no
+// braces of its own initialize the subobjects in order, which is what makes the
+// outer count the number of rows rather than the number of values.
+struct FlatRows {
+	element types.Type
+	scalar  types.Type
+	width   int
+	per_row int
+	bytes   int
+}
+
+// flat_rows_for answers the layout a flat brace list fills when it initializes
+// an array whose elements are arrays: the list is spread across the scalar
+// subobjects in row-major order by brace elision (6.7.9p20). It answers none
+// for an array of scalars, for a list that writes an address, and for a row
+// whose width this reader does not know, so those keep the path they had.
+fn (mut p Parser) flat_rows_for(typ types.Type, list BraceList) ?FlatRows {
+	if typ.kind != .array || list.elements.len == 0 {
+		return none
+	}
+	element := typ.element() or { return none }
+	if element.kind != .array {
+		return none
+	}
+	mut scalar := element
+	mut per_row := 1
+	for scalar.is_array() {
+		if scalar.count <= 0 {
+			return none
+		}
+		per_row *= scalar.count
+		scalar = scalar.element() or { return none }
+	}
+	for item in list.elements {
+		if item.number == none {
+			return none
+		}
+	}
+	width := p.representation.size_of(scalar) or { return none }
+	bytes := p.representation.size_of(element) or { return none }
+	if width <= 0 || bytes <= 0 {
+		return none
+	}
+	return FlatRows{
+		element: element
+		scalar:  scalar
+		width:   width
+		per_row: per_row
+		bytes:   bytes
+	}
+}
+
+// flat_scalar_members turns a flat list's values into the writes the image
+// holds, one per scalar subobject, at the row-major byte the subobject starts
+// at: value i is written at i * width, so the list fills each row of the object
+// in turn rather than starting each value at a row boundary.
+fn (mut p Parser) flat_scalar_members(flat FlatRows, elements []BraceElement) []ast.MemberInit {
+	mut members := []ast.MemberInit{cap: elements.len}
+	spelling := flat.scalar.storage_spelling()
+	for index, element in elements {
+		number := element.number or { continue }
+		integer, fraction := initializer_for(spelling, number.number.integer, number.number.floating)
+		members << ast.MemberInit{
+			offset:     index * flat.width
+			width:      flat.width
+			spelling:   spelling
+			init:       integer
+			init_float: fraction
+		}
+	}
+	return members
 }
 
 // struct_brace_members checks a struct's brace initializer and answers the
