@@ -952,15 +952,32 @@ fn (mut p Parser) compound_expansion(op tokenize.Token, arithmetic string, left 
 }
 
 // parse_subscript_assignment reads `E1[E2] = value` where the target's base is
-// not a name the assignment reader can address, which is what `3[p] = 9` is. The
-// element node is carried whole so the back end can compute the address the value
-// is stored through. A compound spelling is refused by name: `E1[E2] += v` reads
-// the element twice and this tree has no shape for that target yet.
+// not a name the assignment reader can address, which is what `3[p] = 9` is, and
+// `E1[E2] op= value` where the target is an element whose base is a member, which
+// is what `s.a[0] += 1` and `p->a[0] -= 1` are. The element node is carried whole
+// so the back end can compute the address the value is stored through.
+//
+// A compound spelling is the same assignment with the operator the spelling
+// names, and the statement carries that operator so the back end computes the
+// element's address once and reads and writes through it. Written as
+// `s.a[i++] = s.a[i++] + v` the index would be stepped twice, which is a
+// different program, so the element is not read a second time here.
 fn (mut p Parser) parse_subscript_assignment(index ast.Index) !ast.Stmt {
 	op := p.next()
 	if op.text != '=' {
-		p.error_at(op, 'unsupported: the compound assignment ${op.text} to an element is not implemented')
-		return error('compound assignment to an element')
+		arithmetic := p.compound_operator(op)!
+		right := p.parse_assignment_expression()!
+		left := ast.Expr(index)
+		return ast.Stmt{
+			kind:  .assign
+			expr:  p.compound_expansion(op, arithmetic, left, right)
+			extra: &ast.StmtExtra{
+				compound:  arithmetic
+				subscript: left
+			}
+			line:  index.line
+			col:   index.col
+		}
 	}
 	value := p.converted_into(index.typ, p.parse_assignment_expression()!)
 	p.check_assignment(index.typ, value, op)
