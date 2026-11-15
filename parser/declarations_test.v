@@ -2,6 +2,7 @@ module parser
 
 import ast
 import tokenize
+import types
 
 // The streams these tests parse are what a preprocessor hands the parser:
 // glibc's stdio.h with its directives already handled, then the program the
@@ -346,6 +347,24 @@ fn test_a_file_scope_char_array_takes_a_string_literal() {
 	assert joined.diagnostics.len == 0
 	assert joined.unit.globals[0].count == 5
 	assert joined.unit.globals[0].inits[2] == 99
+}
+
+// 6.7.8 and 6.7.9: an array of pointers whose brackets wrote no size takes its
+// count from the brace list, and the type the name then has is the array the
+// list made, so a later `sizeof` answers with that count. Measured on gcc
+// 16.2.1 under `-std=c99`, a file-scope `const char *s[] = {"a", "b"};` gives
+// `sizeof s` 16.
+fn test_a_file_scope_pointer_array_takes_its_size_from_the_list() {
+	result := declarations_of('const char *s[] = {"a", "b"};\nint main(void) { return sizeof s != 16; }')
+	assert result.diagnostics.len == 0
+	global := result.unit.globals[0]
+	assert global.count == 2
+	assert global.address_inits.len == 2
+	assert global.resolved.is_array()
+	assert global.resolved.count == 2
+	assert global.resolved.is_complete()
+	element := global.resolved.element() or { panic('an array of pointers has an element') }
+	assert element.kind == types.Kind.pointer
 }
 
 // A wide literal initializes an array of this target's wchar_t, an int: four
