@@ -1077,3 +1077,5 @@ it owns the change, which is the same vocabulary the commits use.
 * regression: a block-scope static object keeps its value across calls (9c80d64)
 * docs: the changelog records the block-scope static fix (6d5a10e)
 * regression: reach a block-scope static through a call and a loop (5dd1b1b)
+* codegen: a block-scope static shadows an outer local of its name (ba3fa66)
+* regression: a block-scope static shadows a parameter (e5dc46e)
