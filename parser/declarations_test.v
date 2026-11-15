@@ -1154,13 +1154,14 @@ fn test_a_body_char_array_takes_a_string_literal() {
 	}
 	assert assigns == 4
 	last := result.unit.decls[0].body[4]
-	value := last.expr or {
+	value := last.expr
+	if value.is_none() {
 		assert false
 		return
 	}
-	assert value is ast.IntLit
-	if value is ast.IntLit {
-		assert value.value == 0
+	assert value.kind == .int_lit
+	if value.kind == .int_lit {
+		assert result.unit.arena.int_lit(value).value == 0
 	}
 	// A written size is used, and the elements after the terminator stay zero.
 	sized := declarations_of('int main(void) { char s[8] = "abc"; return 0; }')
@@ -1195,12 +1196,13 @@ fn test_a_body_scalar_in_braces_is_the_number_in_them() {
 	assert result.diagnostics.len == 0
 	decl := result.unit.decls[0].body[0]
 	assert decl.kind == .var_decl
-	value := decl.initializer() or {
+	value := decl.initializer()
+	if value.is_none() {
 		assert false
 		return
 	}
-	assert value is ast.IntLit
-	assert (value as ast.IntLit).value == 5
+	assert value.kind == .int_lit
+	assert result.unit.arena.int_lit(value).value == 5
 }
 
 // The shapes a body's list takes now: a nested brace, a designator and an
@@ -1224,10 +1226,13 @@ fn test_a_body_nested_or_designated_list_stores_the_subobject_it_names() {
 			continue
 		}
 		field := stmt.field or { continue }
-		expr := stmt.expr or { continue }
-		if expr is ast.IntLit {
+		expr := stmt.expr
+		if expr.is_none() {
+			continue
+		}
+		if expr.kind == .int_lit {
 			offsets << field.offset
-			values << (expr as ast.IntLit).value
+			values << result.unit.arena.int_lit(expr).value
 		}
 	}
 	// A zero for each of the two members, then the two values the list wrote, at
@@ -1273,9 +1278,11 @@ fn test_a_body_list_that_addresses_a_part_of_an_object_is_stored() {
 		if stmt.kind != .assign {
 			continue
 		}
-		if expr := stmt.expr {
-			if expr is ast.Unary {
-				if expr.op == '&' && expr.expr is ast.Index {
+		expr := stmt.expr
+		if !expr.is_none() {
+			if expr.kind == .unary {
+				unary := result.unit.arena.unary(expr)
+				if unary.op == '&' && unary.expr.kind == .index {
 					addresses++
 				}
 			}
@@ -1345,12 +1352,13 @@ fn test_a_body_struct_brace_initializer_zeroes_the_members_it_did_not_write() {
 		assert false
 		return
 	}).member == 'b'
-	zero := body[2].expr or {
+	zero := body[2].expr
+	if zero.is_none() {
 		assert false
 		return
 	}
-	assert zero is ast.IntLit
-	assert (zero as ast.IntLit).value == 0
+	assert zero.kind == .int_lit
+	assert result.unit.arena.int_lit(zero).value == 0
 }
 
 // An object of a struct type in a body whose member is itself an aggregate is
@@ -1370,12 +1378,13 @@ fn test_a_body_list_for_a_struct_with_an_aggregate_member_is_refused() {
 	expected := [i64(0), 0, 0, 1, 2, 3]
 	for i in 0 .. expected.len {
 		assert body[i + 1].kind == .assign
-		value := body[i + 1].expr or {
+		value := body[i + 1].expr
+		if value.is_none() {
 			assert false
 			return
 		}
-		assert value is ast.IntLit
-		assert (value as ast.IntLit).value == expected[i]
+		assert value.kind == .int_lit
+		assert result.unit.arena.int_lit(value).value == expected[i]
 	}
 	assert body[7].kind == .return_stmt
 	// `{}` writes no value, so the leaves it does not write get the zero store
@@ -1386,12 +1395,13 @@ fn test_a_body_list_for_a_struct_with_an_aggregate_member_is_refused() {
 	assert empty_body.len == 6
 	for i in 0 .. 4 {
 		assert empty_body[i + 1].kind == .assign
-		zero := empty_body[i + 1].expr or {
+		zero := empty_body[i + 1].expr
+		if zero.is_none() {
 			assert false
 			return
 		}
-		assert zero is ast.IntLit
-		assert (zero as ast.IntLit).value == 0
+		assert zero.kind == .int_lit
+		assert empty.unit.arena.int_lit(zero).value == 0
 	}
 }
 
@@ -1949,14 +1959,15 @@ fn test_a_deeply_nested_tag_body_is_reported() {
 fn test_a_prototype_has_the_type_its_own_specifiers_gave_it() {
 	result := declarations_of('int f(void);\nint main(void) { return f() + 1; }')
 	assert result.diagnostics.len == 0
-	sum := result.unit.decls[1].body[0].expr or {
+	sum := result.unit.decls[1].body[0].expr
+	if sum.is_none() {
 		assert false
 		return
 	}
-	assert sum is ast.Binary
-	call := (sum as ast.Binary).left
-	assert call is ast.Call
-	assert (call as ast.Call).typ.kind == .int_
+	assert sum.kind == .binary
+	call := result.unit.arena.binary(sum).left
+	assert call.kind == .call
+	assert result.unit.arena.call(call).typ.kind == .int_
 }
 
 // One name declared twice in one scope is one name (6.2.2), and the two
@@ -2145,7 +2156,7 @@ fn test_a_non_constant_bound_at_file_scope_is_a_constraint_violation() {
 	body := declarations_of('int main(void) { int n = 3; int a[n]; return 0; }')
 	assert body.diagnostics.len == 0
 	decl := body.unit.decls[0].body[1]
-	assert decl.decl_vla_size() != none
+	assert !decl.decl_vla_size().is_none()
 	assert decl.decl_stride() == 4
 }
 

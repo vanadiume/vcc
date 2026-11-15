@@ -17,16 +17,23 @@ fn compound_parsed(source string) Result {
 	return parse(lexed.tokens)
 }
 
-fn compound_first(source string) ast.FnDecl {
+// compound_first is the one function the source defines, with the arena its
+// expression nodes live in: reading a node's payload needs both.
+struct CompoundFirst {
+	decl  ast.FnDecl
+	arena ast.Arena
+}
+
+fn compound_first(source string) CompoundFirst {
 	result := compound_parsed(source)
 	assert result.diagnostics.len == 0
 	assert result.unit.decls.len == 1
-	return result.unit.decls[0]
+	return CompoundFirst{result.unit.decls[0], result.unit.arena}
 }
 
 fn test_a_compound_literal_declares_an_unnamed_object() {
-	decl := compound_first('int main(void) { int *arr = (int[]){10, 20, 30}; return arr[0]; }')
-	body := decl.body
+	first := compound_first('int main(void) { int *arr = (int[]){10, 20, 30}; return arr[0]; }')
+	body := first.decl.body
 	// The declaration of the unnamed object and the six stores that zero it and
 	// write its three values come before the statement the literal was in.
 	assert body.len == 9
@@ -42,35 +49,36 @@ fn test_a_compound_literal_declares_an_unnamed_object() {
 	}
 	arr := body[7]
 	assert arr.kind == .var_decl
-	init := arr.initializer() or {
+	init := arr.initializer()
+	if init.is_none() {
 		assert false
 		return
 	}
-	assert init is ast.Ident
-	assert (init as ast.Ident).name == object.decl_name()
-	assert (init as ast.Ident).typ.same(types.array_of(types.int_type(), 3))
+	assert init.kind == .ident
+	assert first.arena.ident(init).name == object.decl_name()
+	assert first.arena.ident(init).typ.same(types.array_of(types.int_type(), 3))
 }
 
 fn test_a_compound_literal_is_an_lvalue() {
-	decl := compound_first('int main(void) { (int[]){1, 2}[0] = 5; return 0; }')
-	body := decl.body
+	body := compound_first('int main(void) { (int[]){1, 2}[0] = 5; return 0; }').decl.body
 	assert body.len == 7
 	assert body[0].kind == .var_decl
 	assert body[0].decl_name().starts_with('__vcc_compound_')
 	assert body[5].kind == .assign
-	assert body[5].subscript() != none
+	assert !body[5].subscript().is_none()
 }
 
 fn test_sizeof_a_compound_literal_is_a_constant() {
-	decl := compound_first('int main(void) { return sizeof (int[]){1, 2, 3}; }')
-	body := decl.body
+	first := compound_first('int main(void) { return sizeof (int[]){1, 2, 3}; }')
+	body := first.decl.body
 	assert body.len == 1
-	value := body[0].expr or {
+	value := body[0].expr
+	if value.is_none() {
 		assert false
 		return
 	}
-	assert value is ast.IntLit
-	assert (value as ast.IntLit).value == 12
+	assert value.kind == .int_lit
+	assert first.arena.int_lit(value).value == 12
 }
 
 // A nonconstant literal in a place the statement may evaluate more than once is
@@ -80,8 +88,8 @@ fn test_sizeof_a_compound_literal_is_a_constant() {
 // the comma puts at the literal's own position, and the comma is worth the
 // object they wrote.
 fn test_a_nonconstant_literal_in_a_reevaluated_place_is_initialized_at_the_literal() {
-	decl := compound_first('int main(void) { int i = 0; while ((int[]){i}[0]) { i++; } return i; }')
-	body := decl.body
+	first := compound_first('int main(void) { int i = 0; while ((int[]){i}[0]) { i++; } return i; }')
+	body := first.decl.body
 	mut object := ''
 	mut loop := ast.Stmt{}
 	for stmt in body {
@@ -93,18 +101,20 @@ fn test_a_nonconstant_literal_in_a_reevaluated_place_is_initialized_at_the_liter
 		}
 	}
 	assert object.len > 0
-	cond := loop.cond or {
+	cond := loop.cond
+	if cond.is_none() {
 		assert false
 		return
 	}
-	assert cond is ast.Index
-	base := (cond as ast.Index).base
-	assert base is ast.Comma
-	comma := base as ast.Comma
-	assert comma.right is ast.Ident
-	assert (comma.right as ast.Ident).name == object
-	assert comma.left is ast.StmtExpr
-	stores := comma.left as ast.StmtExpr
+	assert cond.kind == .index
+	subscript := first.arena.index(cond)
+	base := subscript.base
+	assert base.kind == .comma
+	comma := first.arena.comma(base)
+	assert comma.right.kind == .ident
+	assert first.arena.ident(comma.right).name == object
+	assert comma.left.kind == .stmt_expr
+	stores := first.arena.stmt_expr(comma.left)
 	assert stores.typ.same(types.void_type())
 	assert stores.body.len > 0
 	// Every statement the wrapper runs is a store into the object, so the
@@ -184,12 +194,13 @@ fn test_a_designated_aggregate_member_takes_the_element_as_its_value() {
 		// the element wrote rather than a walk into T's own members (x and y),
 		// which are the only stores of the scalar type beside it.
 		assert field.offset == 0
-		value := stmt.expr or {
+		value := stmt.expr
+		if value.is_none() {
 			assert false
 			return
 		}
-		assert value is ast.Ident
-		assert (value as ast.Ident).name == 'v'
+		assert value.kind == .ident
+		assert result.unit.arena.ident(value).name == 'v'
 	}
 	assert stores == 1
 }
@@ -235,12 +246,13 @@ fn test_a_positional_element_of_the_members_own_type_is_the_member() {
 		// no field of the struct type and is not counted here.
 		stores++
 		assert field.offset == 0
-		value := stmt.expr or {
+		value := stmt.expr
+		if value.is_none() {
 			assert false
 			return
 		}
-		assert value is ast.Ident
-		assert (value as ast.Ident).name == 'v'
+		assert value.kind == .ident
+		assert result.unit.arena.ident(value).name == 'v'
 	}
 	assert stores == 1
 }
@@ -285,9 +297,10 @@ fn test_a_body_brace_element_may_be_a_compound_literal() {
 		if stmt.kind != .assign {
 			continue
 		}
-		if value := stmt.expr {
-			if value is ast.IntLit && (value as ast.IntLit).value != 0 {
-				values << (value as ast.IntLit).value
+		value := stmt.expr
+		if !value.is_none() {
+			if value.kind == .int_lit && result.unit.arena.int_lit(value).value != 0 {
+				values << result.unit.arena.int_lit(value).value
 			}
 		}
 	}
@@ -299,8 +312,7 @@ fn test_a_body_brace_element_may_be_a_compound_literal() {
 // operand. The member is chosen by type and not by position, so `(union value)
 // 1.5f` writes the float member even though the int member is written first.
 fn test_a_cast_to_a_union_type_initializes_the_member_whose_type_matches() {
-	decl := compound_first('union value { int i; float f; }; int main(void) { union value a = (union value)1.5f; return 0; }')
-	body := decl.body
+	body := compound_first('union value { int i; float f; }; int main(void) { union value a = (union value)1.5f; return 0; }').decl.body
 	object := body[0]
 	assert object.kind == .var_decl
 	assert object.decl_name().starts_with('__vcc_compound_')
@@ -317,7 +329,7 @@ fn test_a_cast_to_a_union_type_initializes_the_member_whose_type_matches() {
 		}
 	}
 	assert chosen == 'float'
-	int_decl := compound_first('union value { int i; float f; }; int main(void) { union value a = (union value)42; return 0; }')
+	int_decl := compound_first('union value { int i; float f; }; int main(void) { union value a = (union value)42; return 0; }').decl
 	mut int_chosen := ''
 	for stmt in int_decl.body {
 		if stmt.kind == .assign {

@@ -147,8 +147,8 @@ fn (mut e Emitter) store_decimal_muldiv_at(address Slot, binary ast.Binary, line
 // routine's arguments cannot survive. A name of the running function is fine; a
 // name an enclosing function owns is not.
 fn (e Emitter) decimal_operand_reachable(expr ast.Expr) bool {
-	if expr is ast.Ident {
-		if slot := e.lookup(expr.name) {
+	if expr.kind == .ident {
+		if slot := e.lookup(e.unit.arena.ident(expr).name) {
 			return !slot.captured
 		}
 	}
@@ -171,8 +171,8 @@ fn (mut e Emitter) emit_decimal_muldiv(frame Slot, through ?Slot, binary ast.Bin
 		e.diagnostics << problem(line, col, 'unsupported: a ${binary.typ.describe()} is computed here from a value that is not an object, and the routine reads each operand where it lives')
 		return error('decimal operand')
 	}
-	if binary.left.typ.kind.decimal_format() != format
-		|| binary.right.typ.kind.decimal_format() != format {
+	if e.expr_type(binary.left).kind.decimal_format() != format
+		|| e.expr_type(binary.right).kind.decimal_format() != format {
 		e.diagnostics << problem(line, col, 'unsupported: a ${binary.typ.describe()} is computed here from an operand of another decimal width, and this back end has no conversion between the decimal widths')
 		return error('decimal operand width')
 	}
@@ -191,7 +191,7 @@ fn (mut e Emitter) emit_decimal_muldiv(frame Slot, through ?Slot, binary ast.Bin
 	e.emit_address(ast.Unary{
 		op:   '&'
 		expr: binary.left
-		typ:  binary.left.typ
+		typ:  e.expr_type(binary.left)
 		line: line
 		col:  col
 	}, depth + 1)!
@@ -199,7 +199,7 @@ fn (mut e Emitter) emit_decimal_muldiv(frame Slot, through ?Slot, binary ast.Bin
 	e.emit_address(ast.Unary{
 		op:   '&'
 		expr: binary.right
-		typ:  binary.right.typ
+		typ:  e.expr_type(binary.right)
 		line: line
 		col:  col
 	}, depth + 1)!

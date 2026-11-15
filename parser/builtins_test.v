@@ -20,11 +20,12 @@ fn builtin_read(source string) Result {
 fn builtin_value(source string) i64 {
 	result := builtin_read(source)
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return 0
 	}
-	return (expr as ast.IntLit).value
+	return result.unit.arena.int_lit(expr).value
 }
 
 // builtin_nth_value is builtin_value for a body whose answer is not the first
@@ -33,11 +34,12 @@ fn builtin_value(source string) i64 {
 fn builtin_nth_value(source string, index int) i64 {
 	result := builtin_read(source)
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[index].expr or {
+	expr := result.unit.decls[0].body[index].expr
+	if expr.is_none() {
 		assert false
 		return 0
 	}
-	return (expr as ast.IntLit).value
+	return result.unit.arena.int_lit(expr).value
 }
 
 // builtin_float is the floating constant a builtin put in an initializer, which
@@ -45,11 +47,12 @@ fn builtin_nth_value(source string, index int) i64 {
 fn builtin_float(source string) ast.FloatLit {
 	result := builtin_read(source)
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].initializer() or {
+	expr := result.unit.decls[0].body[0].initializer()
+	if expr.is_none() {
 		assert false
 		return ast.FloatLit{}
 	}
-	return expr as ast.FloatLit
+	return *result.unit.arena.float_lit(expr)
 }
 
 // __builtin_types_compatible_p answers 1 for one type written twice and 0 for
@@ -68,11 +71,12 @@ fn test_types_compatible_p_answers_both_directions() {
 fn test_types_compatible_p_is_an_int_constant() {
 	result := builtin_read('int main(void) { return __builtin_types_compatible_p(double, double); }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	lit := expr as ast.IntLit
+	lit := result.unit.arena.int_lit(expr)
 	assert lit.typ.same(types.int_type())
 	assert lit.value == 1
 }
@@ -112,18 +116,20 @@ fn test_choose_expr_returns_the_arm_the_constant_names() {
 fn test_choose_expr_is_worth_the_type_of_the_chosen_arm() {
 	result := builtin_read('int main(void) { return sizeof(__builtin_choose_expr(1, (char)0, (long)0)); }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert (expr as ast.IntLit).value == 1
+	assert result.unit.arena.int_lit(expr).value == 1
 	other := builtin_read('int main(void) { return sizeof(__builtin_choose_expr(0, (char)0, (long)0)); }')
 	assert other.diagnostics.len == 0
-	chosen := other.unit.decls[0].body[0].expr or {
+	chosen := other.unit.decls[0].body[0].expr
+	if chosen.is_none() {
 		assert false
 		return
 	}
-	assert (chosen as ast.IntLit).value == 8
+	assert other.unit.arena.int_lit(chosen).value == 8
 }
 
 // The chain glibc builds, written out: three queries and a choose_expr between
@@ -132,18 +138,20 @@ fn test_the_type_generic_dispatch_reads_the_type_of_its_argument() {
 	source := 'int f(double x) { return __builtin_choose_expr(__builtin_types_compatible_p(__typeof(x), float), 1, __builtin_choose_expr(__builtin_types_compatible_p(__typeof(x), double), 2, 3)); }'
 	result := builtin_read(source)
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert (expr as ast.IntLit).value == 2
+	assert result.unit.arena.int_lit(expr).value == 2
 	same := builtin_read('int f(float x) { return __builtin_choose_expr(__builtin_types_compatible_p(__typeof(x), float), 1, __builtin_choose_expr(__builtin_types_compatible_p(__typeof(x), double), 2, 3)); }')
 	assert same.diagnostics.len == 0
-	first := same.unit.decls[0].body[0].expr or {
+	first := same.unit.decls[0].body[0].expr
+	if first.is_none() {
 		assert false
 		return
 	}
-	assert (first as ast.IntLit).value == 1
+	assert same.unit.arena.int_lit(first).value == 1
 }
 
 // A condition this reader cannot evaluate is refused by name rather than guessed
@@ -188,11 +196,12 @@ fn test_offsetof_walks_a_path_of_members() {
 fn test_offsetof_is_size_t() {
 	result := builtin_read('struct P { char a; int b; };\nint main(void) { return sizeof(__builtin_offsetof(struct P, b)); }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[0].expr or {
+	expr := result.unit.decls[0].body[0].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert (expr as ast.IntLit).value == 8
+	assert result.unit.arena.int_lit(expr).value == 8
 }
 
 fn test_offsetof_refuses_a_member_the_type_does_not_have() {
@@ -208,14 +217,15 @@ fn test_offsetof_refuses_a_member_the_type_does_not_have() {
 fn test_va_arg_reads_a_call_carrying_the_type_of_the_argument() {
 	result := builtin_read('typedef __builtin_va_list va_list;\nint main(void) { va_list ap; return __builtin_va_arg(ap, int); }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[1].expr or {
+	expr := result.unit.decls[0].body[1].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	call := expr as ast.Call
+	call := result.unit.arena.call(expr)
 	assert call.name == '__builtin_va_arg'
 	assert call.args.len == 1
-	assert (call.args[0] as ast.Ident).name == 'ap'
+	assert result.unit.arena.ident(call.args[0]).name == 'ap'
 	assert call.typ.kind == .int_
 }
 
@@ -234,7 +244,7 @@ fn test_va_end_and_va_copy_read_their_lists() {
 	result := builtin_read('typedef __builtin_va_list va_list;\nint main(void) { va_list ap, snapshot; __builtin_va_start(ap, 0); __builtin_va_copy(snapshot, ap); __builtin_va_end(snapshot); return 0; }')
 	assert result.diagnostics.len == 0
 	body := result.unit.decls[0].body
-	assert (body[2].expr or { ast.Expr(ast.IntLit{}) }) is ast.Call
+	assert body[2].expr.kind == .call
 }
 
 // A deep chain of one builtin inside another is a file attacking the reader, and
@@ -388,11 +398,12 @@ fn test_signbit_folds_the_sign_of_a_constant() {
 fn test_signbit_of_a_value_is_an_expression() {
 	result := builtin_read('int main(void) { double x = 1.0; return __builtin_signbit(x); }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[1].expr or {
+	expr := result.unit.decls[0].body[1].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Binary
+	assert expr.kind == .binary
 }
 
 // __builtin_isinf_sign is 1 at positive infinity, -1 at negative infinity and 0
@@ -408,11 +419,12 @@ fn test_isinf_sign_answers_for_the_two_infinities() {
 fn test_isinf_sign_of_a_value_is_an_expression() {
 	result := builtin_read('int main(void) { double x = 1.0; return __builtin_isinf_sign(x); }')
 	assert result.diagnostics.len == 0
-	expr := result.unit.decls[0].body[1].expr or {
+	expr := result.unit.decls[0].body[1].expr
+	if expr.is_none() {
 		assert false
 		return
 	}
-	assert expr is ast.Conditional
+	assert expr.kind == .conditional
 }
 
 // The nine machine builtins are read as calls in the compiler's own namespace,
@@ -424,44 +436,49 @@ fn test_isinf_sign_of_a_value_is_an_expression() {
 fn test_the_atomic_builtins_carry_the_type_they_operate_on() {
 	fetch := builtin_read('int main(void) { unsigned long long w = 0; unsigned long long o = __atomic_fetch_add(&w, 1, 5); return 0; }')
 	assert fetch.diagnostics.len == 0
-	fetch_value := fetch.unit.decls[0].body[1].initializer() or {
+	fetch_value := fetch.unit.decls[0].body[1].initializer()
+	if fetch_value.is_none() {
 		assert false
 		return
 	}
-	fetch_call := fetch_value as ast.Call
+	fetch_call := fetch.unit.arena.call(fetch_value)
 	assert fetch_call.name == '__atomic_fetch_add'
 	assert fetch_call.typ.kind == .unsigned_long_long
 	assert fetch_call.args.len == 3
 	swap := builtin_read('int main(void) { unsigned long long w = 0; unsigned long long o = __atomic_exchange_n(&w, 1, 5); return 0; }')
 	assert swap.diagnostics.len == 0
-	swap_value := swap.unit.decls[0].body[1].initializer() or {
+	swap_value := swap.unit.decls[0].body[1].initializer()
+	if swap_value.is_none() {
 		assert false
 		return
 	}
-	assert (swap_value as ast.Call).typ.kind == .unsigned_long_long
+	assert swap.unit.arena.call(swap_value).typ.kind == .unsigned_long_long
 	store := builtin_read('int main(void) { unsigned long long w = 0; __atomic_store_n(&w, 1, 5); return 0; }')
 	assert store.diagnostics.len == 0
-	store_value := store.unit.decls[0].body[1].expr or {
+	store_value := store.unit.decls[0].body[1].expr
+	if store_value.is_none() {
 		assert false
 		return
 	}
-	assert (store_value as ast.Call).typ.kind == .void_
+	assert store.unit.arena.call(store_value).typ.kind == .void_
 	cas := builtin_read('int main(void) { unsigned long long w = 0; unsigned long long e = 0; int r = __atomic_compare_exchange_n(&w, &e, 1, 0, 5, 5); return 0; }')
 	assert cas.diagnostics.len == 0
-	cas_value := cas.unit.decls[0].body[2].initializer() or {
+	cas_value := cas.unit.decls[0].body[2].initializer()
+	if cas_value.is_none() {
 		assert false
 		return
 	}
-	cas_call := cas_value as ast.Call
+	cas_call := cas.unit.arena.call(cas_value)
 	assert cas_call.typ.kind == .bool_
 	assert cas_call.args.len == 6
 	fence := builtin_read('int main(void) { __atomic_thread_fence(5); return 0; }')
 	assert fence.diagnostics.len == 0
-	fence_value := fence.unit.decls[0].body[0].expr or {
+	fence_value := fence.unit.decls[0].body[0].expr
+	if fence_value.is_none() {
 		assert false
 		return
 	}
-	assert (fence_value as ast.Call).typ.kind == .void_
+	assert fence.unit.arena.call(fence_value).typ.kind == .void_
 }
 
 // The memory order is folded into an int constant the back end chooses the
@@ -472,13 +489,14 @@ fn test_the_atomic_builtins_carry_the_type_they_operate_on() {
 fn test_an_atomic_memory_order_is_folded_into_the_call() {
 	result := builtin_read('int main(void) { unsigned long long w = 0; unsigned long long o = __atomic_load_n(&w, 5); return 0; }')
 	assert result.diagnostics.len == 0
-	value := result.unit.decls[0].body[1].initializer() or {
+	value := result.unit.decls[0].body[1].initializer()
+	if value.is_none() {
 		assert false
 		return
 	}
-	call := value as ast.Call
+	call := result.unit.arena.call(value)
 	assert call.name == '__atomic_load_n'
-	order := call.args[1] as ast.IntLit
+	order := result.unit.arena.int_lit(call.args[1])
 	assert order.value == 5
 	assert order.typ.kind == .int_
 }
@@ -490,25 +508,27 @@ fn test_an_atomic_memory_order_is_folded_into_the_call() {
 fn test_the_count_trailing_builtins_are_read_as_calls_of_type_int() {
 	wide := builtin_read('int main(void) { return __builtin_ctzll(1ULL << 40); }')
 	assert wide.diagnostics.len == 0
-	wide_value := wide.unit.decls[0].body[0].expr or {
+	wide_value := wide.unit.decls[0].body[0].expr
+	if wide_value.is_none() {
 		assert false
 		return
 	}
-	wide_call := wide_value as ast.Call
+	wide_call := wide.unit.arena.call(wide_value)
 	assert wide_call.name == '__builtin_ctzll'
 	assert wide_call.typ.kind == .int_
 	assert wide_call.args.len == 1
-	assert wide_call.args[0] is ast.Binary
+	assert wide_call.args[0].kind == .binary
 	narrow := builtin_read('int main(void) { int v = 40; return __builtin_ctz(v); }')
 	assert narrow.diagnostics.len == 0
-	narrow_value := narrow.unit.decls[0].body[1].expr or {
+	narrow_value := narrow.unit.decls[0].body[1].expr
+	if narrow_value.is_none() {
 		assert false
 		return
 	}
-	narrow_call := narrow_value as ast.Call
+	narrow_call := narrow.unit.arena.call(narrow_value)
 	assert narrow_call.name == '__builtin_ctz'
 	assert narrow_call.typ.kind == .int_
-	assert (narrow_call.args[0] as ast.Ident).name == 'v'
+	assert narrow.unit.arena.ident(narrow_call.args[0]).name == 'v'
 }
 
 // A memory order outside the six the standard names is refused by name rather
@@ -549,23 +569,25 @@ fn test_a_count_trailing_of_a_non_integer_is_refused() {
 fn test_the_count_leading_builtins_are_read_as_calls_of_type_int() {
 	wide := builtin_read('int main(void) { return __builtin_clzll(8); }')
 	assert wide.diagnostics.len == 0
-	wide_value := wide.unit.decls[0].body[0].expr or {
+	wide_value := wide.unit.decls[0].body[0].expr
+	if wide_value.is_none() {
 		assert false
 		return
 	}
-	wide_call := wide_value as ast.Call
+	wide_call := wide.unit.arena.call(wide_value)
 	assert wide_call.name == '__builtin_clzll'
 	assert wide_call.typ.kind == .int_
 	narrow := builtin_read('int main(void) { int v = 8; return __builtin_clz(v); }')
 	assert narrow.diagnostics.len == 0
-	narrow_value := narrow.unit.decls[0].body[1].expr or {
+	narrow_value := narrow.unit.decls[0].body[1].expr
+	if narrow_value.is_none() {
 		assert false
 		return
 	}
-	narrow_call := narrow_value as ast.Call
+	narrow_call := narrow.unit.arena.call(narrow_value)
 	assert narrow_call.name == '__builtin_clz'
 	assert narrow_call.typ.kind == .int_
-	assert (narrow_call.args[0] as ast.Ident).name == 'v'
+	assert narrow.unit.arena.ident(narrow_call.args[0]).name == 'v'
 }
 
 // A count-leading of a non-integer is refused by name, and the message names the
