@@ -163,6 +163,12 @@ mut:
 	nested_used map[string]bool
 	// nested_serial numbers those repeats.
 	nested_serial int
+	// block_static_serial numbers the block-scope static objects this unit
+	// declares. Such an object has no linkage, so its symbol is built from the
+	// function it is written in and this number; the number runs over the whole
+	// file because two declarations of one name in one function, in different
+	// blocks, still need two symbols.
+	block_static_serial int
 	// pending_bounds is a file-scope array bound whose expression names something
 	// this reader did not resolve. Its report waits until the whole file has been
 	// read, because whether a name is declared anywhere is a question only the end

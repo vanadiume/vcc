@@ -1781,6 +1781,241 @@ fn (mut p Parser) parse_for_statement() ![]ast.Stmt {
 	}]
 }
 
+// BlockStatic is one block-scope `static` declaration as the declaration
+// reader has it when the object's storage is to be laid out: the name it was
+// written with and the symbol it is emitted under, the type the declarator
+// built, and the initializer as far as the block reader has read it. The three
+// lists are the shapes a block initializer takes - the flat values of an array,
+// the members a struct's brace list wrote, and the writes a nested or
+// designated list made - because each is placed differently in the object.
+struct BlockStatic {
+	name           string
+	symbol         string
+	written        string
+	declared       types.Type
+	count          int
+	at             tokenize.Token
+	init           ?ast.Expr
+	elements       []ast.Expr
+	from_string    bool
+	union_value    bool
+	struct_layout  ?types.Layout
+	struct_values  []BraceElement
+	general_writes []BraceWrite
+}
+
+// block_static_symbol is the name a block-scope static object is emitted under.
+// The object has no linkage, so the spelling is not a symbol of its own: two
+// functions may each declare a `static int n` and four blocks in one function
+// may each declare one. The symbol is built from the function's own symbol and
+// a number that runs over the unit, which no C identifier can spell, so it
+// cannot collide with a name the source writes either.
+fn (mut p Parser) block_static_symbol(name string) string {
+	function := if p.function_symbol.len > 0 { p.function_symbol } else { p.current_function }
+	serial := p.block_static_serial
+	p.block_static_serial++
+	return '${function}.${name}.${serial}'
+}
+
+// block_static_object lays out the storage a block-scope `static` declaration
+// defines. The object has static storage duration (6.2.4p3), so its bytes are
+// the image's and its initializer is a constant the program never runs: the
+// value is folded here, where the declaration is read, and written into the
+// storage before the program starts. A shape this reader cannot fold is
+// refused by name rather than emitted as an initializer the program would run
+// on every call, which is the defect this path exists to remove.
+fn (mut p Parser) block_static_object(object BlockStatic) ?ast.Global {
+	if object.declared.has_vla() {
+		p.error_at(object.at, 'unsupported: ${object.name} is a variable-length array declared static, and an object with static storage duration needs a size that is known before the program runs')
+		return none
+	}
+	mut init := ?i64(none)
+	mut init_float := ?f64(none)
+	mut address := ?ast.AddressInit(none)
+	mut inits := []i64{}
+	mut init_floats := []f64{}
+	mut member_inits := []ast.MemberInit{}
+	element := if object.declared.is_array() {
+		object.declared.element() or { object.declared }
+	} else {
+		object.declared
+	}
+	if object.general_writes.len > 0 {
+		// A nested or designated list is placed at the byte each subobject
+		// starts at. An object with a byte size of its own - a struct, a
+		// union, or an array of either - takes those writes as member
+		// initializers; an array of scalars has no byte offset a member
+		// initializer means, so each write becomes the element its offset
+		// lands in.
+		if p.aggregate_bytes(object.declared) > 0 {
+			member_inits = p.static_member_writes(object.general_writes, object.at) or { return none }
+		} else if element.kind == .array {
+			p.error_at(object.at, 'unsupported: ${object.name} is an array of arrays initialized with a nested or designated list, and a block-scope static object of that shape is not implemented')
+			return none
+		} else {
+			width := p.representation.size_of(element) or { 0 }
+			if width <= 0 {
+				p.error_at(object.at, 'unsupported: ${object.name} is a block-scope static object whose element width this compiler does not know')
+				return none
+			}
+			for write in object.general_writes {
+				constant := p.static_write_constant(write, object.at) or { return none }
+				index := write.offset / width
+				if write.offset % width != 0 || index < 0 || index >= object.count {
+					p.error_at(object.at, 'unsupported: a nested or designated initializer of ${object.name} reaches past the object')
+					return none
+				}
+				if element.kind.is_floating() {
+					init_floats << (constant.floating or { f64(constant.integer or { 0 }) })
+				} else {
+					inits << (constant.integer or { i64(constant.floating or { 0 }) })
+				}
+			}
+		}
+	} else if object.declared.is_array() {
+		if object.elements.len > 0 {
+			for written in object.elements {
+				if element.kind.is_floating() {
+					value := p.floating_constant_value(written) or {
+						p.error_at(object.at, 'a constraint violation: ${object.name} has static storage duration, and an element of its initializer is not a constant expression')
+						return none
+					}
+					init_floats << value
+				} else {
+					value := p.constant_value(written) or {
+						p.error_at(object.at, 'a constraint violation: ${object.name} has static storage duration, and an element of its initializer is not a constant expression')
+						return none
+					}
+					inits << value
+				}
+			}
+		} else if object.init != none {
+			p.error_at(object.at, 'unsupported: ${object.name} is an array declared static and initialized with something that is not a brace list or a string literal')
+			return none
+		}
+	} else if object.struct_layout != none || object.union_value {
+		if layout := object.struct_layout {
+			member_inits = p.struct_member_inits(object.declared, BraceList{
+				elements: object.struct_values
+				at:       object.at
+			}, layout)
+		}
+		if value := object.init {
+			// A union's brace initializer is a value for its first member,
+			// which sits at the start of the storage; the image writer writes
+			// it there at the member's own width.
+			if integer := p.constant_value(value) {
+				init = integer
+			} else if floating := p.floating_constant_value(value) {
+				init_float = floating
+			} else {
+				p.error_at(object.at, 'a constraint violation: ${object.name} has static storage duration, and its initializer is not a constant expression')
+				return none
+			}
+		}
+	} else if value := object.init {
+		if value is ast.StrLit && object.declared.is_pointer() {
+			// A pointer with static storage duration may start at the address
+			// of a string literal, whose bytes live in the image's read-only
+			// data: the initializer is an address the layout resolves, not a
+			// value the program computes.
+			address = ast.AddressInit{
+				name:   value.value
+				string: true
+				line:   value.line
+				col:    value.col
+			}
+		} else if integer := p.constant_value(value) {
+			init = integer
+		} else if floating := p.floating_constant_value(value) {
+			init_float = floating
+		} else {
+			p.error_at(object.at, 'a constraint violation: ${object.name} has static storage duration, and its initializer is not a constant expression: an object with static storage duration is initialized before the program runs')
+			return none
+		}
+	}
+	return ast.Global{
+		name:         object.symbol
+		typ:          object.written
+		resolved:     object.declared
+		count:        object.count
+		bytes:        p.aggregate_bytes(object.declared)
+		static_:      true
+		init:         init
+		init_float:   init_float
+		address:      address
+		inits:        inits
+		init_floats:  init_floats
+		member_inits: member_inits
+		line:         object.at.line
+		col:          object.at.col
+	}
+}
+
+// static_write_constant is the constant one write of a nested or designated
+// initializer holds: the expression the list wrote where it wrote one, which
+// has to fold, and the number it wrote otherwise.
+fn (mut p Parser) static_write_constant(write BraceWrite, at tokenize.Token) ?FileConstant {
+	element := write.element
+	if expression := element.expr {
+		if value := p.constant_value(expression) {
+			return FileConstant{
+				integer: value
+			}
+		}
+		if value := p.floating_constant_value(expression) {
+			return FileConstant{
+				floating: value
+			}
+		}
+		p.error_at(at, 'a constraint violation: an initializer written for a block-scope static object is not a constant expression')
+		return none
+	}
+	if number := element.number {
+		return number.number
+	}
+	return FileConstant{}
+}
+
+// static_member_writes turns the writes a nested or designated initializer made
+// into the member initializers a block-scope static object carries. A write into
+// a bitfield keeps the field's bit position and width, because the value lands in
+// those bits rather than at a byte of its own, and the class is the subobject's
+// own type, which is the conversion a store into it makes.
+fn (mut p Parser) static_member_writes(writes []BraceWrite, at tokenize.Token) ?[]ast.MemberInit {
+	mut members := []ast.MemberInit{cap: writes.len}
+	for write in writes {
+		element := write.element
+		if address := element.address {
+			if !address.string {
+				p.error_at(at, 'unsupported: a block-scope static object is initialized with the address of ${address.name}, and an initializer that names storage this compiler lays out later is not implemented')
+				return none
+			}
+			members << ast.MemberInit{
+				offset:   write.offset
+				width:    write.width
+				spelling: write.spelling
+				address:  address
+			}
+			continue
+		}
+		constant := p.static_write_constant(write, at) or { return none }
+		init, init_float := initializer_for(write.spelling, constant.integer, constant.floating)
+		members << ast.MemberInit{
+			offset:     write.offset
+			width:      write.width
+			spelling:   write.spelling
+			init:       init
+			init_float: init_float
+			bitfield:   write.bitfield
+			bit_offset: write.bit_offset
+			bit_width:  write.bit_width
+			unit_width: write.unit_width
+		}
+	}
+	return members
+}
+
 // parse_local_declaration reads a declaration inside a body: storage in the
 // frame, and a statement that runs where it is written. One declaration of
 // several declarators becomes one statement per declared name, because a
@@ -1792,6 +2027,13 @@ fn (mut p Parser) parse_for_statement() ![]ast.Stmt {
 // shape the tree has no node for — an array, a function, a brace full of
 // initializers — is reported rather than half-read, and the rest of the
 // declaration is skipped so the statements after it still parse.
+//
+// A declaration that writes `static` gives its object static storage duration
+// (6.2.4p3), so it defines storage in the image rather than in the frame: the
+// bytes are laid out once, under a symbol built from the function and a
+// counter, and the initializer is folded into them here. The statement the
+// tree carries reserves nothing, and the emitter names that symbol wherever
+// the block reads the spelling.
 fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 	mut stmts := statements()
 	// A static assertion written in a body is the same declaration the file
@@ -2273,11 +2515,49 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// no local is emitted and a use of the name reaches the top-level
 		// object the declaration refers to. An `extern` declaration that
 		// writes an initializer defines the object and is emitted below.
+		// A block-scope `static` gives its object static storage duration
+		// (6.2.4p3): the bytes are the image's and the initializer is folded
+		// into them before the program runs. The declaration is still a
+		// statement, because the emitter has to learn which symbol the block's
+		// spelling names from the place it is written, but it reserves nothing
+		// and writes no initializer there.
+		mut static_storage := false
+		mut static_symbol := ''
+		if spec.storage == .static_ && !spec.is_typedef {
+			static_symbol = p.block_static_symbol(d.name)
+			object := BlockStatic{
+				name:           d.name
+				symbol:         static_symbol
+				written:        if spec.auto_deduced {
+					declared.describe()
+				} else {
+					p.spelling_of(spec, d.pointer_count())
+				}
+				declared:       declared
+				count:          count
+				at:             d.name_at
+				init:           init
+				elements:       elements
+				from_string:    from_string
+				union_value:    union_first != none
+				struct_layout:  struct_brace
+				struct_values:  struct_values
+				general_writes: general_writes
+			}
+			if global := p.block_static_object(object) {
+				p.globals << global
+				static_storage = true
+			}
+		}
+		mut declaration_init := decl_init
+		if static_storage {
+			declaration_init = none
+		}
 		if !spec.is_typedef && !(spec.is_extern && !has_initializer) {
 			stmts << ast.Stmt{
 				kind:  .var_decl
 				extra: &ast.StmtExtra{
-					init:          decl_init
+					init:          declaration_init
 					decl_name:     d.name
 					decl_type:     if spec.auto_deduced {
 						declared.describe()
@@ -2299,6 +2579,8 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 					// calls with this object's address when the block ends. It is
 					// empty for a declaration that asked for none.
 					cleanup:       cleanup
+					static_:       static_storage
+					storage_name:  static_symbol
 				}
 				line:  d.name_at.line
 				col:   d.name_at.col
@@ -2311,29 +2593,31 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// declaration left it.
 		if first := union_first {
 			if initializer := init {
-				stmts << ast.Stmt{
-					kind:   .assign
-					target: d.name
-					field:  &ast.Field{
-						name:       d.name
-						member:     first.name
-						offset:     0
-						spelling:   first.typ.storage_spelling()
-						typ:        first.typ
-						bitfield:   first.bitfield
-						bit_offset: 0
-						bit_width:  first.bits
-						unit_width: if first.bitfield {
-							p.representation.size_of(first.typ) or { 0 }
-						} else {
-							0
+				if !static_storage {
+					stmts << ast.Stmt{
+						kind:   .assign
+						target: d.name
+						field:  &ast.Field{
+							name:       d.name
+							member:     first.name
+							offset:     0
+							spelling:   first.typ.storage_spelling()
+							typ:        first.typ
+							bitfield:   first.bitfield
+							bit_offset: 0
+							bit_width:  first.bits
+							unit_width: if first.bitfield {
+								p.representation.size_of(first.typ) or { 0 }
+							} else {
+								0
+							}
+							line:       d.name_at.line
+							col:        d.name_at.col
 						}
-						line:       d.name_at.line
-						col:        d.name_at.col
+						expr:   initializer
+						line:   d.name_at.line
+						col:    d.name_at.col
 					}
-					expr:   initializer
-					line:   d.name_at.line
-					col:    d.name_at.col
 				}
 			}
 		}
@@ -2346,68 +2630,70 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// the list did not reach are the zeros C says the rest of the object
 		// holds (6.7.8p21), and the frame slot starts as whatever was there, so
 		// they have to be written.
-		if layout := struct_brace {
-			targets := members_taking_values(spec.clause)
-			for i in 0 .. struct_values.len {
-				at := targets[i]
-				member := spec.clause.members()[at]
-				stmts << ast.Stmt{
-					kind:   .assign
-					target: d.name
-					field:  &ast.Field{
-						name:       d.name
-						member:     member.name
-						offset:     layout.offsets[at]
-						spelling:   member.typ.storage_spelling()
-						typ:        member.typ
-						bitfield:   member.bitfield
-						bit_offset: if member.bitfield { layout.bits[at] } else { 0 }
-						bit_width:  member.bits
-						unit_width: if member.bitfield {
-							p.representation.size_of(member.typ) or { 0 }
-						} else {
-							0
+		if !static_storage {
+			if layout := struct_brace {
+				targets := members_taking_values(spec.clause)
+				for i in 0 .. struct_values.len {
+					at := targets[i]
+					member := spec.clause.members()[at]
+					stmts << ast.Stmt{
+						kind:   .assign
+						target: d.name
+						field:  &ast.Field{
+							name:       d.name
+							member:     member.name
+							offset:     layout.offsets[at]
+							spelling:   member.typ.storage_spelling()
+							typ:        member.typ
+							bitfield:   member.bitfield
+							bit_offset: if member.bitfield { layout.bits[at] } else { 0 }
+							bit_width:  member.bits
+							unit_width: if member.bitfield {
+								p.representation.size_of(member.typ) or { 0 }
+							} else {
+								0
+							}
+							line:       d.name_at.line
+							col:        d.name_at.col
 						}
-						line:       d.name_at.line
-						col:        d.name_at.col
+						expr:   p.constant_expr(struct_values[i].number or { NumberConstant{} })
+						line:   d.name_at.line
+						col:    d.name_at.col
 					}
-					expr:   p.constant_expr(struct_values[i].number or { NumberConstant{} })
-					line:   d.name_at.line
-					col:    d.name_at.col
 				}
-			}
-			for i in struct_values.len .. targets.len {
-				at := targets[i]
-				member := spec.clause.members()[at]
-				stmts << ast.Stmt{
-					kind:   .assign
-					target: d.name
-					field:  &ast.Field{
-						name:       d.name
-						member:     member.name
-						offset:     layout.offsets[at]
-						spelling:   member.typ.storage_spelling()
-						typ:        member.typ
-						bitfield:   member.bitfield
-						bit_offset: if member.bitfield { layout.bits[at] } else { 0 }
-						bit_width:  member.bits
-						unit_width: if member.bitfield {
-							p.representation.size_of(member.typ) or { 0 }
-						} else {
-							0
+				for i in struct_values.len .. targets.len {
+					at := targets[i]
+					member := spec.clause.members()[at]
+					stmts << ast.Stmt{
+						kind:   .assign
+						target: d.name
+						field:  &ast.Field{
+							name:       d.name
+							member:     member.name
+							offset:     layout.offsets[at]
+							spelling:   member.typ.storage_spelling()
+							typ:        member.typ
+							bitfield:   member.bitfield
+							bit_offset: if member.bitfield { layout.bits[at] } else { 0 }
+							bit_width:  member.bits
+							unit_width: if member.bitfield {
+								p.representation.size_of(member.typ) or { 0 }
+							} else {
+								0
+							}
+							line:       d.name_at.line
+							col:        d.name_at.col
 						}
-						line:       d.name_at.line
-						col:        d.name_at.col
+						expr:   ast.Expr(ast.IntLit{
+							value: 0
+							text:  '0'
+							typ:   types.int_type()
+							line:  d.name_at.line
+							col:   d.name_at.col
+						})
+						line:   d.name_at.line
+						col:    d.name_at.col
 					}
-					expr:   ast.Expr(ast.IntLit{
-						value: 0
-						text:  '0'
-						typ:   types.int_type()
-						line:  d.name_at.line
-						col:   d.name_at.col
-					})
-					line:   d.name_at.line
-					col:    d.name_at.col
 				}
 			}
 		}
@@ -2438,47 +2724,49 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 			}
 		}
 		if list := general_list {
-			// The stores a nested or designated list makes, one per scalar
-			// subobject, at the byte the walk gave it. The frame slot starts as
-			// whatever was there, so every scalar subobject the object holds is
-			// stored zero first and the values the list wrote are stored over
-			// them: the subobjects the list did not reach are the zeros C says
-			// the rest of the object holds (6.7.8p21).
-			//
-			// How a store is written is a question about the object's storage:
-			// an object of an aggregate type has a byte to write at, and an
-			// array whose elements are scalars is written one element at a
-			// time, scaled by the width of one element.
-			object_bytes := p.aggregate_bytes(declared)
-			array := general_target.kind == .array
-			element := if array { general_target.element() or { declared } } else { declared }
-			element_width := p.representation.size_of(element) or { 0 }
-			if array && object_bytes == 0 && element.kind in [types.Kind.struct_, .union_] {
-				// The frame sizes an array of scalars from the spelling and the
-				// count, and an array whose element is an aggregate has no
-				// width that answers: there is nowhere to put the values.
-				p.error_at(d.name_at, 'unsupported: ${d.name} is an array whose element is an object of the type ${element.describe()}, and storage for one in a body is not implemented')
-			} else {
-				mut leaves := brace_writes()
-				p.collect_leaves(general_target, 0, mut leaves)
-				for leaf in leaves {
-					stmts << p.store_a_leaf(d.name, d.name_at, leaf, zero_initializer(d.name_at),
-						array, object_bytes, element_width, general_target)
-				}
-				unsafe { leaves.free() }
-				for write in general_writes {
-					// A leaf is an expression when the list wrote one and a
-					// written constant otherwise; the constant is the int
-					// literal a written number already reads as.
-					value := if expression := write.element.expr {
-						expression
-					} else if number := write.element.number {
-						p.constant_expr(number)
-					} else {
-						zero_initializer(d.name_at)
+			if !static_storage {
+				// The stores a nested or designated list makes, one per scalar
+				// subobject, at the byte the walk gave it. The frame slot starts as
+				// whatever was there, so every scalar subobject the object holds is
+				// stored zero first and the values the list wrote are stored over
+				// them: the subobjects the list did not reach are the zeros C says
+				// the rest of the object holds (6.7.8p21).
+				//
+				// How a store is written is a question about the object's storage:
+				// an object of an aggregate type has a byte to write at, and an
+				// array whose elements are scalars is written one element at a
+				// time, scaled by the width of one element.
+				object_bytes := p.aggregate_bytes(declared)
+				array := general_target.kind == .array
+				element := if array { general_target.element() or { declared } } else { declared }
+				element_width := p.representation.size_of(element) or { 0 }
+				if array && object_bytes == 0 && element.kind in [types.Kind.struct_, .union_] {
+					// The frame sizes an array of scalars from the spelling and the
+					// count, and an array whose element is an aggregate has no
+					// width that answers: there is nowhere to put the values.
+					p.error_at(d.name_at, 'unsupported: ${d.name} is an array whose element is an object of the type ${element.describe()}, and storage for one in a body is not implemented')
+				} else {
+					mut leaves := brace_writes()
+					p.collect_leaves(general_target, 0, mut leaves)
+					for leaf in leaves {
+						stmts << p.store_a_leaf(d.name, d.name_at, leaf, zero_initializer(d.name_at),
+							array, object_bytes, element_width, general_target)
 					}
-					stmts << p.store_a_leaf(d.name, d.name_at, write, value, array, object_bytes,
-						element_width, general_target)
+					unsafe { leaves.free() }
+					for write in general_writes {
+						// A leaf is an expression when the list wrote one and a
+						// written constant otherwise; the constant is the int
+						// literal a written number already reads as.
+						value := if expression := write.element.expr {
+							expression
+						} else if number := write.element.number {
+							p.constant_expr(number)
+						} else {
+							zero_initializer(d.name_at)
+						}
+						stmts << p.store_a_leaf(d.name, d.name_at, write, value, array, object_bytes,
+							element_width, general_target)
+					}
 				}
 			}
 		}
@@ -2488,7 +2776,8 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// is the zeros C says it holds. The frame slot starts as whatever was
 		// there, so the unwritten elements have to be written. A string literal
 		// writes its own elements the same way.
-		if ((brace && list_ok) || from_string) && array_object && general_list == none {
+		if ((brace && list_ok) || from_string) && array_object && general_list == none
+			&& !static_storage {
 			for i in 0 .. count {
 				value := if i < elements.len {
 					elements[i]
@@ -2523,7 +2812,9 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		// here is one whose operand was not an lvalue, and it is refused at the
 		// operator rather than lowered.
 		for store in vector_stores {
-			stmts << store
+			if !static_storage {
+				stmts << store
+			}
 		}
 		if p.at_punct(',') {
 			if spec.auto_deduced {
