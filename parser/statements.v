@@ -1938,6 +1938,9 @@ fn (mut p Parser) block_static_object(object BlockStatic) ?ast.Global {
 			init = integer
 		} else if floating := p.floating_constant_value(value) {
 			init_float = floating
+		} else if p.is_an_address(value) {
+			p.error_at(object.at, 'unsupported: ${object.name} has static storage duration and is initialized with an address constant, and this compiler writes only a string literal address into the image')
+			return none
 		} else {
 			p.error_at(object.at, 'a constraint violation: ${object.name} has static storage duration, and its initializer is not a constant expression: an object with static storage duration is initialized before the program runs')
 			return none
@@ -1976,6 +1979,10 @@ fn (mut p Parser) static_write_constant(write BraceWrite, at tokenize.Token) ?Fi
 			return FileConstant{
 				floating: value
 			}
+		}
+		if p.is_an_address(expression) {
+			p.error_at(at, 'unsupported: an address constant in an initializer of a block-scope static object is not implemented, and this compiler writes only a string literal address into the image')
+			return none
 		}
 		p.error_at(at, 'a constraint violation: an initializer written for a block-scope static object is not a constant expression')
 		return none
