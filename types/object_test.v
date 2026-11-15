@@ -672,15 +672,15 @@ fn test_the_layout_of_a_scalar_or_an_array_is_its_size_and_alignment() {
 // by walking the member list again. A struct of no members and no stored layout
 // is the contrast that tells the stored numbers from a fresh measurement.
 fn test_a_completed_aggregate_carries_the_layout_it_was_already_given() {
-	cached := Type{
+	mut cached := Type{
 		kind:     .struct_
-		parts:    parts_of([]Member{}, []Param{}, 'cached')
+		info:     &TypeInfo{ parts: parts_of([]Member{}, []Param{}, 'cached') }
 		complete: true
-		layout:   &Layout{
-			size:  24
-			align: 8
-		}
 	}
+	cached.set_layout(&Layout{
+		size:  24
+		align: 8
+	})
 	assert size_of(cached) == 24
 	assert align_of(cached) == 8
 	// The empty member list would otherwise answer zero and one, so the two
