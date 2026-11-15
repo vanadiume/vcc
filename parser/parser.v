@@ -1351,6 +1351,11 @@ fn (mut p Parser) parse_member_path(base string, base_at tokenize.Token, through
 		p.error_at(base_at, 'unsupported: ${base} is read as an object with a member, and no declaration of that name is in scope')
 		return error('unknown object')
 	}.typ
+	// The declared type is kept beside the type the index narrows it to,
+	// because an array read through `->` after an index is an element of the
+	// declared array and the expression that addresses it starts from that
+	// whole object.
+	declared := aggregate
 	if index != none {
 		// `s[i].a` reads the member of the element the index names, so the type
 		// the member is looked up in is the element's type, not the array's. The
@@ -1380,6 +1385,25 @@ fn (mut p Parser) parse_member_path(base string, base_at tokenize.Token, through
 		}
 	}
 	if through_pointer {
+		if aggregate.is_array() {
+			// `p->a` on `struct P p[1]` is `(*p).a`: 6.3.2.1p3 converts an
+			// array to a pointer to its first element wherever it is not the
+			// operand of `sizeof`, `_Alignof` or `&`, and the left operand of
+			// `->` is none of those. The member is read from the first
+			// element, which is an object rather than a place the name alone
+			// addresses, so the access goes through the general reader with
+			// that object as its base.
+			mut object := ast.Expr(ast.Ident{
+				name: base
+				typ:  declared
+				line: base_at.line
+				col:  base_at.col
+			})
+			if element := index {
+				object = p.element(object, element, base_at)!
+			}
+			return p.parse_general_member_path(object, through_pointer, base_at)
+		}
 		// `p->a` is the member of the object `p` points at, so the type the first
 		// member is looked up in is the one the pointer's base names. A name that
 		// is not a pointer has no object to be read through, and saying so here
@@ -1414,6 +1438,15 @@ fn (mut p Parser) parse_general_member_path(object ast.Expr, through_pointer boo
 	object_desc := describe_operand(object)
 	mut aggregate := object.typ
 	if through_pointer {
+		if aggregate.is_array() {
+			// 6.3.2.1p3: an array used anywhere but as the operand of
+			// `sizeof`, `_Alignof` or `&` is converted to a pointer to its
+			// first element, and the left operand of `->` is not one of those.
+			// The object's own value is the address of that element, which is
+			// what the back end leaves for a name or a subscript of array
+			// type, so the member is read from the first element.
+			aggregate = types.decay(aggregate)
+		}
 		// The object is a pointer and the member belongs to what it points at.
 		// A value that is not a pointer has no object to be read through, and
 		// saying so here keeps the value from being read as an address that
