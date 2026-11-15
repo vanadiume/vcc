@@ -92,10 +92,10 @@ fn (mut r DecimalRoutine) move_reg(dst backend.Register, src backend.Register) !
 // comparison, and the two answers have to be the same format for the routine that
 // compares them to exist.
 fn (e Emitter) decimal_operand_format(expr ast.Expr) ?decimal.Format {
-	if !expr.typ.kind.is_decimal() {
+	if !e.expr_type(expr).kind.is_decimal() {
 		return none
 	}
-	return expr.typ.kind.decimal_format()
+	return e.expr_type(expr).kind.decimal_format()
 }
 
 // emit_decimal_comparison writes a comparison of two decimal values. Each operand
@@ -111,15 +111,15 @@ fn (e Emitter) decimal_operand_format(expr ast.Expr) ?decimal.Format {
 // the wrong width.
 fn (mut e Emitter) emit_decimal_comparison(step ast.Binary, depth int) !void {
 	left := e.decimal_operand_format(step.left) or {
-		e.diagnostics << problem(step.line, step.col, 'unsupported: ${step.op} compares ${step.left.typ.describe()} with ${step.right.typ.describe()} here, and this back end compares two decimals of the same width')
+		e.diagnostics << problem(step.line, step.col, 'unsupported: ${step.op} compares ${e.expr_type(step.left).describe()} with ${e.expr_type(step.right).describe()} here, and this back end compares two decimals of the same width')
 		return error('decimal comparison operand')
 	}
 	right := e.decimal_operand_format(step.right) or {
-		e.diagnostics << problem(step.line, step.col, 'unsupported: ${step.op} compares ${step.left.typ.describe()} with ${step.right.typ.describe()} here, and this back end compares two decimals of the same width')
+		e.diagnostics << problem(step.line, step.col, 'unsupported: ${step.op} compares ${e.expr_type(step.left).describe()} with ${e.expr_type(step.right).describe()} here, and this back end compares two decimals of the same width')
 		return error('decimal comparison operand')
 	}
 	if left != right {
-		e.diagnostics << problem(step.line, step.col, 'unsupported: ${step.op} compares ${step.left.typ.describe()} with ${step.right.typ.describe()} here, and this back end compares two decimals of the same width')
+		e.diagnostics << problem(step.line, step.col, 'unsupported: ${step.op} compares ${e.expr_type(step.left).describe()} with ${e.expr_type(step.right).describe()} here, and this back end compares two decimals of the same width')
 		return error('decimal comparison operand')
 	}
 	e.decimal_compare_call(left, step.left, step.right, step.line, step.col, depth)!
@@ -133,7 +133,7 @@ fn (mut e Emitter) emit_decimal_comparison(step ast.Binary, depth int) !void {
 // first, so the routine reads the same kind of operand twice.
 fn (mut e Emitter) emit_decimal_logical_not(unary ast.Unary, depth int) !void {
 	format := e.decimal_operand_format(unary.expr) or {
-		e.diagnostics << problem(unary.line, unary.col, 'unsupported: ! takes a value this back end has no form for, and ${describe_target(unary.expr)} is a ${unary.expr.typ.describe()}')
+		e.diagnostics << problem(unary.line, unary.col, 'unsupported: ! takes a value this back end has no form for, and ${e.describe_target(unary.expr)} is a ${e.expr_type(unary.expr).describe()}')
 		return error('decimal logical not')
 	}
 	zero := decimal.encode(decimal.zero(false), format)
@@ -197,13 +197,13 @@ fn (mut e Emitter) decimal_operand_address(operand ast.Expr, depth int, line int
 		return e.emit_address(ast.Unary{
 			op:   '&'
 			expr: operand
-			typ:  operand.typ
+			typ:  e.expr_type(operand)
 			line: line
 			col:  col
 		}, depth + 1)
 	}
-	if bytes := decimal_constant_bytes(operand) {
-		format := operand.typ.kind.decimal_format()
+	if bytes := e.decimal_constant_bytes(operand) {
+		format := e.expr_type(operand).kind.decimal_format()
 		if bytes.len == format.bytes() {
 			slot := e.reserve(bytes.len)
 			e.put_decimal_bytes(slot, bytes, line, col)!
@@ -212,7 +212,7 @@ fn (mut e Emitter) decimal_operand_address(operand ast.Expr, depth int, line int
 			return
 		}
 	}
-	e.diagnostics << problem(line, col, 'unsupported: ${describe_target(operand)} is used in a comparison of decimals, and this back end compares decimal objects or constants')
+	e.diagnostics << problem(line, col, 'unsupported: ${e.describe_target(operand)} is used in a comparison of decimals, and this back end compares decimal objects or constants')
 	return error('decimal comparison operand')
 }
 

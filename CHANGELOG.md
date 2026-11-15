@@ -1065,3 +1065,9 @@ it owns the change, which is the same vocabulary the commits use.
 * tree: the three test files that read a moved statement field compile again (10e2f64)
 * tree: the two remainders this round measured are marked where they land (4074c00)
 * docs: the changelog covers the second half of the memory round (5a52eb6)
+
+## 2026-11-15
+
+* types: a type clause is forty bytes (97b2f48)
+* ast: an expression is a position in one arena (12212d8)
+* docs: the tree lives in one arena, and the changelog says so (3e18efd)

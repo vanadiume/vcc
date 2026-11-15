@@ -665,18 +665,18 @@ fn (e Emitter) decimal_fix_wrapper(mut r DecimalRoutine, format decimal.Format, 
 // conversion carries the routine.
 fn (mut e Emitter) emit_decimal_to_integer(expr ast.Expr, target types.Type, line int, col int, depth int) !void {
 	if !e.names_an_object(expr) {
-		e.diagnostics << problem(line, col, 'unsupported: a ${expr.typ.describe()} is converted to ${target.describe()} here, and only an object of one can be, because the conversion reads it where it lives')
+		e.diagnostics << problem(line, col, 'unsupported: a ${e.expr_type(expr).describe()} is converted to ${target.describe()} here, and only an object of one can be, because the conversion reads it where it lives')
 		return error('decimal value')
 	}
 	class := decimal_fix_target(target.kind) or {
-		e.diagnostics << problem(line, col, 'unsupported: a conversion from ${expr.typ.describe()} to ${target.describe()} is not one this back end makes')
+		e.diagnostics << problem(line, col, 'unsupported: a conversion from ${e.expr_type(expr).describe()} to ${target.describe()} is not one this back end makes')
 		return error('decimal conversion')
 	}
-	format := expr.typ.kind.decimal_format()
+	format := e.expr_type(expr).kind.decimal_format()
 	e.emit_address(ast.Unary{
 		op:   '&'
 		expr: expr
-		typ:  expr.typ
+		typ:  e.expr_type(expr)
 		line: line
 		col:  col
 	}, depth + 1)!
@@ -722,7 +722,7 @@ fn (mut e Emitter) emit_decimal_conversion(cast ast.Cast, target types.Type, dep
 	if decimal_fix_target(target.kind) != none {
 		return e.emit_decimal_to_integer(cast.expr, target, cast.line, cast.col, depth)
 	}
-	e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${cast.expr.typ.describe()} to ${cast.spelling} is not one this back end makes, and only a conversion to a float, a double or an integer is implemented')
+	e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${e.expr_type(cast.expr).describe()} to ${cast.spelling} is not one this back end makes, and only a conversion to a float, a double or an integer is implemented')
 	return error('decimal conversion')
 }
 
@@ -731,17 +731,17 @@ fn (mut e Emitter) emit_decimal_conversion(cast ast.Cast, target types.Type, dep
 // the routine reads it where it lives, and the result arrives in xmm0.
 fn (mut e Emitter) emit_decimal_to_float(expr ast.Expr, line int, col int, depth int) !void {
 	if !e.names_an_object(expr) {
-		e.diagnostics << problem(line, col, 'unsupported: a ${expr.typ.describe()} is converted to float here, and only an object of one can be, because the conversion reads it where it lives')
+		e.diagnostics << problem(line, col, 'unsupported: a ${e.expr_type(expr).describe()} is converted to float here, and only an object of one can be, because the conversion reads it where it lives')
 		return error('decimal value')
 	}
 	e.emit_address(ast.Unary{
 		op:   '&'
 		expr: expr
-		typ:  expr.typ
+		typ:  e.expr_type(expr)
 		line: line
 		col:  col
 	}, depth + 1)!
-	name := decimal_float_name(expr.typ.kind.decimal_format())
+	name := decimal_float_name(e.expr_type(expr).kind.decimal_format())
 	e.decimal_convert_used[name] = true
 	e.reference(e.target.call_near(0), .call_local, name, '')
 }
@@ -1106,22 +1106,22 @@ fn (mut e Emitter) emit_decimal_from_binary(slot Slot, expr ast.Cast, depth int)
 		e.diagnostics << problem(expr.line, expr.col, 'internal: the target has no register a decimal conversion needs')
 		return error('decimal registers')
 	}
-	source_bytes := match expr.expr.typ.kind {
+	source_bytes := match e.expr_type(expr.expr).kind {
 		.double { 8 }
 		.float { 4 }
 		else {
-			e.diagnostics << problem(expr.line, expr.col, 'unsupported: ${expr.expr.typ.describe()} is converted to ${expr.typ.describe()}, and only a float or a double is a binary source this back end converts')
+			e.diagnostics << problem(expr.line, expr.col, 'unsupported: ${e.expr_type(expr.expr).describe()} is converted to ${expr.typ.describe()}, and only a float or a double is a binary source this back end converts')
 			return error('decimal binary source')
 		}
 	}
 	if !e.names_an_object(expr.expr) {
-		e.diagnostics << problem(expr.line, expr.col, 'unsupported: a ${expr.expr.typ.describe()} is converted to ${expr.typ.describe()} here, and only an object of one can be, because the conversion reads it where it lives')
+		e.diagnostics << problem(expr.line, expr.col, 'unsupported: a ${e.expr_type(expr.expr).describe()} is converted to ${expr.typ.describe()} here, and only an object of one can be, because the conversion reads it where it lives')
 		return error('decimal value')
 	}
 	e.emit_address(ast.Unary{
 		op:   '&'
 		expr: expr.expr
-		typ:  expr.expr.typ
+		typ:  e.expr_type(expr.expr)
 		line: expr.line
 		col:  expr.col
 	}, depth + 1)!
