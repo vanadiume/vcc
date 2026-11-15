@@ -289,8 +289,8 @@ mut:
 // apply_command_line_defines puts the -D and -U arguments into the macro table
 // before any file is read, which is the order C asks for: a -D is as if the
 // definition had been written at the top of the translation unit. -Dname=value
-// defines the name with that replacement, a bare -Dname defines it empty, and
-// -U removes a name.
+// defines the name with that replacement, a bare -Dname defines it as 1, which
+// is what gcc and tcc do, and -U removes a name.
 //
 // `defines` is applied first, then `actions` in the order the command line
 // wrote them, then `undefines`. A command line fills `actions`, so
@@ -317,10 +317,11 @@ fn (mut p Processor) apply_command_line_defines() {
 }
 
 // command_line_define is one -D argument. -Dname=value gives the name that
-// replacement and a bare -Dname gives it the empty body.
+// replacement and a bare -Dname gives it 1, the body gcc and tcc give it;
+// -Dname= with the `=` and nothing after it is the empty body.
 fn (mut p Processor) command_line_define(define string) {
 	mut name := define
-	mut body := ''
+	mut body := '1'
 	mut params := []string{}
 	mut variadic := false
 	mut variadic_name := ''

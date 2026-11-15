@@ -536,6 +536,22 @@ fn test_a_define_and_an_undefine_are_applied_in_the_order_they_were_written() {
 	assert undefine_last.tokens.map(it.text) == ['N']
 }
 
+// A command line without `=` defines the name as 1: `gcc -DVAL -E` and
+// `tcc -DVAL -E` both print 1 for a file that is just VAL. `-DVAL=` is how an
+// empty body is asked for.
+fn test_a_bare_command_line_define_has_the_body_one() {
+	result := preprocess('VAL', 'test.c', Options{
+		actions: [DefineAction{ name: 'VAL' }]
+	})
+	assert result.diagnostics.len == 0
+	assert result.tokens.map(it.text) == ['1']
+	empty := preprocess('VAL', 'test.c', Options{
+		actions: [DefineAction{ name: 'VAL=' }]
+	})
+	assert empty.diagnostics.len == 0
+	assert empty.tokens.len == 0
+}
+
 fn test_ifdef_reads_the_branch_that_is_taken() {
 	assert processed('#ifdef N\nint x;\n#endif\n') == [] // N is not defined
 	assert processed('#define N\n#ifdef N\nint x;\n#endif\n') == ['int', 'x', ';']
