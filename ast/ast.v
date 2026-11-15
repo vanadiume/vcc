@@ -453,6 +453,19 @@ pub:
 	// block it was declared in ends. It is empty for a declaration that asked
 	// for none, which is every declaration but the one GNU attribute's.
 	cleanup string
+	// static_ says the declaration gives its object static storage duration,
+	// which a block-scope `static` does (6.2.4p3): the object is initialized
+	// once, before the program starts, and it lasts as long as the program.
+	// Its storage is in the image rather than in the frame, so the declaration
+	// reserves nothing where it is written and writes no initializer there.
+	static_ bool
+	// storage_name is the symbol the object is emitted under when the spelling
+	// it was declared with is not one a file-scope symbol can carry. A
+	// block-scope static object has no linkage, and two functions may each
+	// declare one of the same name, so each declaration is emitted under a
+	// name built from its function and a counter. It is empty for every other
+	// declaration, whose storage is named by decl_name.
+	storage_name string
 	// nested_fn is the function a nested_function statement defines, held by
 	// pointer because a FnDecl is 600 bytes and every other statement that
 	// carries an extra part has none of it. It is nil for every other
@@ -624,6 +637,29 @@ pub fn (stmt Stmt) decl_stride() int {
 		return extra.decl_stride
 	}
 	return 0
+}
+
+// static_storage says a declaration gives its object static storage duration,
+// which a block-scope `static` does. The storage is the image's, not the
+// frame's, so the statement reserves nothing where it is written.
+@[inline]
+pub fn (stmt Stmt) static_storage() bool {
+	if extra := stmt.extra {
+		return extra.static_
+	}
+	return false
+}
+
+// storage_name is the symbol a declaration's object is emitted under, and empty
+// for a declaration whose storage is named by decl_name. A block-scope static
+// object has no linkage, so its symbol is built from the function it is written
+// in rather than from the spelling alone.
+@[inline]
+pub fn (stmt Stmt) storage_name() string {
+	if extra := stmt.extra {
+		return extra.storage_name
+	}
+	return ''
 }
 
 @[inline]

@@ -367,6 +367,8 @@ fn rewrite_body(body []ast.Stmt, opts Options) []ast.Stmt {
 					goto_expr:       goto_expr
 					assembly:        present.assembly
 					cleanup:         present.cleanup
+					static_:         present.static_
+					storage_name:    present.storage_name
 					nested_fn:       present.nested_fn
 				}
 			}
