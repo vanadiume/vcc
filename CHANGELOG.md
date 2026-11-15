@@ -1075,3 +1075,5 @@ it owns the change, which is the same vocabulary the commits use.
 * parser: read a block-scope static object into the image (28ee18e)
 * codegen: resolve a block-scope static name to its object in the image (7f24f93)
 * regression: a block-scope static object keeps its value across calls (9c80d64)
+* docs: the changelog records the block-scope static fix (6d5a10e)
+* regression: reach a block-scope static through a call and a loop (5dd1b1b)
