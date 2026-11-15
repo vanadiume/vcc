@@ -116,7 +116,7 @@ fn test_the_library_file_query_is_the_linkers_search() {
 	os.write_file(script, '/* GNU ld script\nOUTPUT_FORMAT(elf64-x86-64)\nGROUP ( ${system} ) */\n') or {
 		panic(err)
 	}
-	resolved := target.resolve_libraries(['script'], [dir]) or { panic(err) }
+	resolved := target.resolve_libraries(['script'], [dir], false) or { panic(err) }
 	assert resolved.len == 1
 	assert resolved[0].path == script
 	assert resolved[0].soname == 'libm.so.6'
@@ -135,9 +135,9 @@ fn test_the_target_keeps_a_static_archive_out_of_the_loader_names() {
 	}
 	path := os.join_path(dir, 'libprobe.a')
 	os.write_file(path, '!<arch>\n') or { panic(err) }
-	resolved := target.resolve_libraries(['probe'], [dir]) or { panic(err) }
+	resolved := target.resolve_libraries(['probe'], [dir], false) or { panic(err) }
 	assert resolved.len == 0
-	archives := target.archive_libraries(['probe'], [dir]) or { panic(err) }
+	archives := target.archive_libraries(['probe'], [dir], false) or { panic(err) }
 	assert archives.len == 1
 	assert archives[0].path == path
 	assert archives[0].archive

@@ -1538,8 +1538,8 @@ pub fn (t &Target) library_file(name string, given []string) ?string {
 // because the image asks the loader for no name for a static archive; the file
 // itself comes back from archive_libraries. A query that reports what the link
 // would do asks this rather than resolving again.
-pub fn (t &Target) resolve_libraries(names []string, given []string) ![]Library {
-	files := linux.resolve_library_files(names, t.library_dirs_for(given))!
+pub fn (t &Target) resolve_libraries(names []string, given []string, static_link bool) ![]Library {
+	files := linux.resolve_library_files(names, t.library_dirs_for(given), static_link)!
 	mut out := []Library{}
 	for file in files {
 		if file.archive {
@@ -1557,8 +1557,8 @@ pub fn (t &Target) resolve_libraries(names []string, given []string) ![]Library 
 // a link reads members from and pulls the ones that answer names the link still
 // needs. They go through the same search as resolve_libraries, so the two agree
 // about which file a name is.
-pub fn (t &Target) archive_libraries(names []string, given []string) ![]Library {
-	archives := linux.archive_libraries(names, t.library_dirs_for(given))!
+pub fn (t &Target) archive_libraries(names []string, given []string, static_link bool) ![]Library {
+	archives := linux.archive_libraries(names, t.library_dirs_for(given), static_link)!
 	mut out := []Library{}
 	for archive in archives {
 		out << Library{

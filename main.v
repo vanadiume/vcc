@@ -268,9 +268,20 @@ fn main() {
 	// check has to know which of the unit's names the link will answer from an
 	// archive rather than from a library, and a program that reaches one of them
 	// is handed to the link path below, which is the path that reads archives.
+	//
+	// A -l name that resolves to a static archive is the same kind of input. The
+	// single-input path wraps its image in the emitter and reads no archive, so a
+	// program that calls a member of one cannot be finished there: the name would
+	// be reported undefined by a link that never opened the file. Reading the
+	// members' names here is what hands the run to the link, which pulls them.
 	mut archive_names := map[string]bool{}
-	if !opts.compile_only && link_kind(opts) == .program && opts.default_libraries() {
-		archive_names = runtime_archive_names(opts, run_target)
+	if !opts.compile_only && link_kind(opts) == .program {
+		if opts.default_libraries() {
+			archive_names = runtime_archive_names(opts, run_target)
+		}
+		for name, _ in library_archive_names(opts, run_target) {
+			archive_names[name] = true
+		}
 	}
 	started = time.now()
 	image := codegen.emit(optimized, codegen.Options{
@@ -624,6 +635,7 @@ fn link_inputs(opts cli.Options) {
 		emitted := codegen.emit(optimized, codegen.Options{
 			target:         opts.target
 			link:           true
+			link_kind:      output_kind
 			ignore_natives: opts.ignore_natives
 			libraries:      opts.libraries
 			library_dirs:   opts.library_dirs
@@ -648,7 +660,7 @@ fn link_inputs(opts cli.Options) {
 	// through static_support_libraries, which is read where the start files are.
 	mut support := []backend.Library{}
 	if opts.libraries.len > 0 {
-		support << target.archive_libraries(opts.libraries, opts.library_dirs) or {
+		support << target.archive_libraries(opts.libraries, opts.library_dirs, output_kind == .static_program) or {
 			abort(err.msg())
 			return
 		}
@@ -1221,6 +1233,32 @@ fn runtime_archive_names(opts cli.Options, target backend.Target) map[string]boo
 	return out
 }
 
+// library_archive_names is the names the archives behind the command line's -l
+// flags answer, read from the files the search resolved to. They are the members
+// a -l name brings to a link that reads archives, and the single-input path asks
+// this so a program that calls one is handed to the link rather than finished in
+// the emitter, which reads no archive.
+//
+// The list is empty for a -l name that resolved to a shared object, which is the
+// usual answer, and for a name the search does not have: that refusal is the
+// emitter's to report, with the flag that asked for it.
+fn library_archive_names(opts cli.Options, target backend.Target) map[string]bool {
+	mut out := map[string]bool{}
+	if opts.libraries.len == 0 {
+		return out
+	}
+	for library in target.archive_libraries(opts.libraries, opts.library_dirs, false) or {
+		[]backend.Library{}
+	} {
+		bytes := read_source(library.path) or { continue }
+		parts := archive.read(bytes.bytes()) or { continue }
+		for name, _ in parts.index {
+			out[name] = true
+		}
+	}
+	return out
+}
+
 // program_reaches_archive says whether a program the single-input path emitted
 // reaches a name the runtime archive answers. The single-input path wraps its
 // image in the emitter and never reads an archive, so a program that calls a
@@ -1676,7 +1714,7 @@ fn verbose_result_lines(opts cli.Options, phases []cli.Phase, bytes []u8, out_pa
 	out << 'link: no linker is run; this compiler writes the container itself'
 	out << '  interpreter: ${target.interpreter}'
 	out << '  library: ${target.base_library()} (the C library every image names)'
-	for library in target.resolve_libraries(opts.libraries, opts.library_dirs) or {
+	for library in target.resolve_libraries(opts.libraries, opts.library_dirs, link_kind(opts) == .static_program) or {
 		[]backend.Library{}
 	} {
 		out << '  library: ${library.soname} (${library.path})'

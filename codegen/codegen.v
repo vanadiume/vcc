@@ -901,7 +901,13 @@ fn (mut e Emitter) build() ![]u8 {
 		// system's business, and the emitter has nothing left to say about a name
 		// once the reader has answered. The error carries the file that could not
 		// be read, which says more than the flag that asked for it.
-		sonames := linux.resolve_libraries(e.libraries, linux.search_dirs(e.library_dirs, e.target.library_dirs)) or {
+		//
+		// The search is told which link this unit is part of, because a static
+		// link resolves a -l name to the archive in a directory and never to the
+		// shared object beside it, and the sonames here are what the image would
+		// ask a loader for.
+		dirs := linux.search_dirs(e.library_dirs, e.target.library_dirs)
+		sonames := linux.resolve_libraries(e.libraries, dirs, e.link_kind == .static_program) or {
 			e.diagnostics << problem(1, 1, err.msg())
 			return error('cannot resolve the -l libraries')
 		}
