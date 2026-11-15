@@ -970,6 +970,23 @@ fn test_a_comma_after_an_assignment_is_one_statement() {
 	assert comma.right is ast.Assign
 }
 
+// A compound assignment is the one statement the comma reader does not put back
+// as an expression: its statement carries the operator so the back end addresses
+// its target once, and the expression form would address it twice. The commas
+// after one are read as statement separators, so `scan += 2, match++;` is the
+// two statements it has the effect of, in the order it wrote them. zlib 1.3.1's
+// `deflate.c:1452` is this shape.
+fn test_a_comma_after_a_compound_assignment_is_two_statements() {
+	result := parsed('int main(void) { int a; int b; a += 1, b++; return a + b; }')
+	assert result.diagnostics.len == 0
+	body := result.unit.decls[0].body
+	assert body.len == 5
+	assert body[2].kind == .assign
+	assert body[2].compound() == '+'
+	assert body[3].kind == .expr_stmt
+	assert body[4].kind == .return_stmt
+}
+
 // A GNU statement expression is `({ ... })`: a brace-enclosed compound statement
 // in parentheses, read as a primary expression. Its value is the value of its
 // last statement when that statement is an expression, and the statements before
