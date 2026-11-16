@@ -609,6 +609,34 @@ fn test_a_file_scope_nested_or_designated_list_writes_the_subobject_it_names() {
 	assert (entries[1].init or { -1 }) == 1
 }
 
+// A pointer table's list is read by the brace reader every other list uses, so
+// a row of a table whose elements are arrays is a list of its own and each
+// element of it initializes one row. Measured on gcc 16.2.1, `char *t[2][2] =
+// {{"x"}, {"y"}}` holds one pointer per row with the rest of each row zero, and
+// a flat list of a two-dimensional table fills the rows one after another.
+fn test_a_pointer_table_takes_a_nested_list_row_by_row() {
+	nested := declarations_of('static char *t[2][2] = {{"x"}, {"y"}};')
+	assert nested.diagnostics.len == 0
+	entries := nested.unit.globals[0].member_inits
+	assert entries.len == 2
+	assert entries[0].offset == 0
+	assert entries[1].offset == 16
+	assert entries[0].address or { ast.AddressInit{} }.name == 'x'
+	assert entries[1].address or { ast.AddressInit{} }.name == 'y'
+	assert nested.unit.globals[0].count == 2
+	flat := declarations_of('static char *t[2][2] = {"a", "b", "c"};')
+	assert flat.diagnostics.len == 0
+	mut offsets := []int{}
+	for entry in flat.unit.globals[0].member_inits {
+		offsets << entry.offset
+	}
+	assert offsets == [0, 8, 16]
+	designated := declarations_of('static char *t[4] = {[2] = "z"};')
+	assert designated.diagnostics.len == 0
+	assert designated.unit.globals[0].member_inits.len == 1
+	assert designated.unit.globals[0].member_inits[0].offset == 16
+}
+
 // A GNU range designator `[first ... last] = value` writes the one value into
 // every element of the range, and an array with empty brackets takes its size
 // from the last element the range names. Measured on gcc 16.2.1,

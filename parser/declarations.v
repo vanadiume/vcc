@@ -1290,19 +1290,33 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 			// string literal. A written number is a null pointer
 			// constant, which is the one value of an integer type
 			// a pointer takes, and it is written as the number it
-			// is. A brace list is a table of them, one per element,
-			// and it is read on its own path because an element
-			// that is an address is a reference the layout resolves
-			// rather than bytes written here.
+			// A brace list is a table of them: a flat list is one
+			// value per element, and a list with a nested list or a
+			// designator is a walk over the object's subobjects. The
+			// two are read on their own path because an element that
+			// is an address is a reference the layout resolves rather
+			// than bytes written here.
 			if p.at_punct('{') {
-				if elements := p.parse_address_initializer() {
-					data_address_inits = elements.clone()
-					if data_count == 0 {
+				if written := p.parse_pointer_initializer(spec, d, data_name) {
+					data_address_inits = written.elements
+					if general := written.general {
+						// The list named its subobjects itself: each
+						// value lands at the byte the walk gave it,
+						// which is what a table of rows needs.
+						data_member_inits = general.members
+						data_bytes = general.bytes
+						data_count = general.count
+						data_resolved = general.resolved
+						if general.count > 0 && !d.array_sized() && data_clause.is_array()
+							&& !data_clause.is_complete() {
+							data_complete = general.resolved
+						}
+					} else if data_count == 0 {
 						// Empty brackets are what the list sizes, the
 						// same as a list of numbers sizes an array.
-						data_count = elements.len
-					} else if elements.len > data_count {
-						p.error_at(data_at, 'a constraint violation: ${data_name} holds ${data_count} elements and its initializer writes ${elements.len}')
+						data_count = data_address_inits.len
+					} else if data_address_inits.len > data_count {
+						p.error_at(data_at, 'a constraint violation: ${data_name} holds ${data_count} elements and its initializer writes ${data_address_inits.len}')
 						data_problem = true
 					}
 				} else {
@@ -1505,7 +1519,7 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 		p.unsupported_type(spec.start, offender)
 		return false
 	}
-	if data_stars == 0 && (spec.clause.kind in [types.Kind.struct_, .union_] || data_bytes > 0) {
+	if data_bytes > 0 || (data_stars == 0 && spec.clause.kind in [types.Kind.struct_, .union_]) {
 		if data_problem {
 			// The list was refused for its size and has already been
 			// named: there is nothing to lay out.
@@ -3322,86 +3336,70 @@ fn (mut p Parser) brace_designator_index() ?int {
 	return int(value)
 }
 
-// parse_address_initializer reads `{ a, a, ... }` where every element initializes
-// an object of pointer type: an address - a function designator, `&name`, or a
-// string literal - or a written integer, which is a null pointer constant. It
-// mirrors parse_brace_initializer, including refusing a nested list, a designator,
-// and an element that is neither an address nor a number by name and at its own
-// location: a list read as shorter than it was written would write a wrong table,
-// and a wrong address is worse than a refusal.
-fn (mut p Parser) parse_address_initializer() ![]ast.AddressInit {
-	open := p.next() // {
-	if p.at_punct('}') {
-		p.next()
-		p.error_at(open, 'unsupported: an empty brace initializer is not implemented')
-		return error('empty brace initializer')
+// AddressList is a pointer object's brace list as the declaration reader hands
+// it on: the initializers a flat list wrote, one per element in the order
+// written, or the walk a list with a nested list or a designator made, one
+// entry per scalar subobject at the byte it starts at.
+struct AddressList {
+mut:
+	elements []ast.AddressInit
+	general  ?BraceGeneral
+}
+
+// parse_pointer_initializer reads the brace list that initializes an object
+// whose elements are pointers: every element is an address or a written number,
+// which is the null pointer constant. The list is read by
+// `parse_brace_initializer`, the one reader that also knows a nested list and a
+// designator, and what it read is placed one of two ways.
+//
+// A flat list of an array whose element is a pointer keeps the shape the image
+// has always held for a table of addresses: one initializer per element, in the
+// order written. A list with a nested list or a designator is walked against
+// the object's type, which is what the aggregate arm of the declaration reader
+// does, and so is a flat list of an array whose element is itself an array: for
+// `static char *t[2][2]`, a row is sixteen bytes and the elements of a flat list
+// fill the rows one after another (6.7.8p20), where an index scaled by the
+// object's element width would put the second value at the second row.
+//
+// The walk is what makes `static char *t[2][2] = {{"x"}, {"y"}}` write one
+// pointer into each row and leave the rest of each row zero: a row is a list of
+// its own, and where a value goes is a byte offset the walk decides.
+fn (mut p Parser) parse_pointer_initializer(spec DeclSpec, d Declarator, name string) ?AddressList {
+	list := p.parse_brace_initializer(false) or { return none }
+	if list.elements.len == 0 {
+		p.error_at(list.at, 'unsupported: an empty brace initializer is not implemented')
+		return none
 	}
-	mut elements := []ast.AddressInit{}
-	for {
-		t := p.peek()
-		if t.kind == .eof {
-			p.error_at(open, 'unsupported: unterminated { opened at ${open.line}:${open.col}')
-			return error('unterminated brace initializer')
+	declared := p.declared_type(spec.clause, d)
+	element := declared.element() or { declared }
+	if !list.is_a_flat_list() || element.is_aggregate() {
+		general := p.file_scope_general_initializer(spec, d, list, name) or { return none }
+		return AddressList{
+			general: general
 		}
-		// A comma before the closing brace ends the list: C99 6.7.8p1 has
-		// `initializer-list ,` for a pointer list too. Read at the top of the
-		// loop because that is where the comma's `continue` arrives.
-		if t.kind == .punct && t.text == '}' {
-			p.next()
-			return elements
-		}
-		if t.kind == .punct && t.text == '{' {
-			p.error_at(t, 'unsupported: a nested brace initializer is not implemented')
-			p.skip_balanced(open) or {}
-			return error('nested brace initializer')
-		}
-		if t.kind == .punct && (t.text == '.' || t.text == '[') {
-			p.error_at(t, 'unsupported: a designator in a brace initializer is not implemented')
-			p.skip_balanced(open) or {}
-			return error('brace designator')
-		}
-		before := p.diagnostics.len
-		// Only a token that can start an address takes the address path: a name,
-		// a string literal, or the ampersand in front of one. Everything else is
-		// read the way a constant was always read, so a character constant and a
-		// number keep the one path they had.
-		if t.kind == .identifier || t.kind == .string || (t.kind == .punct && t.text == '&') {
-			if address := p.file_scope_address() {
-				elements << address
-			} else {
-				p.skip_balanced(open) or {}
-				return error('address element')
-			}
-		} else {
-			constant := p.number_constant() or {
-				if p.diagnostics.len == before {
-					p.error_at(t, 'unsupported: an element of a pointer initializer is an address or a written number, found ${describe(t)}')
-				}
-				p.skip_balanced(open) or {}
-				return error('address element')
-			}
-			value := constant.number.integer or {
-				p.error_at(t, 'unsupported: an element of a pointer initializer is an address or an integer constant')
-				p.skip_balanced(open) or {}
-				return error('address element')
-			}
-			elements << ast.AddressInit{
-				number: value
-				line:   t.line
-				col:    t.col
-			}
-		}
-		if p.at_punct(',') {
-			p.next()
+	}
+	mut elements := []ast.AddressInit{cap: list.elements.len}
+	for item in list.elements {
+		if address := item.address {
+			elements << address
 			continue
 		}
-		if p.at_punct('}') {
-			p.next()
-			return elements
+		constant := item.number or {
+			p.error_at(list.at, 'unsupported: an element of a pointer initializer is an address or a written number')
+			return none
 		}
-		p.error_at(p.peek(), 'unsupported: expected , or } in a pointer initializer, found ${describe(p.peek())}')
-		p.skip_balanced(open) or {}
-		return error('pointer list')
+		value := constant.number.integer or {
+			p.error_at(constant.at, 'unsupported: an element of a pointer initializer is an address or an integer constant')
+			return none
+		}
+		elements << ast.AddressInit{
+			number: value
+			line:   constant.at.line
+			col:    constant.at.col
+		}
+	}
+	return AddressList{
+		elements: elements
 	}
 }
 
