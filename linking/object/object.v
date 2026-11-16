@@ -387,7 +387,29 @@ pub fn read(bytes []u8, target backend.Target) !image.Program {
 	program.imports = reader.imports
 	program.object_imports = reader.object_imports
 	program.weak_imports = reader.weak_imports
+	program.executable_stack = executable_stack(sections)
 	return program
+}
+
+// executable_stack answers whether an object asks for an executable stack. A
+// `.note.GNU-stack` section is the whole answer and the section's SHF_EXECINSTR
+// flag is what carries it: the section holds no bytes, and a producer sets the
+// flag when the code runs instructions it wrote into its own frame, which is
+// what taking a nested function's address does. A file with no such section at
+// all predates the note, so a linker has to assume it needs one; the assumption
+// is ELF's and not this reader's.
+fn executable_stack(sections []Section) bool {
+	mut found := false
+	for s in sections {
+		if s.name != '.note.GNU-stack' {
+			continue
+		}
+		found = true
+		if (s.flags & shf_execinstr) != 0 {
+			return true
+		}
+	}
+	return !found
 }
 
 // lay_out walks the section header table once and copies every allocatable

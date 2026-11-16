@@ -972,3 +972,54 @@ fn set_u64(mut bytes []u8, at int, value u64) {
 		bytes[at + i] = u8((value >> (8 * i)) & 0xff)
 	}
 }
+
+// `.note.GNU-stack` is how a relocatable object states the stack permission:
+// the section holds nothing and its SHF_EXECINSTR flag is the request. An object
+// with no such section predates the note, so a linker takes it to ask for an
+// executable stack, which is ELF's rule and not this reader's invention.
+//
+// with_stack_note is the sample object plus that section, with the flags the
+// caller asks for: zero leaves the stack non-executable and SHF_EXECINSTR asks
+// for one.
+fn with_stack_note(flags u64) []BuildSection {
+	mut sections := sample_sections()
+	sections << BuildSection{
+		name:  '.note.GNU-stack'
+		kind:  1
+		flags: flags
+		align: 1
+		data:  []u8{}
+	}
+	return sections
+}
+
+fn test_the_stack_note_carries_the_executable_stack_request() {
+	quiet := read(build_object(with_stack_note(0), sample_symbols(), sample_relocations()), host()) or {
+		panic('the reader refused an object with a stack note: ${err.msg()}')
+	}
+	assert !quiet.executable_stack
+	needed := read(build_object(with_stack_note(0x4), sample_symbols(), sample_relocations()), host()) or {
+		panic('the reader refused an object with an executable stack note: ${err.msg()}')
+	}
+	assert needed.executable_stack
+	missing := read(build_object(sample_sections(), sample_symbols(), sample_relocations()), host()) or {
+		panic('the reader refused an object with no stack note: ${err.msg()}')
+	}
+	assert missing.executable_stack
+}
+
+// The tree's own writer states the request in the note it writes, so an object
+// it produces for a program with a trampoline reads back asking for an
+// executable stack, and one without a trampoline does not.
+fn test_an_object_the_writer_marks_reads_back_asking_for_an_executable_stack() {
+	mut program := sample()
+	program.executable_stack = true
+	needed := read(written(program), host()) or {
+		panic('the reader refused an object the writer produced: ${err.msg()}')
+	}
+	assert needed.executable_stack
+	quiet := read(written(sample()), host()) or {
+		panic('the reader refused an object the writer produced: ${err.msg()}')
+	}
+	assert !quiet.executable_stack
+}

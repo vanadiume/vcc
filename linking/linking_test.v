@@ -687,3 +687,19 @@ fn test_a_shared_object_does_not_answer_a_name_it_does_not_define() {
 	}
 	assert false, 'the link accepted an import no unit and no library defines'
 }
+
+// A stack permission belongs to the image, so one unit asking for an executable
+// stack is the whole link asking: the code that runs out of its frame would be
+// handed a read-only stack if the merge dropped the request. No unit asking
+// leaves the stack as the container writes it.
+fn test_an_executable_stack_is_the_links_if_any_unit_asks_for_one() {
+	plain := defining('main', []u8{len: 4, init: u8(0x90)})
+	quiet := link([plain], options('main')) or { panic('the link failed: ${err.msg()}') }
+	assert !quiet.executable_stack
+	mut trampoline := defining('helper', []u8{len: 2, init: u8(0x90)})
+	trampoline.executable_stack = true
+	mixed := link([plain, trampoline], options('main')) or {
+		panic('the link failed: ${err.msg()}')
+	}
+	assert mixed.executable_stack
+}
