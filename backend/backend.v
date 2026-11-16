@@ -44,6 +44,11 @@ pub:
 	frame_pointer_reg  string
 	scratch_reg        string
 	remainder_reg      string
+	// object_scratch_reg is the register a move that composes several
+	// instructions holds its pieces in. It must be one the convention passes no
+	// argument in, because such a move runs while the argument registers may
+	// still hold parameters the move has not stored yet.
+	object_scratch_reg string
 	// static_chain_reg is the register a nested function reaches the frame of the
 	// function it is written in through. A call to a nested function puts the
 	// enclosing frame pointer there and the nested function reads it on entry, so
@@ -149,6 +154,7 @@ fn x86_64_linux(hosted bool) Target {
 		frame_pointer_reg:          x86_64.frame_pointer
 		scratch_reg:                x86_64.scratch_reg
 		remainder_reg:              x86_64.remainder_reg
+		object_scratch_reg:         x86_64.object_scratch_reg
 		static_chain_reg:           x86_64.static_chain_reg
 		shift_count_code:           x86_64.shift_count_code
 		relocation_call:            x86_64.relocation_call
@@ -569,6 +575,14 @@ pub fn (t &Target) scratch() ?Register {
 	return t.reg(t.scratch_reg)
 }
 
+// object_scratch is where a move of an object too wide for one instruction holds
+// the piece above the low chunk. It is not an argument register and not one of
+// the emitter's working registers, so the move can use it while a call's
+// arguments are still arriving in theirs.
+pub fn (t &Target) object_scratch() ?Register {
+	return t.reg(t.object_scratch_reg)
+}
+
 pub fn (t &Target) remainder() ?Register {
 	return t.reg(t.remainder_reg)
 }
@@ -725,6 +739,20 @@ pub fn (t &Target) load_indirect_unsigned(address Register, dst Register, width 
 
 pub fn (t &Target) store_indirect(address Register, src Register, width int) ![]u8 {
 	return t.encoders.store_indirect(t.describe(address), t.describe(src), width)
+}
+
+// load_object_slot and store_object_slot move an object of a width the machine
+// may not move in one instruction. The machine composes the move: a width it has
+// is one instruction, and a width it has not, which is the tail of an aggregate's
+// second eightbyte or of a stacked object's last word, is a chunk at a time.
+// `scratch` is a register the caller holds nothing in and that differs from the
+// object's address and its value.
+pub fn (t &Target) load_object_slot(base Register, disp i32, dst Register, scratch Register, width int) ![]u8 {
+	return t.encoders.load_object_slot(t.describe(base), disp, t.describe(dst), t.describe(scratch), width)
+}
+
+pub fn (t &Target) store_object_slot(base Register, disp i32, src Register, scratch Register, width int) ![]u8 {
+	return t.encoders.store_object_slot(t.describe(base), disp, t.describe(src), t.describe(scratch), width)
 }
 
 // The atomic operations, named for what the language's builtins ask for rather
