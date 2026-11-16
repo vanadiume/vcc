@@ -82,6 +82,17 @@ pub:
 	// define one of the same name without the link reading them as two
 	// definitions of one program-wide name.
 	static_ bool
+	// inline_ says the declaration wrote `inline` (6.7.4). It is the word, not
+	// the rule: whether a definition that writes it provides an external
+	// definition is 6.7.4p6's question, it is asked of the declaration as a
+	// whole and of the selected mode, and it is answered where the object's
+	// symbol is laid out.
+	inline_ bool
+	// extern_ says the declaration wrote `extern`. A definition written
+	// `extern inline` is the pair 6.7.4p7 makes an external definition in a
+	// mode that keeps the C99 rule, which is what makes this word part of the
+	// answer rather than a storage class the reader can drop.
+	extern_ bool
 	// body is the statements the definition wrote. It is empty both for a
 	// prototype and for a definition written as `{}`, so defined is what tells
 	// the two apart.

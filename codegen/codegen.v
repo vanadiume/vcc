@@ -8,6 +8,7 @@ import backend.os.linux
 import diagnostics
 import image
 import math
+import standard
 import tokenize
 import types
 
@@ -54,6 +55,15 @@ pub:
 	// multiply and a shift; a division has no machine instruction and is a call
 	// either way.
 	ignore_natives bool
+	// dialect is the -std= mode the program was read under. One question is
+	// asked of it here: whether a plain `inline` definition is also the
+	// external definition, which C99 6.7.4p6 says it is not and the mode
+	// before C99 says it is. The rule itself lives in standard/, beside the
+	// modes; this stage is where the object decides which names it offers to
+	// the link, which is the question the rule answers. An empty dialect is a
+	// caller that is not compiling a program the command line chose a language
+	// for, and it takes the rule every compiler has used since C99.
+	dialect standard.Mode
 	// bracket_depth is the nesting that got this tree here: the -fbracket-depth
 	// the run set, or zero when it asked for no limit. The two stages share the
 	// number so that a tree the parser accepted is one this walk follows, with
@@ -360,7 +370,17 @@ struct Emitter {
 	// direct under any addressing, because no other object can define the name
 	// and there is nothing for the global offset table to protect it from.
 	internal map[string]bool
-	unit     ast.TranslationUnit
+	// inline_only is every name whose file-scope declarations all wrote
+	// `inline` without `extern`, so that the definition of it is an inline
+	// definition and not an external one (6.7.4p6). It is the whole unit's
+	// answer and not the definition's: one declaration of the name that leaves
+	// `inline` out, or writes `extern`, makes the definition the external one
+	// (6.7.4p7), wherever in the file that declaration is written.
+	inline_only map[string]bool
+	// dialect is the mode the program was read under, and the only question
+	// asked of it here is which of C's two inline rules it keeps.
+	dialect standard.Mode
+	unit    ast.TranslationUnit
 	// libraries are the -l names the command line gave, and library_dirs the
 	// -L directories they are looked for in. Both are resolved into the names
 	// the image carries before anything is emitted.
@@ -760,6 +780,8 @@ pub fn emit(unit ast.TranslationUnit, opts Options) Result {
 		link_kind:            opts.link_kind
 		link_options:         opts.link_options
 		internal:             internal
+		inline_only:          inline_definition_names(unit)
+		dialect:              opts.dialect
 		unit:                 unit
 		libraries:            opts.libraries
 		library_dirs:         opts.library_dirs
@@ -886,6 +908,66 @@ fn (e &Emitter) class_of(declared types.Type) abi.Class {
 	return abi.class_of(e.representation, declared)
 }
 
+// inline_definition_names is every name every file-scope declaration of which
+// wrote `inline` without `extern`. The definition of such a name is 6.7.4p6's
+// inline definition. A name any declaration wrote without `inline`, or with
+// `extern`, is absent from the set, because 6.7.4p7 makes that declaration turn
+// the definition into the external one: a file that writes
+//
+//	inline int f(void) { return 1; }
+//	int f(void);
+//
+// provides an external definition of f, which is what gcc 16.2.1 measured.
+fn inline_definition_names(unit ast.TranslationUnit) map[string]bool {
+	mut names := map[string]bool{}
+	for decl in unit.decls {
+		if decl.inline_ && !decl.extern_ {
+			if decl.name !in names {
+				names[decl.name] = true
+			}
+			continue
+		}
+		names[decl.name] = false
+	}
+	return names
+}
+
+// inline_definition says whether this definition is one the link may not use:
+// an inline definition in the 6.7.4p6 sense, or the `extern inline` definition
+// of the rule before C99. The two modes read the pair in opposite directions, so
+// which of the two a definition is belongs to the mode and not to the words
+// alone.
+//
+// Under the C99 rule the definition is an inline definition when it is written
+// `inline` with neither `extern` nor `static` and every file-scope declaration
+// of the name is written the same way; `extern inline` is then the external
+// definition (6.7.4p7). Under the rule before C99 the plain inline definition is
+// the external one and `extern inline` is the definition that is not.
+//
+// Such a definition is code this unit may write - though this back end does not
+// expand a call into it, inlining is a separate question and nothing here does
+// it - and it is not a definition the link may use. It is not written here
+// either, then: a call to the name is an import the link has to resolve, and a
+// link that finds no definition says `undefined reference to f`, exactly what
+// gcc 16.2.1 says for the same two files. A `static` definition has internal
+// linkage and none of this applies to it.
+fn (e &Emitter) inline_definition(decl ast.FnDecl) bool {
+	if decl.static_ || decl.nested || !decl.inline_ {
+		return false
+	}
+	if e.dialect.inline_definitions_are_external() {
+		// Measured on gcc 16.2.1 under -std=gnu89: the plain definition links
+		// against a call in another unit, and an `extern inline` one gives
+		// `undefined reference to f` however the file declares the name
+		// elsewhere.
+		return decl.extern_
+	}
+	if decl.extern_ {
+		return false
+	}
+	return e.inline_only[decl.name]
+}
+
 // entry_definition finds the function the image starts in. The last definition
 // of the name is the one a link would have taken, so it is the one that wins
 // here too.
@@ -977,7 +1059,10 @@ fn (mut e Emitter) build() ![]u8 {
 	// alone; a definition reached only here is not emitted here.
 	mut declared_functions := e.unit.decls.clone()
 	for decl in e.unit.decls {
-		if decl.defined {
+		// A body this unit does not emit writes no nested function either, so
+		// an inline definition's body contributes nothing here: a nested
+		// function reached only from it has no caller in the object.
+		if decl.defined && !e.inline_definition(decl) {
 			declared_functions << collect_nested(decl.body)
 		}
 	}
@@ -996,7 +1081,7 @@ fn (mut e Emitter) build() ![]u8 {
 				e.hidden_bytes = ret_class.bytes
 			}
 		}
-		if decl.defined {
+		if decl.defined && !e.inline_definition(decl) {
 			e.program.defined[decl.name] = true
 			// A weak definition is one the object's symbol table marks WEAK
 			// rather than GLOBAL, which is what `__attribute__((weak))` asked
@@ -1136,7 +1221,7 @@ fn (mut e Emitter) build() ![]u8 {
 		e.emit_start()!
 	}
 	for decl in e.unit.decls {
-		if !decl.defined {
+		if !decl.defined || e.inline_definition(decl) {
 			continue
 		}
 		e.emit_function(decl)!

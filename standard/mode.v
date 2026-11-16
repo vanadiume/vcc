@@ -121,6 +121,34 @@ pub fn (m Mode) is_gnu() bool {
 	}
 }
 
+// inline_definitions_are_external says which of C's two rules for an `inline`
+// definition the mode keeps. C99 6.7.4p6 made a definition written `inline`
+// without `extern` or `static` an inline definition that provides no external
+// definition; C90 had no such word and the GNU dialect that predates C99 read
+// the definition as the external one.
+//
+// Measured on gcc 16.2.1 over two files, one holding
+// `inline int f(void) { return 1; }` and one calling f: `-std=gnu89` links and
+// runs, and `-std=c99`, `-std=gnu99`, `-std=c11`, `-std=gnu11`, `-std=c17`,
+// `-std=c23` and no `-std` at all fail with `undefined reference to f`. The
+// older rule is the mirror image, which is why `extern inline` is the definition
+// it does not emit: measured the same way, `extern inline int f(void) { return
+// 1; }` gives `undefined reference to f` under `-std=gnu89` and links under
+// `-std=c99`. A strict `-std=c89` refuses the word outright (`expected ';'
+// before 'int'`), so it is not that mode's question which rule to keep: this
+// compiler accepts `inline` there as its own extension and reads it with the
+// rule that predates the word becoming standard.
+//
+// A mode that is no standard at all, no `-std` and a spelling this compiler does
+// not implement, takes the C99 rule, which is the one every compiler has used
+// for the twenty-five years since.
+pub fn (m Mode) inline_definitions_are_external() bool {
+	return match m {
+		.c89, .gnu89 { true }
+		else { false }
+	}
+}
+
 // rank orders the modes by how much of the language they take in, which is the
 // order the standards were published in. A GNU dialect ranks with the standard
 // it extends: gnu11 includes everything C99 ever did.

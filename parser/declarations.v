@@ -225,8 +225,13 @@ mut:
 	start      tokenize.Token
 	is_typedef bool
 	is_extern  bool
-	has_type   bool
-	tag_decl   bool
+	// is_inline says one of the specifiers was `inline`. It is kept because a
+	// definition that writes it is an inline definition under 6.7.4p6, which is
+	// not the same declaration as one that leaves the word out, and whether
+	// that matters is a question about the definition the whole unit wrote.
+	is_inline bool
+	has_type  bool
+	tag_decl  bool
 	// anonymous_aggregate says the specifiers named a struct or union written
 	// with no tag and a body. As a member of an aggregate with no declarator,
 	// 6.7.2.1p13 makes the members of that type members of the aggregate the
@@ -852,6 +857,8 @@ fn (mut p Parser) parse_declaration() []ast.FnDecl {
 						defined:  true
 						weak:     spec.attributes.weak || trailing.weak
 						static_:  spec.storage == .static_
+						inline_:  spec.is_inline
+						extern_:  spec.is_extern
 						body:     statements
 						line:     d.name_at.line
 						col:      d.name_at.col
@@ -876,6 +883,8 @@ fn (mut p Parser) parse_declaration() []ast.FnDecl {
 					params:   d.function_params()
 					weak:     spec.attributes.weak || trailing.weak
 					static_:  spec.storage == .static_
+					inline_:  spec.is_inline
+					extern_:  spec.is_extern
 					body:     []ast.Stmt{}
 					line:     d.name_at.line
 					col:      d.name_at.col
@@ -4944,6 +4953,13 @@ fn (mut p Parser) parse_decl_specifiers(depth int) !DeclSpec {
 			}
 			if t.text == 'extern' {
 				spec.is_extern = true
+			}
+			// `inline` says nothing about storage, so it leaves the storage
+			// class alone; the word is kept all the same, because 6.7.4p6
+			// makes it the difference between an inline definition and the
+			// one definition a link may use.
+			if t.text == 'inline' || t.text == '__inline' || t.text == '__inline__' {
+				spec.is_inline = true
 			}
 			// The first storage class written is the one the declaration has:
 			// `inline static` is a static function, and a word that says
