@@ -1789,6 +1789,12 @@ fn query_answer(opts cli.Options, target backend.Target) string {
 		// The file the linker's search finds, or the name back unchanged when it
 		// finds none. An empty name is not a file and comes back empty, which is
 		// the same rule and not gcc's special answer of its install directory.
+		// It is answered here rather than left to the search, because the search
+		// appends the name to the install directory and an empty name would come
+		// back as that directory.
+		if opts.print_file_name == '' {
+			return ''
+		}
 		//
 		// The runtime is the one file searched for a second way: libvcc.a and
 		// libvcc.so are kept beside the compiler rather than in a directory the
