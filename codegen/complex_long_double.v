@@ -1,7 +1,6 @@
 module codegen
 
 import backend
-import image
 import types
 import ast
 

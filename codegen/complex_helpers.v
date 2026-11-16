@@ -1,7 +1,6 @@
 module codegen
 
 import ast
-import backend
 import types
 
 // The runtime's helpers for the complex product and the complex quotient.
