@@ -2228,12 +2228,13 @@ fn (mut p Parser) file_scope_address() ?ast.AddressInit {
 			p.error_at(token, err.msg())
 			return none
 		}
-		if literal.unit == 4 {
-			// A wide literal is a run of ints, and a pointer at the top level
-			// takes the literal of its own element's type: this reader has no
-			// wchar_t to compare the pointee against here, so it names the
-			// shape rather than writing the wrong address.
-			p.error_at(token, 'unsupported: a wide string literal does not initialize a pointer here')
+		if literal.unit != 1 {
+			// A wide or UTF literal is a run of ints or of char16_t, and a
+			// pointer at the top level takes the literal of its own element's
+			// type: this reader has no wide type to compare the pointee
+			// against here, so it names the shape rather than writing the
+			// wrong address.
+			p.error_at(token, 'unsupported: a wide or UTF-prefixed string literal does not initialize a pointer here')
 			return none
 		}
 		return ast.AddressInit{
@@ -2263,8 +2264,8 @@ fn (mut p Parser) file_scope_address() ?ast.AddressInit {
 				p.error_at(token, err.msg())
 				return none
 			}
-			if literal.unit == 4 {
-				p.error_at(token, 'unsupported: a wide string literal does not initialize a pointer here')
+			if literal.unit != 1 {
+				p.error_at(token, 'unsupported: a wide or UTF-prefixed string literal does not initialize a pointer here')
 				return none
 			}
 			mut offset := 0
@@ -6375,7 +6376,10 @@ fn (s ArraySuffix) count_as_step() int {
 // and an array of this target's wchar_t, an int, by a wide one. Measured on gcc
 // 16.2.1, `signed char a[] = "x"` and `unsigned char a[] = "x"` are accepted
 // while `int a[] = "x"` and `unsigned int a[] = L"x"` are not, so the element
-// type has to be the literal's own.
+// type has to be the literal's own. The same holds for the UTF prefixes: measured,
+// `char16_t a[] = u"hi"` and `char32_t a[] = U"hi"` are accepted and
+// `int b[] = U"hi"` is `cannot initialize array of 'int' from a string literal
+// with type array of 'unsigned int'`.
 //
 // It asks the declared type and not the declarator, because a name a typedef
 // gave an array type is an array the brackets never spelled: `typedef char
@@ -6385,16 +6389,19 @@ fn array_takes_string(declared types.Type, literal ast.StrLit) bool {
 		return false
 	}
 	element := declared.element() or { return false }
-	return element_takes_literal(element, literal.unit)
+	return element_takes_literal(element, literal)
 }
 
 // element_takes_literal is the element type a string literal of this width
 // initializes: an ordinary literal an array of character type - char, signed
-// char or unsigned char - and a wide one an array of wchar_t, which this target
-// gives as an int.
-fn element_takes_literal(element types.Type, unit int) bool {
-	if unit == 4 {
-		return element.kind == .int_
+// char or unsigned char - and a wide or UTF one an array of the element the
+// literal's own type holds, which is an int for `L`, char16_t for `u` and
+// char32_t for `U`. The kind is compared rather than the whole type, because a
+// `const` array element takes the literal too.
+fn element_takes_literal(element types.Type, literal ast.StrLit) bool {
+	if literal.unit != 1 {
+		own := literal.typ.element() or { return false }
+		return element.kind == own.kind
 	}
 	return element.kind in [.char_, .signed_char, .unsigned_char]
 }
@@ -6430,9 +6437,10 @@ fn (mut p Parser) read_array_string_literal() ?ast.StrLit {
 		text:  token.text
 		unit:  first.unit
 		typ:   string_literal_type(token.text, StringLiteral{
-			value: value
-			unit:  first.unit
-			count: characters
+			value:          value
+			unit:           first.unit
+			count:          characters
+			unsigned_units: first.unsigned_units
 		})
 		line:  token.line
 		col:   token.col
@@ -6441,20 +6449,20 @@ fn (mut p Parser) read_array_string_literal() ?ast.StrLit {
 
 // string_elements is the elements a string literal writes into an array: one per
 // character, and the terminator the literal does not write as the last of them. A
-// wide literal's value holds four little-endian bytes a character and a narrow
-// one's holds one byte a character, so how a character is read off the literal is
-// what its unit says.
+// wide or UTF literal's value holds `unit` little-endian bytes a character - four
+// for L and U, two for u - and a narrow one's holds one byte a character, so how
+// a character is read off the literal is what its unit says.
 fn string_elements(literal ast.StrLit) []i64 {
 	mut values := []i64{}
-	if literal.unit == 4 {
+	if literal.unit != 1 {
 		mut i := 0
-		for i + 3 < literal.value.len {
+		for i + literal.unit - 1 < literal.value.len {
 			mut value := u64(0)
-			for k in 0 .. 4 {
+			for k in 0 .. literal.unit {
 				value |= u64(literal.value[i + k]) << (8 * k)
 			}
 			values << i64(value)
-			i += 4
+			i += literal.unit
 		}
 	} else {
 		for byte in literal.value.bytes() {

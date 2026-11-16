@@ -547,13 +547,77 @@ fn test_a_wide_string_literal_is_an_array_of_wchar_t() {
 	assert bytes[16] == `o` && bytes[17] == 0 && bytes[18] == 0 && bytes[19] == 0
 }
 
-// A `u`- or `U`-prefixed literal names char16_t or char32_t, which are header
-// types this compiler has not read, and the refusal says which prefix it was
-// rather than calling every prefixed literal wide.
-fn test_a_u_prefixed_string_literal_is_refused_by_name() {
-	result := parsed('int main() { return 0; } int f() { return u"x"[0]; }')
-	assert result.diagnostics.len == 1
-	assert result.diagnostics[0].msg.contains('u-prefixed string literal')
+// A `u`-prefixed literal names an array of char16_t: two bytes a character, held
+// as the UTF-16 code unit each names, and a terminator two bytes wide. char16_t
+// is the unsigned short <uchar.h> typedefs, so the array decays to a pointer to
+// one. Measured on gcc 16.2.1, sizeof(u"hi") is 6 and its two characters are
+// 0068 and 0069.
+fn test_a_u_prefixed_string_literal_is_an_array_of_char16_t() {
+	result := checked('int wants(unsigned short *s);\nint main() { wants(u"hi"); return 0; }')
+	statement := result.unit.decls[1].body[0]
+	call_expr := statement.expr
+	if call_expr.is_none() {
+		assert false
+		return
+	}
+	call := result.unit.arena.call(call_expr)
+	argument := result.unit.arena.str_lit(call.args[0])
+	assert argument.unit == 2
+	assert argument.typ.describe() == 'unsigned short[3]'
+	assert argument.value.len == 4
+	assert argument.value.bytes() == [u8(0x68), 0, u8(0x69), 0]
+}
+
+// A `U`-prefixed literal names an array of char32_t: four bytes a character, held
+// as the code point itself in an unsigned int, and a terminator four bytes wide.
+// Measured on gcc 16.2.1, sizeof(U"hi") is 12.
+fn test_an_uppercase_u_prefixed_string_literal_is_an_array_of_char32_t() {
+	result := checked('int wants(unsigned int *s);\nint main() { wants(U"hi"); return 0; }')
+	statement := result.unit.decls[1].body[0]
+	call_expr := statement.expr
+	if call_expr.is_none() {
+		assert false
+		return
+	}
+	call := result.unit.arena.call(call_expr)
+	argument := result.unit.arena.str_lit(call.args[0])
+	assert argument.unit == 4
+	assert argument.typ.describe() == 'unsigned int[3]'
+	assert argument.value.len == 8
+	assert argument.value.bytes() == [u8(0x68), 0, 0, 0, u8(0x69), 0, 0, 0]
+}
+
+// A code point past the BMP is two UTF-16 code units in a `u` literal, which is
+// the surrogate pair 6.4.5p5 writes, so the array holds three units with the
+// terminator. Measured on gcc 16.2.1, u"\U0001F600" is d83d de00 and its
+// sizeof is 6.
+fn test_a_u_prefixed_literal_writes_a_surrogate_pair() {
+	result := checked('int wants(unsigned short *s);\nint main() { wants(u"\\U0001F600"); return 0; }')
+	statement := result.unit.decls[1].body[0]
+	call_expr := statement.expr
+	if call_expr.is_none() {
+		assert false
+		return
+	}
+	call := result.unit.arena.call(call_expr)
+	argument := result.unit.arena.str_lit(call.args[0])
+	assert argument.typ.describe() == 'unsigned short[3]'
+	assert argument.value.bytes() == [u8(0x3d), u8(0xd8), 0, u8(0xde)]
+}
+
+// A `u8` character constant is C23's char8_t, which is the unsigned char uchar.h
+// typedefs, and not the int every other character constant is: measured on gcc
+// 16.2.1 under -std=c23, sizeof(u8'c') is 1 and its value is 99.
+fn test_a_utf8_character_constant_has_the_type_char8_t() {
+	result := checked("int main() { return u8'c'; }")
+	returned := result.unit.decls[0].body[0].expr
+	if returned.is_none() {
+		assert false
+		return
+	}
+	literal := result.unit.arena.int_lit(returned)
+	assert literal.value == 99
+	assert literal.typ.describe() == 'unsigned char'
 }
 
 fn test_an_element_of_an_array_carries_the_element_type() {
