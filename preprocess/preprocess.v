@@ -501,19 +501,7 @@ fn (mut p Processor) include(tok tokenize.Token, args string, after bool) {
 	}
 	from := p.frames.last().path
 	found := p.find_include(name, angled, from, after) or {
-		if os.is_abs_path(name) {
-			// No directory was searched and none would have been, so the
-			// message says why rather than listing places that were never
-			// consulted.
-			p.problem(tok, 'cannot find ${include_name(name, angled)}; an absolute path is opened where it points')
-			return
-		}
-		looked := p.searched_dirs(angled, from, after)
-		if looked.len == 0 {
-			p.problem(tok, 'cannot find ${include_name(name, angled)}, and there is no directory after the one this file was found in to look in')
-			return
-		}
-		p.problem(tok, 'cannot find ${include_name(name, angled)}; looked in ${looked.join(', ')}')
+		p.missing_file(tok, name, angled, from, after)
 		return
 	}
 	if found.path in p.once_files {
@@ -525,6 +513,27 @@ fn (mut p Processor) include(tok tokenize.Token, args string, after bool) {
 		return
 	}
 	p.push(found.path, source, found.index, p.frames.last().silent, found.system)
+}
+
+// missing_file is what a directive says when the file it named is not there.
+// It is one function because #include and #embed search the same way and a
+// name is missed the same way in both: what was looked in is the line's own
+// search, so an absolute path, which searches nowhere, does not claim
+// directories were consulted.
+fn (mut p Processor) missing_file(tok tokenize.Token, name string, angled bool, from string, after bool) {
+	if os.is_abs_path(name) {
+		// No directory was searched and none would have been, so the
+		// message says why rather than listing places that were never
+		// consulted.
+		p.problem(tok, 'cannot find ${include_name(name, angled)}; an absolute path is opened where it points')
+		return
+	}
+	looked := p.searched_dirs(angled, from, after)
+	if looked.len == 0 {
+		p.problem(tok, 'cannot find ${include_name(name, angled)}, and there is no directory after the one this file was found in to look in')
+		return
+	}
+	p.problem(tok, 'cannot find ${include_name(name, angled)}; looked in ${looked.join(', ')}')
 }
 
 // prelude reads a file that was named on the command line, before the source is
@@ -1011,6 +1020,7 @@ fn (mut p Processor) text_directive(tok tokenize.Token, name string, args string
 		}
 		'include' { p.include(tok, args, false) }
 		'include_next' { p.include(tok, args, true) }
+		'embed' { p.embed(tok, args) }
 		'line' { p.line_directive(tok, args) }
 		'pragma' {
 			// `#pragma once` is a file saying it may be read at most once, which
