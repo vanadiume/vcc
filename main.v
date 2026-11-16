@@ -315,6 +315,7 @@ fn main() {
 		compile_only:         opts.compile_only
 		pic:                  opts.pic
 		ignore_natives:       opts.ignore_natives
+		dialect:              opts.dialect
 		bracket_depth:        opts.bracket_depth
 		link_kind:            link_kind(opts)
 		link_options:         link_options
@@ -755,6 +756,7 @@ fn link_inputs(opts cli.Options) {
 			link:           true
 			link_kind:      output_kind
 			ignore_natives: opts.ignore_natives
+			dialect:        opts.dialect
 			bracket_depth:  opts.bracket_depth
 			libraries:      opts.libraries
 			library_dirs:   opts.library_dirs
@@ -1703,6 +1705,7 @@ fn compile_source_object(path string, source string, opts cli.Options) ![]u8 {
 		compile_only:   true
 		pic:            opts.pic
 		ignore_natives: opts.ignore_natives
+		dialect:        opts.dialect
 		bracket_depth:  opts.bracket_depth
 		libraries:      opts.libraries
 		library_dirs:   opts.library_dirs

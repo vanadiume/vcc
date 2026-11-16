@@ -5,6 +5,7 @@ import backend
 import backend.os.elf
 import os
 import parser
+import standard
 import time
 import tokenize
 
@@ -6049,4 +6050,93 @@ fn test_a_void_conditional_statement_runs_the_arm_the_condition_selects() {
 		Options{})
 	assert folded.diagnostics.len == 0
 	assert run_image(folded.bytes) == 4
+}
+
+// An inline definition and the call that needs the external one are two
+// translation units, which this test cannot be: the single-file runner compiles
+// one file and runs it. The answer is read where a second unit's reference is
+// answered, then, which is the set of names the object offers to a link:
+// `program.defined` is that set, and a name missing from it is an undefined
+// reference the moment anything outside the unit calls it.
+//
+// Measured on gcc 16.2.1 over two files, one `inline int f(void) { return 1; }`
+// and one that declares f and calls it: `-std=gnu89` links and runs,
+// `-std=c99`, `-std=gnu99`, `-std=c11`, `-std=gnu11`, `-std=c17`, `-std=c23` and
+// no `-std` at all fail with `undefined reference to f`.
+fn test_an_inline_definition_is_not_an_external_definition_under_c99() {
+	source := 'inline int f(void) { return 1; }\nint main(void) { return 0; }'
+	// The word reaches the tree, which is where the emitter learns there is a
+	// question to ask at all.
+	unit := translation_unit(source)
+	assert unit.decls[0].inline_
+	assert !unit.decls[0].extern_
+	for mode in [standard.Mode.c99, .gnu99, .c11, .gnu11, .c17, .gnu23, .none] {
+		emitted := emit(translation_unit(source), Options{
+			dialect: mode
+		})
+		assert emitted.diagnostics.len == 0
+		assert 'f' !in emitted.program.defined
+	}
+	// gnu89 keeps the rule the word had before C99 became the standard: there
+	// the inline definition is the external one, which is what gcc links.
+	old := emit(translation_unit(source), Options{
+		dialect: .gnu89
+	})
+	assert old.diagnostics.len == 0
+	assert 'f' in old.program.defined
+}
+
+// 6.7.4p7: the definition is an inline definition only when every file-scope
+// declaration of the name is one. A prototype that leaves `inline` out, or that
+// writes `extern`, makes it the external definition. A file that writes
+// `inline int f(void) { return 1; }` and then `int f(void);` is the shape V's
+// own generated C has, so this is the half of the rule that keeps a linker from
+// losing a function the program does call.
+fn test_a_declaration_without_inline_gives_the_inline_definition_back_to_the_link() {
+	for source in [
+		'inline int f(void) { return 1; }\nint f(void);\nint main(void) { return 0; }',
+		'int f(void);\ninline int f(void) { return 1; }\nint main(void) { return 0; }',
+		'inline int f(void) { return 1; }\nextern int f(void);\nint main(void) { return 0; }',
+		'extern inline int f(void) { return 1; }\nint main(void) { return 0; }',
+	] {
+		emitted := emit(translation_unit(source), Options{
+			dialect: .c99
+		})
+		assert emitted.diagnostics.len == 0
+		assert 'f' in emitted.program.defined
+	}
+	// `static inline` is the other declaration again: internal linkage, written
+	// into this object, and a call in the same unit is a call into this image
+	// under every mode.
+	local := emit(translation_unit('static inline int f(void) { return 1; }\nint main(void) { return f() == 1 ? 0 : 1; }'),
+		Options{
+			dialect: .c99
+		})
+	assert local.diagnostics.len == 0
+	assert 'f' in local.program.internal
+	assert run_image(local.bytes) == 0
+	// gnu89 reads the pair the other way round: there `extern inline` names the
+	// definition that is not the external one, and gcc 16.2.1 refuses to link it
+	// against a call in another unit.
+	old := emit(translation_unit('extern inline int f(void) { return 1; }\nint main(void) { return 0; }'),
+		Options{
+			dialect: .gnu89
+		})
+	assert old.diagnostics.len == 0
+	assert 'f' !in old.program.defined
+}
+
+// The same unit's call is the same rule: gcc 16.2.1 refuses to link the file
+// that holds both the inline definition and the call to it under -std=c99,
+// because the call is a reference to the external definition and the inline
+// definition is not one. This emitter does not expand a call into an inline
+// definition either, so the call stays an import and the check that runs over a
+// unit names it.
+fn test_a_call_to_an_inline_definition_wants_the_external_one() {
+	emitted := emit(translation_unit('inline int f(void) { return 1; }\nint main(void) { return f() == 1 ? 0 : 1; }'),
+		Options{
+			dialect: .c99
+		})
+	assert emitted.diagnostics.len == 1
+	assert emitted.diagnostics[0].msg.contains('undefined reference to `f`')
 }

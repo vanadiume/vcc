@@ -37,6 +37,7 @@ fn compile(args []string, source string) codegen.Result {
 		target:        opts.target
 		entry:         'main'
 		bracket_depth: opts.bracket_depth
+		dialect:       opts.dialect
 		libraries:     opts.libraries
 		library_dirs:  opts.library_dirs
 	})
