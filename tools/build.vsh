@@ -267,6 +267,15 @@ fn step_install(mut ctx Context, args []string) Outcome {
 	if !os.exists(archive) {
 		return failed('install', 'the build wrote no ${archive}')
 	}
+	// The shared runtime is part of the pair. A program linked with
+	// -shared-libvcc records the .so's own name, so the install carries the
+	// chain of names the library was written with: the versioned file and the
+	// two symlinks beside it. A tree that built only the archive fails here
+	// rather than installing half a runtime.
+	shared := os.join_path(os.dir(archive), 'libvcc.so')
+	if !os.exists(shared) {
+		return failed('install', 'the build wrote no ${shared}, and -shared-libvcc links against it')
+	}
 	binary := os.join_path(prefix, 'bin', 'vcc')
 	library := os.join_path(prefix, 'lib', 'libvcc.a')
 	// A prefix the user cannot write is the normal case for /usr/local, and a
@@ -281,6 +290,27 @@ fn step_install(mut ctx Context, args []string) Outcome {
 	}
 	if !place(archive, library, '644', escalate) {
 		return failed('install', 'could not write ${library}')
+	}
+	shared_dir := os.join_path(prefix, 'lib')
+	real := os.real_path(shared)
+	if !place(real, os.join_path(shared_dir, os.base(real)), '755', escalate) {
+		return failed('install', 'could not write ${os.join_path(shared_dir, os.base(real))}')
+	}
+	// Every other name in the lane directory is a symlink the library was
+	// written with, and the loader asks for the soname rather than for the
+	// versioned file. Reproduce them rather than hardcoding the chain, because
+	// the version in the names comes from libvcc's own VERSION file.
+	for entry in os.ls(os.dir(archive)) or { []string{} } {
+		if entry == os.base(real) || !entry.starts_with('libvcc.so') {
+			continue
+		}
+		rel := os.readlink(os.join_path(os.dir(archive), entry)) or { '' }
+		if rel == '' {
+			continue
+		}
+		if !make_link(rel, os.join_path(shared_dir, entry), escalate) {
+			return failed('install', 'could not link ${os.join_path(shared_dir, entry)} to ${rel}')
+		}
 	}
 	os.mkdir_all(ctx.scratch) or {}
 	program := os.join_path(ctx.scratch, 'runtime_helper.c')
@@ -303,7 +333,28 @@ fn step_install(mut ctx Context, args []string) Outcome {
 	if status != 42 {
 		return failed('install', 'the program answered ${status}, and the helper it called divides 84 by 2')
 	}
-	return Outcome{ verdict: .passed, name: 'install', detail: '${binary}, ${library}' }
+	// And the shared runtime, which is the other half of what the tarball
+	// carries: a program that calls a complex helper, linked with -shared-libvcc
+	// so the image names the .so, run with the installed directory on the
+	// loader's path. It exits with the real part plus 5, which is 0.
+	shared_program := os.join_path(ctx.scratch, 'shared_helper.c')
+	shared_exe := os.join_path(ctx.scratch, 'shared_helper')
+	shared_body := 'double _Complex __muldc3(double, double, double, double);\nint main(void) { double _Complex z = __muldc3(1.0, 2.0, 3.0, 4.0); return (int)__real__ z + 5; }\n'
+	os.write_file(shared_program, shared_body) or {
+		return failed('install', 'could not write a program: ${err}')
+	}
+	if run_in('', '${os.quoted_path(binary)} ${os.quoted_path(shared_program)} ${search} -shared-libvcc -o ${os.quoted_path(shared_exe)}') != 0 {
+		return failed('install', 'the installed compiler could not link a program with -shared-libvcc')
+	}
+	shared_status := run_in('', 'LD_LIBRARY_PATH=${os.quoted_path(shared_dir)} ${os.quoted_path(shared_exe)}')
+	if shared_status != 0 {
+		return failed('install', 'the -shared-libvcc program answered ${shared_status}, and the helper it called multiplies (1+2i)(3+4i), whose real part is -5')
+	}
+	return Outcome{
+		verdict: .passed
+		name:    'install'
+		detail:  '${binary}, ${library}, ${os.join_path(shared_dir, os.base(real))}'
+	}
 }
 
 // writable says whether a run by this user can create a file under a directory
@@ -326,6 +377,15 @@ fn writable(dir string) bool {
 
 // place copies one file into a prefix with the mode it needs, through sudo when
 // the prefix is not the user's to write.
+// make_link points one name in the installed directory at another, through sudo
+// when the prefix is not the user's to write.
+fn make_link(target string, link string, escalate bool) bool {
+	if escalate {
+		return os.system_args(['sudo', 'ln', '-sf', target, link]) == 0
+	}
+	return os.system_args(['ln', '-sf', target, link]) == 0
+}
+
 fn place(source string, target string, mode string, escalate bool) bool {
 	if escalate {
 		return os.system_args(['sudo', 'install', '-D', '-m', mode, source, target]) == 0
