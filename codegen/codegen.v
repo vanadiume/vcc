@@ -3185,12 +3185,12 @@ fn (mut e Emitter) assign_deref(stmt ast.Stmt, target ast.Expr, expr ast.Expr, d
 	}
 	// The width check is the one store_value makes for a name: a constant is
 	// written at the width of the object because a constant says nothing about
-	// its own width, a value narrower than the object is converted to the
-	// object's type, and a wider one is refused. A char object takes an int by
-	// its low byte, which is the narrowing the language also defines and the
-	// check leaves alone.
-	if e.constant(expr) == none && value_width > width && !(width < 4 && value_width == 4) {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${value_width} bytes is stored through an address of ${unary.typ.describe()}, which holds ${width}')
+	// its own width, an integer wider than the object is the narrowing
+	// conversion the language defines (6.3.1.3), and the store below leaves its
+	// low bytes, which is what that conversion leaves. An address is not a
+	// narrower integer, so a pointer wider than the object is refused by name.
+	if e.constant(expr) == none && value_width > width && e.is_a_pointer(expr) {
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored through an address of ${unary.typ.describe()}, which holds ${width} bytes, and there is no conversion between them')
 		return error('width mismatch')
 	}
 	if width == 8 {
@@ -4033,12 +4033,12 @@ fn (mut e Emitter) assign_member(stmt ast.Stmt, member ast.Field, expr ast.Expr,
 	}
 	// The width check is the one a store through an address makes, because that
 	// is what a member store is: a constant is written at the width of the
-	// member, since a constant says nothing about its own width, a value
-	// narrower than the member is converted to the member's type, and a wider
-	// one is refused - except into a member narrower than four bytes, where the
-	// language converts an int by taking the low byte or the low two of it.
-	if e.constant(expr) == none && value_width > width && !(width < 4 && value_width == 4) {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${value_width} bytes is stored into the member ${member.name}.${member.member}, which holds ${width}')
+	// member, since a constant says nothing about its own width, an integer
+	// wider than the member is the narrowing conversion the language defines
+	// (6.3.1.3), and the store below leaves its low bytes. An address is not a
+	// narrower integer, so a pointer wider than the member is refused.
+	if e.constant(expr) == none && value_width > width && e.is_a_pointer(expr) {
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored in the member ${member.name}.${member.member}, which holds ${width} bytes, and there is no conversion between them')
 		return error('width mismatch')
 	}
 	if width == 8 && value_width != 8 {
@@ -4084,8 +4084,12 @@ fn (mut e Emitter) assign_member_bits(stmt ast.Stmt, member ast.Field, expr ast.
 			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: the value is one this back end cannot size, so it cannot be stored')
 			return error('unknown width')
 		}
-		if e.constant(expr) == none && value_width > width && !(width < 4 && value_width == 4) {
-			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${value_width} bytes is stored into the member ${member.name}.${member.member}, which holds ${width}')
+		// The width check is the one the whole-member store makes: an integer
+		// wider than the declared member type is the narrowing conversion
+		// (6.3.1.3), and the mask below keeps the field's bits of it. An
+		// address is not a narrower integer, so a pointer is refused.
+		if e.constant(expr) == none && value_width > width && e.is_a_pointer(expr) {
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored in the bitfield ${member.name}.${member.member}, which is declared ${member.spelling}, and there is no conversion between them')
 			return error('width mismatch')
 		}
 		e.normalize_a_bool_store(e.declares_a_bool(member.spelling), value_width == 8, stmt.line,
@@ -4248,12 +4252,12 @@ fn (mut e Emitter) assign_element(stmt ast.Stmt, subscript ast.Expr, expr ast.Ex
 			// A constant is written at the width of the element, because a
 			// constant says nothing about its own width: this is what a store
 			// into a local already does, and an element of a top-level array is
-			// the same store at an address the image holds. A value narrower
-			// than the element is converted to its type, and a wider one is
-			// refused, except into an element narrower than four bytes, where
-			// the language converts an int by taking its low byte or its low two.
-			if e.constant(expr) == none && width > object.width && !(object.width < 4 && width == 4) {
-				e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${width} bytes is stored into an element of ${stmt.target}, which holds ${object.width}')
+			// the same store at an address the image holds. An integer wider
+			// than the element is the narrowing conversion the language
+			// defines (6.3.1.3), and the store below leaves its low bytes. An
+			// address is not a narrower integer, so a pointer is refused.
+			if e.constant(expr) == none && width > object.width && e.is_a_pointer(expr) {
+				e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored in an element of ${stmt.target}, which holds ${object.width} bytes, and there is no conversion between them')
 				return error('width mismatch')
 			}
 			if object.width == 8 && width != 8 {
@@ -4380,12 +4384,12 @@ fn (mut e Emitter) assign_element(stmt ast.Stmt, subscript ast.Expr, expr ast.Ex
 	}
 	// A constant is written at the width of the element, because a constant
 	// says nothing about its own width: this is what a store into a local
-	// already does, and an element is the same store at a computed address. A
-	// value narrower than the element is converted to its type, and a wider one
-	// is refused, except into an element narrower than four bytes, where the
-	// language converts an int by taking its low byte or its low two.
-	if e.constant(expr) == none && width > slot.width && !(slot.width < 4 && width == 4) {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${width} bytes is stored into an element of ${slot.width}')
+	// already does, and an element is the same store at a computed address. An
+	// integer wider than the element is the narrowing conversion the language
+	// defines (6.3.1.3), and the store below leaves its low bytes. An address
+	// is not a narrower integer, so a pointer is refused.
+	if e.constant(expr) == none && width > slot.width && e.is_a_pointer(expr) {
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored into an element of ${slot.width} bytes, and there is no conversion between them')
 		return error('width mismatch')
 	}
 	if slot.width == 8 && width != 8 {
@@ -4485,12 +4489,11 @@ fn (mut e Emitter) assign_subscript(stmt ast.Stmt, subscript ast.Expr, expr ast.
 	// A constant is written at the width of the element, because a constant
 	// says nothing about its own width: this is what a store into a local
 	// already does, and an element reached through an address is the same store
-	// at a computed address. A value narrower than the element is converted to
-	// its type, and a wider one is refused, except into an element narrower than
-	// four bytes, where the language converts an int by taking its low byte or
-	// its low two.
-	if e.constant(expr) == none && value_width > width && !(width < 4 && value_width == 4) {
-		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a value of ${value_width} bytes is stored into an element of ${width}')
+	// at a computed address. An integer wider than the element is the narrowing
+	// conversion the language defines (6.3.1.3), and the store below leaves its
+	// low bytes. An address is not a narrower integer, so a pointer is refused.
+	if e.constant(expr) == none && value_width > width && e.is_a_pointer(expr) {
+		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: a pointer is stored into an element of ${width} bytes, and there is no conversion between them')
 		return error('width mismatch')
 	}
 	if width == 8 && value_width != 8 {
@@ -13776,7 +13779,8 @@ fn (mut e Emitter) assign_global(stmt ast.Stmt, object image.GlobalSlot, expr as
 		return e.store_wide_at(address, expr, stmt.line, stmt.col, depth)
 	}
 	e.emit_expr_at(expr, depth + 1)!
-	e.convert_for_global(expr, object, e.written_is_unsigned(e.global_written(stmt.target)), stmt.line,
+	written := e.global_written(stmt.target)
+	e.convert_for_global(expr, object, e.written_is_unsigned(written), e.declares_a_bool(written), stmt.line,
 		stmt.col)!
 	address_register := e.scratch(stmt.line, stmt.col)!
 	e.load_argument(address, address_register, e.target.word_size, stmt.line, stmt.col)!
@@ -13805,7 +13809,7 @@ fn (mut e Emitter) assign_global(stmt ast.Stmt, object image.GlobalSlot, expr as
 // convert_for_global makes a value the class of a top-level object's storage and
 // checks that the two can be one another at all. It is the same question a store
 // into a local asks, with a different shape to the storage.
-fn (mut e Emitter) convert_for_global(expr ast.Expr, object image.GlobalSlot, unsigned_target bool, line int, col int) !void {
+fn (mut e Emitter) convert_for_global(expr ast.Expr, object image.GlobalSlot, unsigned_target bool, boolean bool, line int, col int) !void {
 	if object.single {
 		// A top-level object holding a float takes the value converted to a
 		// float, for the same reason a slot holding one does.
@@ -13823,11 +13827,25 @@ fn (mut e Emitter) convert_for_global(expr ast.Expr, object image.GlobalSlot, un
 		return e.convert_to_double(expr, line, col)
 	}
 	if e.floating_of(expr) {
+		if boolean {
+			// A `_Bool` holds 0 or 1 after a store (6.3.1.2) and the test is
+			// of the value rather than of its conversion to an integer: 0.5 is
+			// not zero, so `b = 0.5` leaves 1 where truncating first leaves 0.
+			// This is the step store_value makes for a slot of the type.
+			e.normalize_a_bool_value(expr, line, col)!
+			return
+		}
 		return e.convert_to_int(expr, unsigned_target, object.width, line, col)
 	}
 	if width := e.width_of(expr) {
-		if width > object.width && !(object.width < 4 && width == 4) {
-			e.diagnostics << problem(line, col, 'unsupported: a value of ${width} bytes is stored into an object that holds ${object.width}')
+		if width > object.width && e.is_a_pointer(expr) {
+			// An address is not a narrower integer: no pointer is stored in an
+			// object of fewer bytes without a cast, and this shape has none.
+			// An integer wider than the object is the narrowing conversion the
+			// language defines (6.3.1.3), and the store below leaves its low
+			// bytes, which is what that conversion leaves: `n = strlen(s)`
+			// narrows a size_t into an int the way `int n = strlen(s)` does.
+			e.diagnostics << problem(line, col, 'unsupported: a pointer is stored in an object that holds ${object.width} bytes, and there is no conversion between them')
 			return error('width mismatch')
 		}
 		if object.width == 8 && width != 8 {
@@ -13838,6 +13856,10 @@ fn (mut e Emitter) convert_for_global(expr ast.Expr, object image.GlobalSlot, un
 			// reading.
 			e.extend_operand_to_word(expr, line, col)!
 		}
+		// A top-level `_Bool` holds 0 or 1 after a store (6.3.1.2), the way a
+		// local of the type does: `b = 2` leaves 1, and so does
+		// `b = 0x1_0000_0000`, whose low byte is zero.
+		e.normalize_a_bool_store(boolean, width == 8, line, col)!
 		return
 	}
 	e.diagnostics << problem(line, col, 'unsupported: the value is one this back end cannot size, so it cannot be stored')
