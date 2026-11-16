@@ -2191,6 +2191,14 @@ fn (mut p Parser) file_scope_address() ?ast.AddressInit {
 	}
 	if p.at_punct('&') {
 		amp := p.next()
+		if p.looks_like_compound_literal() {
+			// `&(struct S){1, 2}` is the address of an unnamed object with
+			// static storage duration (6.5.2.5p5), which is an address constant
+			// 6.6p9 lets a file-scope initializer hold. The object is defined
+			// in the image and the initializer is its address, the same way
+			// `&name` is the address of a named object.
+			return p.file_scope_compound_address()
+		}
 		if p.peek().kind == .string {
 			// `&"abc"[1]` is the address of a byte of a string literal: the
 			// literal's own byte in the read-only data plus the index. A member

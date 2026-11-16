@@ -157,6 +157,63 @@ fn test_a_file_scope_compound_literal_is_a_static_object() {
 	assert !address.string
 }
 
+// The address of a file-scope compound literal is the address of an object with
+// static storage duration (6.5.2.5p5), which is an address constant 6.6p9 lets a
+// file-scope initializer hold. Measured on gcc 16.2.1, `struct S *s =
+// &(struct S){1, 2};` returns 12 for `s->a * 10 + s->b`, so each value has to
+// reach the member it initializes and the pointer has to name that object.
+fn test_the_address_of_a_file_scope_compound_literal_is_its_object() {
+	result := compound_parsed('struct S { int a; int b; };\nstruct S *s = &(struct S){1, 2};')
+	assert result.diagnostics.len == 0
+	assert result.unit.globals.len == 2
+	object := result.unit.globals[0]
+	assert object.name.starts_with('__vcc_compound_')
+	assert object.bytes == 8
+	assert object.member_inits.len == 2
+	assert object.member_inits[0].offset == 0
+	assert (object.member_inits[0].init or { -1 }) == 1
+	assert object.member_inits[1].offset == 4
+	assert (object.member_inits[1].init or { -1 }) == 2
+	p := result.unit.globals[1]
+	assert p.name == 's'
+	address := p.address or {
+		assert false
+		return
+	}
+	assert address.name == object.name
+	// The ampersand was written, so the initializer is the address of what the
+	// name is whatever it holds, which is what an aggregate name is not.
+	assert address.explicit
+	assert !address.string
+}
+
+// A scalar fits the same shape: `&(int){5}` is a pointer to an int with static
+// storage duration holding 5, which gcc 16.2.1 accepts and prints 5 for.
+fn test_the_address_of_a_file_scope_scalar_compound_literal_is_its_object() {
+	result := compound_parsed('int *p = &(int){5};')
+	assert result.diagnostics.len == 0
+	assert result.unit.globals.len == 2
+	object := result.unit.globals[0]
+	assert object.typ == 'int'
+	assert (object.init or { -1 }) == 5
+	p := result.unit.globals[1]
+	address := p.address or {
+		assert false
+		return
+	}
+	assert address.name == object.name
+	assert address.explicit
+}
+
+// A bare compound literal of an aggregate type is the object, not an address, so
+// a pointer initialized by one is still refused: gcc 16.2.1 reports
+// `initialization of 'int *' from incompatible pointer type` for `int *p =
+// (struct S){1, 2};`.
+fn test_a_bare_file_scope_aggregate_literal_is_not_an_address() {
+	result := compound_parsed('struct S { int a; int b; };\nint *p = (struct S){1, 2};')
+	assert result.diagnostics.len == 1
+}
+
 // A designated member whose own type is an aggregate takes the element as a
 // value of that member: the designator is resolved against the literal's own
 // type and the member's own byte receives the value. The reader used to descend
