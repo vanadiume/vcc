@@ -731,6 +731,11 @@ fn test_if_reads_its_expression() {
 	assert processed('#if 0\nint x;\n#endif\n') == []
 	assert processed('#if 1 + 1 == 2\nint x;\n#endif\n') == ['int', 'x', ';']
 	assert processed('#if 1 < 2 && 3 > 2\nint x;\n#endif\n') == ['int', 'x', ';']
+	// A C23 digit separator is taken out of the constant before its value is
+	// read here too: `#if` holds integer constants, and a separator is part of
+	// the spelling wherever a constant is written.
+	assert processed("#if 1'000 == 1000\nint x;\n#endif\n") == ['int', 'x', ';']
+	assert processed("#if 0x1'FF == 0x1FF\nint x;\n#endif\n") == ['int', 'x', ';']
 }
 
 fn test_a_name_that_is_not_defined_is_zero_in_an_if() {

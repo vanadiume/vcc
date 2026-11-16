@@ -366,17 +366,25 @@ fn integer_literal_value(text string) ?Value {
 		base = 8
 	}
 	mut digits := ''
+	mut end := body.len
 	for i in 0 .. body.len {
 		c := body[i]
 		if c == `u` || c == `U` || c == `l` || c == `L` {
+			end = i
 			break
+		}
+		// C23 6.4.4.1: the separator sits between two digits and is taken out
+		// before the value is read, so it is not a digit and not the start of
+		// the suffix either.
+		if c == `'` {
+			continue
 		}
 		digits += c.ascii_str()
 	}
 	if digits == '' {
 		return none
 	}
-	unsigned := literal_suffix(body[digits.len..]) or { return none }
+	unsigned := literal_suffix(body[end..]) or { return none }
 	mut value := u64(0)
 	for i in 0 .. digits.len {
 		c := digits[i]

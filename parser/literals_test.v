@@ -516,6 +516,35 @@ fn literal_returned_by(source string) ast.FloatLit {
 	return *result.unit.arena.float_lit(expr)
 }
 
+fn test_a_digit_separator_is_taken_out_before_the_value_is_read() {
+	// 6.4.4.1 and 6.4.4.2: the separator is part of the spelling, the value is
+	// read from what is left, and the value is the same one the literal
+	// without the separators has.
+	assert (parse_integer_literal("1'000'000") or { i64(0) }) == 1000000
+	assert (parse_integer_literal("0x1'FF") or { i64(0) }) == 511
+	assert (parse_integer_literal("0b1010'1010") or { i64(0) }) == 170
+	assert (parse_integer_literal("1'000ULL") or { i64(0) }) == 1000
+	assert (parse_floating_literal("1'000.5") or { f64(0) }) == 1000.5
+	assert (parse_floating_literal("1'000.5f") or { f64(0) }) == 1000.5
+	assert (parse_floating_literal("0x1'8p3") or { f64(0) }) == 192.0
+}
+
+fn test_a_digit_separator_does_not_change_the_type() {
+	// A separator does not make an integer constant floating or a double a
+	// float: the type is the one the suffix and the value name.
+	integer := parse(tokenize.lex("int main(void) { return 1'000; }\n").tokens)
+	assert integer.diagnostics.len == 0
+	literal := integer.unit.arena.int_lit(integer.unit.decls[0].body[0].expr)
+	assert literal.value == 1000
+	assert literal.typ.same(types.int_type())
+	// The token keeps the spelling, separators and all, so a diagnostic about
+	// the constant quotes the number the file wrote.
+	assert literal.text == "1'000"
+	floating := parse(tokenize.lex("double main(void) { return 1'000.5; }\n").tokens)
+	assert floating.diagnostics.len == 0
+	assert floating.unit.arena.float_lit(floating.unit.decls[0].body[0].expr).typ.same(types.double_type())
+}
+
 // A decimal constant's type is the format its suffix named, which is what the
 // literal in the tree carries into the back end: `1.5df` is a `_Decimal32`, `2.5dd`
 // a `_Decimal64` and `3.5dl` a `_Decimal128`, and the value beside the type is the
