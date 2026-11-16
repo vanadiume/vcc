@@ -75,6 +75,15 @@ pub const elf_ph_type_tls = u32(7)
 // carries it and not only the table.
 const elf_ph_type_gnu_eh_frame = u32(0x6474E550)
 const elf_ph_type_gnu_stack = u32(0x6474E551)
+// PT_GNU_RELRO asks the loader to make a range of the image read-only once it
+// has applied the relocations that write there. It is the segment -Wl,-z,relro
+// names, and it is the loader's segment and not the kernel's: a static program
+// that carries one has nothing to apply it. The range has to be data the
+// program never writes again, and its start has to be page aligned, because the
+// loader rounds the start down to a page before it calls mprotect: a range that
+// began inside a page holding the program's own writable data would make that
+// data read-only too.
+const elf_ph_type_gnu_relro = u32(0x6474E552)
 
 // The segment permissions, combined where a segment needs more than one.
 const elf_ph_flags_execute = u32(1)
@@ -102,13 +111,23 @@ pub const dt_init_array = u64(25)
 pub const dt_fini_array = u64(26)
 pub const dt_init_arraysz = u64(27)
 pub const dt_fini_arraysz = u64(28)
+// DT_FLAGS and DT_FLAGS_1 carry the promises the image makes about how it is
+// loaded. DF_BIND_NOW and DF_1_NOW are the two spellings of "resolve every
+// import before the first instruction", which is what -Wl,-z,now writes; GNU
+// ld writes both, and a loader reads either. This compiler's images already
+// bind eagerly, so the entries state the promise rather than change a slot.
+pub const dt_flags = u64(30)
+pub const dt_flags_1 = u64(0x6ffffffb)
+pub const df_bind_now = u64(0x8)
+pub const df_1_now = u64(0x1)
 
 // dynamic_entry_count is how many entries the dynamic table holds: the eight
 // that describe the image's own tables, one DT_NEEDED per library it runs
-// against, two for each of the constructor tables the image has, and the null
-// that ends it. It is a function rather than a constant because the library
-// count and the two table counts are not known until the program has been read.
-fn dynamic_entry_count(library_count int, init_array_count int, fini_array_count int) int {
+// against, two for each of the constructor tables the image has, two for the
+// BIND_NOW promise when -Wl,-z,now asked for it, and the null that ends it. It
+// is a function rather than a constant because the library count and the table
+// counts are not known until the program has been read.
+fn dynamic_entry_count(library_count int, init_array_count int, fini_array_count int, bind_now bool) int {
 	mut count := 9 + library_count
 	if init_array_count > 0 {
 		count += 2
@@ -116,7 +135,18 @@ fn dynamic_entry_count(library_count int, init_array_count int, fini_array_count
 	if fini_array_count > 0 {
 		count += 2
 	}
+	if bind_now {
+		count += 2
+	}
 	return count
+}
+
+// dynamic_table_size is how many bytes the table takes, which is what the
+// layout places after the relocations and what a PT_GNU_RELRO segment has to
+// cover when one is written.
+fn dynamic_table_size(program image.Program, library_count int, bind_now bool) int {
+	return dynamic_entry_count(library_count, program.init_array.count,
+		program.fini_array.count, bind_now) * int(elf_dynamic_entry_size)
 }
 
 // A relocation that asks the loader to write a symbol's address into a slot.
@@ -200,6 +230,13 @@ struct Sections {
 	got     int
 	rela    int
 	dynamic int
+	// relro is where the PT_GNU_RELRO segment begins and relro_size how many
+	// bytes it covers: the global offset table, the relocation table the loader
+	// reads, and the dynamic table itself. It is zero when -Wl,-z,relro was not
+	// asked for, and its size is zero when the image has nothing a loader
+	// relocates, in which case no segment is written.
+	relro      int
+	relro_size int
 	// eh_frame is the unwind table: one CIE the emitter's prologue rule
 	// describes and one FDE per function body, and eh_frame_hdr the table that
 	// indexes it by the address each body covers. Both are read-only, both lie
@@ -219,12 +256,25 @@ pub fn executable(program image.Program, target backend.Target) ![]u8 {
 }
 
 // write wraps a program in an ELF64 image of the kind the command line asked
-// for. `.program` is the dynamic one, `.static_program` resolves every library
-// into the file, and `.shared` is a file another program loads with dlopen. The
-// three share every part that does not depend on how the file is used; what
-// changes between them is the interpreter, the libraries named, the base added
-// to an address that points into the image, and what the symbol table exports.
+// for, with no -Wl, option in force: `write_options` with the zero options,
+// which is what a caller with no command line behind it means.
 pub fn write(program image.Program, target backend.Target, kind linux.LinkKind) ![]u8 {
+	return write_options(program, target, kind, linux.LinkOptions{})
+}
+
+// write_options wraps a program in an ELF64 image of the kind the command line
+// asked for. `.program` is the dynamic one, `.static_program` resolves every
+// library into the file, and `.shared` is a file another program loads with
+// dlopen. The three share every part that does not depend on how the file is
+// used; what changes between them is the interpreter, the libraries named, the
+// base added to an address that points into the image, and what the symbol table
+// exports.
+//
+// `options` is what the -Wl, flags added: an executable or non-executable stack,
+// the BIND_NOW promise in the dynamic table, and a PT_GNU_RELRO segment over the
+// tables the loader writes. The zero value writes the image the options never
+// existed for, which is what every run before this one got.
+pub fn write_options(program image.Program, target backend.Target, kind linux.LinkKind, options linux.LinkOptions) ![]u8 {
 	check_kind(program, kind)!
 	shared := kind == .shared
 	// A shared object is placed by whoever loads it, so this module adds no base
@@ -328,9 +378,33 @@ pub fn write(program image.Program, target backend.Target, kind linux.LinkKind) 
 	// the header that indexes it. An image with no body carries neither, and
 	// writes the same bytes it wrote before there was a table.
 	has_eh_frame := program.function_runs.len > 0
-	header_count := program_header_count(kind, has_tls, has_eh_frame)
-	sections := layout(program, target, interp.len, dynstr.len, libraries.len, external,
-		exports.len, extra.len, relocation_total, header_count, has_dynamic)
+	// A PT_GNU_RELRO segment is written when it has bytes to cover: the table
+	// the loader relocates, the table it reads, or the dynamic table itself. An
+	// image with none of those has nothing to make read-only, so -Wl,-z,relro
+	// changes nothing and no empty segment is written for it.
+	has_relro := options.relro && (has_dynamic || program.imports.len + extra.len > 0
+		|| relocation_total > 0)
+	// -Wl,-z,noexecstack wins over a unit that needs an executable stack, which
+	// is the option's promise in every linker; -Wl,-z,execstack asks for one
+	// whether or not a unit needs it.
+	executable_stack := if options.noexecstack {
+		false
+	} else if options.execstack {
+		true
+	} else {
+		program.executable_stack
+	}
+	header_count := program_header_count(kind, has_tls, has_eh_frame, has_relro)
+	// The dynamic table's bytes, counted once: the layout places it, the header
+	// it turns into reports its size, and PT_GNU_RELRO covers it.
+	dynamic_size := if has_dynamic {
+		dynamic_table_size(program, libraries.len, options.bind_now)
+	} else {
+		0
+	}
+	sections := layout(program, target, interp.len, dynstr.len, external,
+		exports.len, extra.len, relocation_total, header_count, has_dynamic, dynamic_size,
+		has_relro)
 	// The image a Linux kernel starts is built here. The name is not `image`,
 	// because that is the module whose Program this function was handed.
 	mut output := []u8{len: sections.total, init: u8(0)}
@@ -349,7 +423,8 @@ pub fn write(program image.Program, target backend.Target, kind linux.LinkKind) 
 		extra, shared, kind)!
 	// A static program writes no table here, and no header points at one.
 	if has_dynamic {
-		emit_dynamic(mut output, sections, program, dynstr.len, needed, base, relocation_total)
+		emit_dynamic(mut output, sections, program, dynstr.len, needed, base, relocation_total,
+			options.bind_now)
 	}
 	// The unwind table and the header that indexes it are written here rather
 	// than by a relocation: the layout has settled where the code and the two
@@ -365,8 +440,8 @@ pub fn write(program image.Program, target backend.Target, kind linux.LinkKind) 
 	entry := if shared { u64(0) } else { base + u64(sections.text + program.entry_place) }
 	e_type := if shared { elf_type_dyn } else { elf_type_exec }
 	emit_header(mut output, target, entry, e_type, header_count)
-	emit_program_headers(mut output, target, sections, program, interp.len, libraries.len,
-		kind, has_tls, has_eh_frame, base)
+	emit_program_headers(mut output, target, sections, program, interp.len, dynamic_size,
+		kind, has_tls, has_eh_frame, has_relro, executable_stack, base)
 	patch(mut output, program, target, sections, base, extra)!
 	return output
 }
@@ -414,8 +489,9 @@ fn check_kind(program image.Program, kind linux.LinkKind) ! {
 // headers alone, because it carries no dynamic table for a loader to read and
 // nothing loads it. An image with thread-local storage adds one more, the PT_TLS
 // header the runtime reads the block out of, and it is a header of its own for
-// every kind that defines a thread-local.
-fn program_header_count(kind linux.LinkKind, has_tls bool, has_eh_frame bool) int {
+// every kind that defines a thread-local. A PT_GNU_RELRO segment is one more
+// when the link asked for one and the image has data for it to cover.
+fn program_header_count(kind linux.LinkKind, has_tls bool, has_eh_frame bool, has_relro bool) int {
 	mut count := match kind {
 		.program { int(elf_program_header_count) }
 		.static_program { 2 }
@@ -427,6 +503,9 @@ fn program_header_count(kind linux.LinkKind, has_tls bool, has_eh_frame bool) in
 	// An image with function bodies carries PT_GNU_EH_FRAME for the table that
 	// indexes them, and it is a header of its own for every kind.
 	if has_eh_frame {
+		count++
+	}
+	if has_relro {
 		count++
 	}
 	return count
@@ -605,7 +684,7 @@ fn got_slot(program image.Program, sections Sections, name string, extra []strin
 // is how many entries the relocation table holds, because it is not the symbol
 // count: a shared object carries entries that name no symbol, and a program
 // carries entries for addresses in its data.
-fn layout(program image.Program, target backend.Target, interp_len int, dynstr_len int, library_count int, external int, export_count int, got_extra int, relocation_total int, header_count int, has_dynamic bool) Sections {
+fn layout(program image.Program, target backend.Target, interp_len int, dynstr_len int, external int, export_count int, got_extra int, relocation_total int, header_count int, has_dynamic bool, dynamic_size int, has_relro bool) Sections {
 	mut offset := int(elf_header_size) + header_count * int(elf_program_header_size)
 	interp := offset
 	offset = align(offset + interp_len, 8)
@@ -653,6 +732,16 @@ fn layout(program image.Program, target backend.Target, interp_len int, dynstr_l
 		elf_symbol_size, 8)
 	hash := offset
 	offset = align(offset + hash_size(external + program.copy_objects.len + export_count + 1), 8)
+	// The global offset table and the tables after it are what PT_GNU_RELRO
+	// covers: the loader writes the slots and reads the relocations and the
+	// dynamic table, and nothing writes any of them again. The segment starts at
+	// a page boundary because the loader rounds the start down to one before it
+	// calls mprotect, and a start inside a page shared with the program's own
+	// writable data would make that data read-only and fault the first write to
+	// it. The page is only paid for when the segment was asked for.
+	if has_relro {
+		offset = align(offset, int(target.page_size))
+	}
 	got := offset
 	// A slot for every import, the bound ones included: a call to a bound name
 	// still goes through its slot, so the slot index is the import's position
@@ -672,9 +761,21 @@ fn layout(program image.Program, target backend.Target, interp_len int, dynstr_l
 	// program from one a loader finishes.
 	dynamic := offset
 	if has_dynamic {
-		offset = align(offset + dynamic_entry_count(library_count, program.init_array.count,
-			program.fini_array.count) * elf_dynamic_entry_size, 8)
+		offset = align(offset + dynamic_size, 8)
 	}
+	// The range the loader makes read-only: the table it fills in, the
+	// relocations it applies, and the dynamic table it reads. The end is the
+	// exact end of the last of those; the loader rounds it up to its own page,
+	// and what it reaches past the end is the unwind table, which nothing
+	// writes. A static image writes no dynamic table, so its range ends after
+	// its relocations.
+	relro_end := if has_dynamic {
+		dynamic + dynamic_size
+	} else {
+		rela + relocation_total * elf_relocation_size
+	}
+	relro := if has_relro { got } else { 0 }
+	relro_size := if has_relro { relro_end - got } else { 0 }
 	// The unwind table and the header that indexes it come last, in the
 	// read-only part of the image the one segment maps. They are placed after
 	// every part whose offset is already spoken for, so adding them moves
@@ -697,6 +798,8 @@ fn layout(program image.Program, target backend.Target, interp_len int, dynstr_l
 		got:          got
 		rela:         rela
 		dynamic:      dynamic
+		relro:        relro
+		relro_size:   relro_size
 		eh_frame:     eh_frame
 		eh_frame_hdr: eh_frame_hdr
 		total:        align(offset, int(target.page_size))
@@ -1174,13 +1277,14 @@ fn emit_relocations(mut output []u8, program image.Program, sections Sections, i
 }
 
 // emit_dynamic writes the table that tells the loader what the image needs: each
-// library it runs against, where the tables are, and how big each record in them
-// is. The DT_NEEDED entries come first and are the only part of the table whose
-// length depends on the command line; a static program has none, so its table
-// describes only its own parts. The two constructor tables are named by address
-// and size when the image has them, and they lie in the writable data, so the
-// address is the load base plus the storage's own offset.
-fn emit_dynamic(mut output []u8, sections Sections, program image.Program, dynstr_len int, needed []int, base u64, relocation_total int) {
+// library it runs against, where the tables are, how big each record in them
+// is, and the promises -Wl,-z,now makes about binding. The DT_NEEDED entries
+// come first and are the only part of the table whose length depends on the
+// command line; a static program has none, so its table describes only its own
+// parts. The two constructor tables are named by address and size when the
+// image has them, and they lie in the writable data, so the address is the load
+// base plus the storage's own offset.
+fn emit_dynamic(mut output []u8, sections Sections, program image.Program, dynstr_len int, needed []int, base u64, relocation_total int, bind_now bool) {
 	mut entries := [][]u64{}
 	for offset in needed {
 		entries << [dt_needed, u64(offset)]
@@ -1200,6 +1304,14 @@ fn emit_dynamic(mut output []u8, sections Sections, program image.Program, dynst
 	if program.fini_array.count > 0 {
 		entries << [dt_fini_array, base + u64(sections.globals + program.fini_array.offset)]
 		entries << [dt_fini_arraysz, u64(program.fini_array.count * 8)]
+	}
+	// -Wl,-z,now: both spellings of "bind every import before the first
+	// instruction", which is what GNU ld writes and what a loader reads. This
+	// image's imports are already bound eagerly, one GLOB_DAT per name and no
+	// lazy stub, so the entries state the promise and change no slot.
+	if bind_now {
+		entries << [dt_flags, df_bind_now]
+		entries << [dt_flags_1, df_1_now]
 	}
 	entries << [dt_null, u64(0)]
 	for i, entry in entries {
@@ -1237,10 +1349,13 @@ fn emit_header(mut output []u8, target backend.Target, entry u64, e_type u16, he
 // emit_program_headers writes the program headers the kernel and the loader read
 // before any of the code runs: the interpreter when the kind has one, the one
 // segment that maps the whole image, the dynamic table when the kind has one,
-// the thread-local block when the image defines one, and the stack. The kind
-// settles the first three, and a thread-local is a header of its own for every
-// kind, which is why it is passed in rather than read off the kind.
-fn emit_program_headers(mut output []u8, target backend.Target, sections Sections, program image.Program, interp_len int, library_count int, kind linux.LinkKind, has_tls bool, has_eh_frame bool, base u64) {
+// the thread-local block when the image defines one, the loader's read-only
+// range when -Wl,-z,relro asked for one, and the stack. The kind settles the
+// first three, and a thread-local is a header of its own for every kind, which is
+// why it is passed in rather than read off the kind. `executable_stack` is the
+// stack permission the link decided, which is the unit's own request unless
+// -Wl,-z,execstack or -Wl,-z,noexecstack overrode it.
+fn emit_program_headers(mut output []u8, target backend.Target, sections Sections, program image.Program, interp_len int, dynamic_size int, kind linux.LinkKind, has_tls bool, has_eh_frame bool, has_relro bool, executable_stack bool, base u64) {
 	mut at := int(elf_header_size)
 	// PT_INTERP: the loader the kernel hands the process to. Only a dynamic
 	// program names one; the other two kinds write no header here.
@@ -1271,8 +1386,7 @@ fn emit_program_headers(mut output []u8, target backend.Target, sections Section
 	// header, because it writes no such table: nothing loads it and nothing
 	// reads one, and a reader that finds none calls it statically linked.
 	if kind != .static_program {
-		size := u64(dynamic_entry_count(library_count, program.init_array.count,
-			program.fini_array.count) * elf_dynamic_entry_size)
+		size := u64(dynamic_size)
 		put_u32(mut output, at, elf_ph_type_dynamic)
 		put_u32(mut output, at + 4, elf_ph_flags_read | elf_ph_flags_write)
 		put_u64(mut output, at + 8, u64(sections.dynamic))
@@ -1316,12 +1430,29 @@ fn emit_program_headers(mut output []u8, target backend.Target, sections Section
 		put_u64(mut output, at + 48, 4)
 		at += int(elf_program_header_size)
 	}
+	// PT_GNU_RELRO: the range the loader makes read-only once it has applied the
+	// relocations that write there. It is read-only itself, its p_vaddr is where
+	// the global offset table lies in the one segment the image maps, and its
+	// p_align is one: the loader aligns the range to its own page, and the
+	// layout has already put the start on a page boundary.
+	if has_relro {
+		put_u32(mut output, at, elf_ph_type_gnu_relro)
+		put_u32(mut output, at + 4, elf_ph_flags_read)
+		put_u64(mut output, at + 8, u64(sections.relro))
+		put_u64(mut output, at + 16, base + u64(sections.relro))
+		put_u64(mut output, at + 24, base + u64(sections.relro))
+		put_u64(mut output, at + 32, u64(sections.relro_size))
+		put_u64(mut output, at + 40, u64(sections.relro_size))
+		put_u64(mut output, at + 48, 1)
+		at += int(elf_program_header_size)
+	}
 	// PT_GNU_STACK: the stack is readable and writable, and executable only when
 	// the program runs code out of it, which is what a nested function's address
 	// needs: the stub that carries the enclosing frame is written into the frame
-	// and jumped into.
+	// and jumped into. -Wl,-z,execstack asks for that whether or not a unit needs
+	// it, and -Wl,-z,noexecstack takes it away from a unit that does.
 	put_u32(mut output, at, elf_ph_type_gnu_stack)
-	put_u32(mut output, at + 4, elf_ph_flags_read | elf_ph_flags_write | if program.executable_stack {
+	put_u32(mut output, at + 4, elf_ph_flags_read | elf_ph_flags_write | if executable_stack {
 		elf_ph_flags_execute
 	} else {
 		u32(0)

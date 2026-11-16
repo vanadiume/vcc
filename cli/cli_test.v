@@ -72,7 +72,7 @@ fn test_what_v_passes_is_accepted_rather_than_refused() {
 	assert opts.include_dirs == ['/opt/libgc/include']
 	assert opts.inhibit_warnings
 	assert opts.ignored.contains('-bt25')
-	assert opts.ignored.contains('-Wl,-rpath,/opt/v')
+	assert opts.link_args == ['-rpath,/opt/v']
 	assert opts.ignored.contains('-B/opt/tcc/lib/tcc')
 }
 
@@ -735,14 +735,17 @@ fn test_a_repeated_boolean_flag_is_decided_by_the_last_spelling() {
 
 // The ignored list is the promise the flag surface makes: what was accepted and
 // not acted on is recorded rather than refused, so a verbose run can say what
-// it passed over. A flag this compiler reads is not in it.
+// it passed over. A flag this compiler reads is not in it. -Wl, options are
+// read as a family and are kept in `link_args`, not here: the link that reads
+// them applies or refuses them.
 fn test_the_ignored_list_holds_the_flags_that_were_passed_over() {
 	opts := parse(['-bt25', '-Wl,-rpath,/opt/v', '-fwrapv', '-fPIE', '-B/some/dir', 'x.c', '-o',
 		'out'])!
-	for flag in ['-bt25', '-Wl,-rpath,/opt/v', '-fwrapv', '-fPIE', '-B/some/dir'] {
+	for flag in ['-bt25', '-fwrapv', '-fPIE', '-B/some/dir'] {
 		assert opts.ignored.contains(flag), '${flag} should be recorded, not refused'
 	}
-	for read_flag in ['-o', 'out', '-c', '-w', '-verbose', '-print-search-dirs', '-shared'] {
+	for read_flag in ['-o', 'out', '-c', '-w', '-verbose', '-print-search-dirs', '-shared',
+		'-Wl,-rpath,/opt/v'] {
 		assert !opts.ignored.contains(read_flag), '${read_flag} is read and not recorded'
 	}
 }
@@ -751,7 +754,8 @@ fn test_the_ignored_list_holds_the_flags_that_were_passed_over() {
 // output reads the way the command line did.
 fn test_the_ignored_list_keeps_the_command_line_order() {
 	opts := parse(['-bt25', '-fwrapv', '-Wl,-z,now', 'x.c'])!
-	assert opts.ignored == ['-bt25', '-fwrapv', '-Wl,-z,now']
+	assert opts.ignored == ['-bt25', '-fwrapv']
+	assert opts.link_args == ['-z,now']
 }
 
 // -v is the version, -vv is the paths, and -verbose is the long spelling of the
@@ -847,4 +851,68 @@ fn test_a_value_that_looks_like_a_flag_is_still_a_value() {
 	assert opts.defines == ['-foo']
 	assert opts.output == '-weird'
 	assert opts.inputs == ['x.c']
+}
+
+// -Wl, options are kept as written at parse time, because which linker reads
+// them is not known yet: -external-linker may name another tool further down
+// the same command line. The option is applied or refused where the link
+// happens, and it is never in the ignored list, which is what a build reads to
+// learn that something was passed over.
+fn test_the_wl_options_are_kept_for_the_link_that_reads_them() {
+	opts := parse(['-Wl,-z,execstack', '-Wl,-rpath,/opt/v', 'x.c'])!
+	assert opts.link_args == ['-z,execstack', '-rpath,/opt/v']
+	assert !opts.ignored.contains('-Wl,-z,execstack')
+	assert !opts.ignored.contains('-Wl,-rpath,/opt/v')
+	assert parse(['-Wl,-z,now', '-Wl,-z,relro', 'x.c'])!.link_args == ['-z,now', '-z,relro']
+	// The spelling with no comma names no option, and a run that kept it would
+	// be a run told a link option was given when none was.
+	if _ := parse(['-Wl', 'x.c']) {
+		assert false, '-Wl with no comma should be an error'
+	}
+}
+
+// The -z options the image can express, and their negative spellings, are read
+// in order: the last mention of a pair wins, the way a repeated command-line
+// flag does.
+fn test_the_linker_reads_the_z_options_the_image_can_express() {
+	assert linker_options(['-z,execstack'])!.execstack
+	assert linker_options(['-z,noexecstack'])!.noexecstack
+	assert linker_options(['-z,now'])!.bind_now
+	assert linker_options(['-z,relro'])!.relro
+	assert !linker_options(['-z,relro,-z,norelro'])!.relro
+	assert !linker_options(['-z,now,-z,lazy'])!.bind_now
+	assert !linker_options(['-z,execstack,-z,noexecstack'])!.execstack
+	assert !linker_options([])!.relro
+}
+
+// link_option_refusal is the diagnostic a payload is refused with, or an empty
+// string when the linker reads it. The refusal tests read the message rather
+// than only the failure, because the message is what tells a build which option
+// stopped it.
+fn link_option_refusal(payload string) string {
+	linker_options([payload]) or { return err.msg() }
+	return ''
+}
+
+// An option the in-house linker cannot express is refused by name rather than
+// accepted and dropped. Each of these is an option a build system really
+// passes, so the diagnostic has to make the option recognisable and say it was
+// not implemented.
+fn test_a_link_option_the_image_cannot_express_is_refused_by_name() {
+	for option in ['--gc-sections', '-rpath,/x', '--as-needed', '-z,origin'] {
+		said := link_option_refusal(option)
+		assert said.contains('-Wl,${option}'), '${option} was not named in: ${said}'
+		assert said.contains('does not implement'), '${option} was not refused: ${said}'
+	}
+	assert link_option_refusal('').contains('names no linker option')
+	assert link_option_refusal('-z').contains('-z needs an argument')
+}
+
+// The other linker gets the payloads as its own words: a comma between the
+// options inside one -Wl, word is the separator gcc uses, and nothing here
+// interprets or refuses what it forwards.
+fn test_the_external_linker_gets_the_wl_options_as_its_own_words() {
+	assert external_linker_arguments(['-z,now']) == ['-z', 'now']
+	assert external_linker_arguments(['-rpath,/x', '--gc-sections']) == ['-rpath', '/x', '--gc-sections']
+	assert external_linker_arguments([]).len == 0
 }

@@ -49,9 +49,11 @@ pub:
 // the compiler uses.
 //
 // Flags this compiler cannot honor are recorded rather than refused. V passes a
-// compiler flags for features it expects to be there (-bt25 and the -Wl,
-// passthroughs among them), and a compiler that errors on one of them fails a
-// build it was supposed to serve.
+// compiler flags for features it expects to be there (-bt25 among them), and a
+// compiler that errors on one of them fails a build it was supposed to serve.
+// The -Wl, options are the exception: this compiler links the image itself, so
+// one it cannot express is refused where the link happens rather than recorded
+// as if it had been applied. Which linker reads them decides: see `link_args`.
 pub struct Options {
 pub mut:
 	inputs       []string
@@ -215,6 +217,14 @@ pub mut:
 	// ignored holds every flag that was accepted and not acted on, so a verbose
 	// mode can say what was passed over instead of implying it worked.
 	ignored []string
+	// link_args holds the payload of each -Wl, flag, in command-line order: the
+	// options the link is asked for beyond the link itself. They are kept as
+	// written because which linker reads them is not decided here. An external
+	// linker named by -external-linker gets them untouched; this compiler's own
+	// linker reads the ones it implements and refuses the rest by name, because
+	// it does the link itself and an option it dropped would leave a build
+	// believing something happened that did not.
+	link_args []string
 }
 
 // Phase is one stage of a compilation with the time it took, which is what
@@ -496,6 +506,18 @@ pub fn parse(args []string) !Options {
 			opts.input_type = cursor.value_of('')!
 		} else if arg == '-B' {
 			opts.ignored << '${arg} ${cursor.value_of('')!}'
+		} else if arg == '-Wl' {
+			// The spelling with no comma names nothing to pass on, so a run
+			// that recorded it would be told a link option was given when one
+			// was not. gcc refuses it the same way.
+			return error('-Wl takes its linker options joined with commas: -Wl,-z,now')
+		} else if arg.starts_with('-Wl,') {
+			// Kept as written and decided where the link happens: an external
+			// linker gets them untouched, and this compiler's own linker reads
+			// the ones it implements and refuses the rest by name. Parsing
+			// cannot make that call, because -external-linker may name the
+			// tool further down the same command line.
+			opts.link_args << arg['-Wl,'.len..]
 		} else if optimization.accept_flag(arg) {
 			// The optimizer recognized it: -O levels and the -f(no-)builtin
 			// spellings. Nothing to do here beyond not recording it as ignored.
@@ -697,6 +719,11 @@ pub fn usage(all bool) string {
 	out << '                    -print-ast) has nothing for NAME to do and the flag'
 	out << '                    goes unused. With the flag unset every input is'
 	out << '                    refused exactly as before'
+	out << '  -Wl,opt       an option for the link: -z execstack, -z noexecstack, -z now,'
+	out << '                -z lazy, -z relro and -z norelro change the image this'
+	out << '                compiler writes; any other option is refused by name rather'
+	out << '                than dropped in silence. With -external-linker=NAME the'
+	out << '                options go to NAME untouched'
 	out << '  -shared               what the link writes: a shared object another'
 	out << '                        program loads, with no entry point and no loader.'
 	out << '                        A later vcc link reads one as an input, by file'
@@ -763,7 +790,13 @@ pub fn usage(all bool) string {
 		out << '  -Ldir -llib           -L directories are searched for a -l name, and the'
 		out << '                        library that is found is named in the image, which is'
 		out << '                        what makes its symbols resolve when the program loads'
-		out << '  -bt25 -Wl,...         accepted and ignored, as a non-tcc compiler must'
+		out << '  -bt25                 accepted and ignored, as a non-tcc compiler must'
+		out << '  -Wl,opt               an option for the link. The -z options above are'
+		out << "                        read and change the image; one this compiler's"
+		out << '                        linker cannot express is refused by name, because'
+		out << '                        the link is done here and a recorded option is'
+		out << '                        indistinguishable from an applied one. With'
+		out << '                        -external-linker=NAME they go to NAME untouched'
 		out << '  -print-ast            nothing is written and nothing is linked; the dump is'
 		out << '                        the tree after the optimizer, which is what the emitter'
 		out << '                        would see'

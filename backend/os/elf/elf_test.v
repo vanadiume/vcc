@@ -1,6 +1,7 @@
 module elf
 
 import backend
+import backend.os.linux
 import image
 import os
 
@@ -777,4 +778,100 @@ fn test_an_absolute_reference_to_an_undefined_name_is_still_refused() {
 		return
 	}
 	assert false, 'a program was written with an absolute reference to a name no unit defines'
+}
+
+// se_stack_flags reads the permission field out of the PT_GNU_STACK header.
+fn se_stack_flags(bytes []u8) u32 {
+	at := se_phdr_of(bytes, elf_ph_type_gnu_stack)
+	assert at >= 0
+	return se32(bytes, at + 4)
+}
+
+// -Wl,-z,execstack marks the stack executable and -Wl,-z,noexecstack takes the
+// permission away again, even from a unit that said it runs code out of its
+// frame. The header is the whole effect, so the permission is read out of it.
+fn test_the_execstack_options_set_the_stack_permission() {
+	target := se_target()
+	mut program := image.Program{}
+	program.text = []u8{len: 8}
+	plain := write_options(program, target, .static_program, linux.LinkOptions{}) or {
+		panic('the static program was not written: ${err.msg()}')
+	}
+	assert se_stack_flags(plain) == elf_ph_flags_read | elf_ph_flags_write
+	exec := write_options(program, target, .static_program, linux.LinkOptions{
+		execstack: true
+	}) or { panic('the static program was not written: ${err.msg()}') }
+	assert se_stack_flags(exec) == elf_ph_flags_read | elf_ph_flags_write | elf_ph_flags_execute
+	// A unit whose code takes a nested function's address asks for an
+	// executable stack itself; -Wl,-z,noexecstack overrides that request, which
+	// is what asking a linker for a non-executable stack means.
+	program.executable_stack = true
+	needed := write_options(program, target, .static_program, linux.LinkOptions{}) or {
+		panic('the static program was not written: ${err.msg()}')
+	}
+	assert se_stack_flags(needed) & elf_ph_flags_execute != 0
+	noexec := write_options(program, target, .static_program, linux.LinkOptions{
+		noexecstack: true
+	}) or { panic('the static program was not written: ${err.msg()}') }
+	assert se_stack_flags(noexec) & elf_ph_flags_execute == 0
+}
+
+// -Wl,-z,now writes both spellings of the promise into the dynamic table, and
+// the table the PT_DYNAMIC header reports grows by the two entries rather than
+// running past its own end.
+fn test_the_bind_now_option_writes_the_dynamic_flags() {
+	target := se_target()
+	mut program := image.Program{}
+	program.text = []u8{len: 8}
+	plain := write(program, target, .program) or {
+		panic('the dynamic program was not written: ${err.msg()}')
+	}
+	assert !se_dynamic_has(plain, dt_flags)
+	assert !se_dynamic_has(plain, dt_flags_1)
+	bound := write_options(program, target, .program, linux.LinkOptions{
+		bind_now: true
+	}) or { panic('the dynamic program was not written: ${err.msg()}') }
+	assert se_dynamic_value(bound, dt_flags) or { panic('no DT_FLAGS') } == df_bind_now
+	assert se_dynamic_value(bound, dt_flags_1) or { panic('no DT_FLAGS_1') } == df_1_now
+	assert se_dynamic_size(bound) == se_dynamic_size(plain) + 2 * elf_dynamic_entry_size
+}
+
+// -Wl,-z,relro writes a PT_GNU_RELRO segment over the table the loader fills in,
+// the relocations it applies and the dynamic table it reads. The start is page
+// aligned because the loader rounds it down before mprotect: a start inside a
+// page holding the program's own writable data would make that data read-only.
+// The program has to run with the range in place, which is what proves the
+// loader's writes landed before the protection did.
+fn test_the_relro_option_writes_a_segment_over_the_loader_tables() {
+	target := se_target()
+	code := target.exit_sequence(7) or { panic('no exit sequence: ${err.msg()}') }
+	mut program := image.Program{}
+	program.text = code
+	program.imports << 'exit'
+	bytes := write_options(program, target, .program, linux.LinkOptions{
+		relro: true
+	}) or { panic('the dynamic program was not written: ${err.msg()}') }
+	at := se_phdr_of(bytes, elf_ph_type_gnu_relro)
+	assert at >= 0
+	start := se64(bytes, at + 8)
+	size := se64(bytes, at + 32)
+	assert se64(bytes, at + 16) == target.load_base + start
+	assert se64(bytes, at + 24) == target.load_base + start
+	assert size > 0
+	assert start % target.page_size == 0
+	dynamic := u64(se_dynamic_offset(bytes))
+	assert start <= dynamic
+	assert start + size >= dynamic + u64(se_dynamic_size(bytes))
+	// Without the option there is no segment and one header fewer.
+	plain := write(program, target, .program) or {
+		panic('the dynamic program was not written: ${err.msg()}')
+	}
+	assert se_phdr_of(plain, elf_ph_type_gnu_relro) == -1
+	assert se16(bytes, 56) == se16(plain, 56) + 1
+	path := os.join_path(os.temp_dir(), 'vcc_elf_relro_${os.getpid()}')
+	os.write_file_array(path, bytes) or { panic(err) }
+	os.chmod(path, 0o755) or { panic(err) }
+	result := os.execute(os.quoted_path(path))
+	os.rm(path) or {}
+	assert result.exit_code == 7
 }

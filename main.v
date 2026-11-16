@@ -273,6 +273,18 @@ fn main() {
 		println(printer.render(optimized))
 		return
 	}
+	// The -Wl, options this run's link takes. They are the container's facts
+	// and not the code's, so a run that stops before a link (-c) leaves them
+	// unread, the way a linker flag on a compile-only command line does in any
+	// other compiler. The refusal is here rather than in `parse` because parse
+	// cannot know which linker will read the words.
+	mut link_options := linux.LinkOptions{}
+	if opts.links() {
+		link_options = in_house_link_options(opts) or {
+			abort(err.msg())
+			return
+		}
+	}
 	// The target this run builds for, resolved here as well as in the emitter
 	// because the include search and the link flags both read it: a freestanding
 	// target has no standard headers and no C library.
@@ -293,6 +305,7 @@ fn main() {
 		pic:                  opts.pic
 		ignore_natives:       opts.ignore_natives
 		link_kind:            link_kind(opts)
+		link_options:         link_options
 		libraries:            opts.libraries
 		library_dirs:         opts.library_dirs
 		no_default_libraries: !default_libraries(opts, run_target)
@@ -565,6 +578,13 @@ fn needs_a_library(units []unit.Program) bool {
 fn link_inputs(opts cli.Options) {
 	if opts.verbose {
 		verbose_print(verbose_include_dir_lines(opts))
+	}
+	// The -Wl, options are read before any input is, so an option this linker
+	// cannot express names itself and stops the run before a whole compile has
+	// produced objects for a link that would not have honored it.
+	link_options := in_house_link_options(opts) or {
+		abort(err.msg())
+		return
 	}
 	target := backend.resolve(opts.target) or {
 		abort(err.msg())
@@ -924,7 +944,7 @@ fn link_inputs(opts cli.Options) {
 		abort(err.msg())
 		return
 	}
-	bytes := output.image(merged, target, link_kind(opts)) or {
+	bytes := output.image(merged, target, link_kind(opts), link_options) or {
 		abort(err.msg())
 		return
 	}
@@ -1417,6 +1437,22 @@ fn names_a_static_archive(opts cli.Options) bool {
 	return false
 }
 
+// in_house_link_options reads the -Wl, options for this compiler's own linker.
+// The parser keeps their payloads untouched because -external-linker hands them
+// to another tool; here they are interpreted, and one the image cannot express
+// is an error naming the flag rather than a line in a list nobody reads. The
+// image writer is where the answer has to be true: an option that reached this
+// function and changed no byte would be the silent no-op issue #64 reported.
+fn in_house_link_options(opts cli.Options) !linux.LinkOptions {
+	flags := cli.linker_options(opts.link_args)!
+	return linux.LinkOptions{
+		execstack:   flags.execstack
+		noexecstack: flags.noexecstack
+		bind_now:    flags.bind_now
+		relro:       flags.relro
+	}
+}
+
 // external_link performs the final link with the program -external-linker named.
 //
 // It is the one path that links more than one input and inputs that are not C:
@@ -1507,8 +1543,12 @@ fn external_link(opts cli.Options) {
 		return
 	}
 	// A tool whose name does not say which linker it is gets its own word first
-	// (lld's `-flavor gnu`); everything else gets nothing before the link.
+	// (lld's `-flavor gnu`); everything else gets nothing before the link. The
+	// -Wl, options follow untouched: what they mean is the linker's business,
+	// and a comma between them is the separator gcc gives the tool, so
+	// -Wl,-z,now reaches it as the two words `-z now`.
 	mut invocation := cli.external_linker_prefix(opts.external_linker)
+	invocation << cli.external_linker_arguments(opts.link_args)
 	invocation << args
 	// A file an earlier link left is not allowed to stand in for one this run
 	// did not write: the run reports a failure and the output has to agree.

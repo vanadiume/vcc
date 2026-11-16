@@ -62,6 +62,13 @@ pub:
 	// input to a link is not one of these, and neither is a link unit: both
 	// leave the container to somebody else.
 	link_kind linux.LinkKind = .program
+	// link_options are the -Wl, options the link was asked for. They change the
+	// container this single unit is wrapped in, not the code: the stack
+	// permission, the BIND_NOW promise, and the RELRO segment. A unit that is
+	// one input to a link carries none of them, because the linker writes the
+	// container from its own options and this unit contributes only code and
+	// data.
+	link_options linux.LinkOptions
 	// libraries are the -l names the command line gave, in the order they were
 	// written: a program that calls a function out of a shared library other
 	// than the C library has to name that library for the loader to map it.
@@ -339,6 +346,9 @@ struct Emitter {
 	// link_kind is which kind of file the wrapper writes, and nothing before
 	// the wrapper reads it.
 	link_kind linux.LinkKind
+	// link_options are the -Wl, options the wrapper is written with. Like
+	// link_kind this is the container's fact and not the code's.
+	link_options linux.LinkOptions
 	// internal is every top-level object this unit defines with internal
 	// linkage: the names the declaration wrote `static`. A reference to one is
 	// direct under any addressing, because no other object can define the name
@@ -731,6 +741,7 @@ pub fn emit(unit ast.TranslationUnit, opts Options) Result {
 		pic:                  opts.pic
 		ignore_natives:       opts.ignore_natives
 		link_kind:            opts.link_kind
+		link_options:         opts.link_options
 		internal:             internal
 		unit:                 unit
 		libraries:            opts.libraries
@@ -822,6 +833,7 @@ pub fn start_stub(entry string, opts Options) Result {
 		entry:                if entry == '' { 'main' } else { entry }
 		start_only:           true
 		link_kind:            opts.link_kind
+		link_options:         opts.link_options
 		no_default_libraries: opts.no_default_libraries
 	}
 	emitter.emit_start() or {
@@ -1239,7 +1251,7 @@ fn (mut e Emitter) build() ![]u8 {
 			return error('cannot lay out the object')
 		}
 	} else {
-		bytes = elf.write(e.program, e.target, e.link_kind) or {
+		bytes = elf.write_options(e.program, e.target, e.link_kind, e.link_options) or {
 			e.diagnostics << problem(1, 1, 'internal: the image could not be laid out: ${err.msg()}')
 			return error('cannot lay out the image')
 		}
