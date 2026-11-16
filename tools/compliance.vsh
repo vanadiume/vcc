@@ -49,7 +49,7 @@
 import os
 import time
 
-const tests_floor = 1188
+const tests_floor = 1189
 const checks_floor = 906
 
 // Every suite compiles with the same head and tail, and the standard between

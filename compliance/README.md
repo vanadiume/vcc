@@ -101,11 +101,11 @@ Such a test is measured twice over: gcc compiles it, runs it and it exits 0, so
 the program is right, and this compiler's refusal is the gap. The program is a
 check with its own assertions, so the day this compiler takes it the test runs,
 and a gap that compiles is reported by name as a line that can go: the corpus
-does not keep a gap that has closed. No test carries the line now: the last
-one, under `iso/c99`, was a structure a function type names before its own
-definition, which is a shape V's generated C writes, and it compiles.
-HUGE_VALL and the division of a `long double _Complex` and its negation closed
-before it.
+does not keep a gap that has closed. One test carries the line: 1156, a
+block-scope static object initialized with a function's address, which is an
+address constant the reader does not write into the image. Every line before it
+closed when the construct was implemented: most recently a structure a function
+type names before its own definition, which is a shape V's generated C writes.
 
 ## The GNU extensions nothing reads yet
 
