@@ -2695,6 +2695,19 @@ fn (mut p Parser) parse_brace_initializer(body bool) !BraceList {
 			p.error_at(open, 'unsupported: unterminated { opened at ${open.line}:${open.col}')
 			return error('unterminated brace initializer')
 		}
+		// A comma may be the last thing written before the closing brace: C99
+		// 6.7.8p1 makes `initializer-list ,` a list, and gcc accepts
+		// `{ 1, 2, 3, }` in every mode. The `}` check below only runs once an
+		// element has been read, so the comma's `continue` came back here with
+		// `}` as the next token and the element arms refused it. It is read
+		// here, where the enumerator list reads its own trailing comma.
+		if p.at_punct('}') {
+			p.next()
+			return BraceList{
+				elements: elements
+				at:       open
+			}
+		}
 		designators := p.brace_designators() or {
 			p.recover_brace_list(open, list_body)
 			return error('brace designator')
@@ -3316,6 +3329,13 @@ fn (mut p Parser) parse_address_initializer() ![]ast.AddressInit {
 		if t.kind == .eof {
 			p.error_at(open, 'unsupported: unterminated { opened at ${open.line}:${open.col}')
 			return error('unterminated brace initializer')
+		}
+		// A comma before the closing brace ends the list: C99 6.7.8p1 has
+		// `initializer-list ,` for a pointer list too. Read at the top of the
+		// loop because that is where the comma's `continue` arrives.
+		if t.kind == .punct && t.text == '}' {
+			p.next()
+			return elements
 		}
 		if t.kind == .punct && t.text == '{' {
 			p.error_at(t, 'unsupported: a nested brace initializer is not implemented')
