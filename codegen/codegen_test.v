@@ -4832,6 +4832,41 @@ fn test_a_call_of_a_structure_type_is_returned_by_value() {
 	assert run_image(emitted.bytes) == 0
 }
 
+// A GNU vector is an object of its components: brace-initialized one component
+// at a time, indexed as an lvalue, sized and aligned to the bytes the attribute
+// named, and passed and returned as the eightbytes its components make. Measured
+// on gcc 16.2.1, the program below exits 0.
+fn test_a_vector_is_an_object_of_its_components() {
+	source := 'typedef float v4 __attribute__((vector_size(16)));' +
+		' typedef int v4i __attribute__((vector_size(16)));' +
+		' typedef double v2 __attribute__((vector_size(16)));' +
+		' v4 make(void) { v4 a = {10, 20, 30, 40}; return a; }' +
+		' int take(v4 a) { return (int)a[3]; }' +
+		' v4i makei(void) { v4i a = {1, 2, 3, 4}; return a; }' +
+		' v2 maked(void) { v2 a = {1.5, 2.5}; return a; }' +
+		' int main(void) {' +
+		' v4 a = {1, 2, 3, 4};' +
+		' if (sizeof(v4) != 16 || __alignof__(v4) != 16) return 1;' +
+		' if (sizeof(a[0]) != 4 || __alignof__(v4i) != 16) return 2;' +
+		' if ((int)a[0] != 1 || (int)a[2] != 3) return 3;' +
+		' a[2] = 9;' +
+		' if ((int)a[2] != 9) return 4;' +
+		' v4 b = make();' +
+		' if ((int)b[0] != 10 || take(b) != 40) return 5;' +
+		' v4 c = a + b;' +
+		' if ((int)c[0] != 11 || (int)c[2] != 39) return 6;' +
+		' v4i i = makei();' +
+		' if (i[3] != 4) return 7;' +
+		' v2 d = maked();' +
+		' if ((int)(d[0] * 2.0) != 3 || (int)(d[1] * 2.0) != 5) return 8;' +
+		' v4 e = {0};' +
+		' if ((int)e[3] != 0) return 9;' +
+		' return 0; }'
+	emitted := emit(translation_unit(source), Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 0
+}
+
 // The same hand-over through a call written to a pointer: the class is the type
 // the pointer carries, so `p()` hands the object back the way a named call
 // does, whether it is returned, assigned or read for a member. Measured on gcc

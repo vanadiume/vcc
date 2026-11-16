@@ -183,6 +183,15 @@ struct Slot {
 	// many bytes the array is. count is -1 for one, so this is the flag that says
 	// the name is an array at all; width is the size of one element.
 	vla bool
+	// vector is set for a slot holding a GNU vector: count components of width
+	// bytes, whose whole object is vector_bytes bytes. The components are read
+	// and written one at a time through the element path an array uses, which is
+	// why the slot keeps the component width and the count; the object is what
+	// passing, returning and assigning copies, which is why its size travels
+	// beside them. A vector is not an array for any other rule: it does not
+	// decay to a pointer and its type is not adjusted to one.
+	vector       bool
+	vector_bytes int
 	// vla_base and vla_size are the frame slots those two words live in. They are
 	// offsets rather than Slots because a Slot cannot contain one of itself, and
 	// they are reserved for the declaration and never given out again.
@@ -1785,7 +1794,7 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 			if stacked % 2 == 1 {
 				stacked++
 			}
-			object := e.declare(param.name, param.typ, 0, 0, 0, param.line, param.col, false)!
+			object := e.declare(param.name, param.typ, 0, 0, 0, param.line, param.col, false, param.resolved)!
 			at := 2 * e.target.word_size + stacked * e.target.word_size
 			e.copy_stack_object(object, at, param.line, param.col)!
 			stacked += 4
@@ -1801,7 +1810,7 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 			if stacked % 2 == 1 {
 				stacked++
 			}
-			object := e.declare(param.name, param.typ, 0, 0, 0, param.line, param.col, false)!
+			object := e.declare(param.name, param.typ, 0, 0, 0, param.line, param.col, false, param.resolved)!
 			at := 2 * e.target.word_size + stacked * e.target.word_size
 			e.copy_stack_object(object, at, param.line, param.col)!
 			stacked += 2
@@ -1816,7 +1825,7 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 			// Measured on gcc 16.2.1: every width is passed in xmm registers
 			// and nothing goes on the stack while the file has room.
 			decimal_width := decimal_width_of(param.resolved)
-			object := e.declare(param.name, param.typ, 0, 0, 0, param.line, param.col, false)!
+			object := e.declare(param.name, param.typ, 0, 0, 0, param.line, param.col, false, param.resolved)!
 			base := e.frame_pointer(param.line, param.col)!
 			if decimal_width == 16 {
 				if e.target.float_arg_reg(doubles) != none && e.target.float_arg_reg(doubles + 1) != none {
@@ -1894,7 +1903,7 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 				e.diagnostics << problem(param.line, param.col, 'unsupported: the parameter ${param.name} is declared ${param.typ}, and the pair it is passed in takes two argument registers at once, which this machine has not got at position ${integers}: the convention passes such a pair in memory, which this back end does not do')
 				return error('128-bit parameter in memory')
 			}
-			object := e.declare(param.name, param.typ, 0, 0, 0, param.line, param.col, false)!
+			object := e.declare(param.name, param.typ, 0, 0, 0, param.line, param.col, false, param.resolved)!
 			base := e.frame_pointer(param.line, param.col)!
 			word := e.target.word_size
 			e.append(e.target.store_slot(base, object.offset, registers[0], word)!)
@@ -1907,7 +1916,25 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 		// that many bytes: the value is copied into the slot rather than
 		// converted into it.
 		if class.bytes > 0 {
-			object := e.declare(param.name, param.typ, 0, class.bytes, 0, param.line, param.col, false)!
+			// A vector parameter is storage for its components, so its slot keeps
+			// the width of one component and how many there are: `a[i]` in the
+			// body scales by the component and not by the whole object. The
+			// bytes the class names travel beside them and are what the incoming
+			// eightbytes are stored into.
+			mut written := param.typ
+			mut count := 0
+			mut stride := 0
+			mut object_bytes := class.bytes
+			if param.resolved.is_vector() {
+				if element := param.resolved.element() {
+					written = element.storage_spelling()
+					count = param.resolved.count
+					stride = e.representation.size_of(element) or { 0 }
+					object_bytes = 0
+				}
+			}
+			object := e.declare(param.name, written, count, object_bytes, stride, param.line, param.col,
+				false, param.resolved)!
 			stacked_at := 2 * e.target.word_size + stacked * e.target.word_size
 			if class.count > 2 {
 				// An object of more than two eightbytes is passed in memory: the
@@ -1973,13 +2000,13 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 		// counted. Reason through the classifier: an aggregate of bytes was
 		// answered above, so an aggregate reaching here has none.
 		if e.known_aggregate_bytes(param.resolved) != none {
-			_ := e.declare(param.name, param.typ, 0, 0, 0, param.line, param.col, true)!
+			_ := e.declare(param.name, param.typ, 0, 0, 0, param.line, param.col, true, param.resolved)!
 			continue
 		}
 		// A parameter is one value in a register or one on the stack, and an
 		// object of an aggregate type passed by value is neither: its spelling
 		// reaches `type_width` and is refused there by name.
-		slot := e.declare(param.name, param.typ, 0, 0, 0, param.line, param.col, false)!
+		slot := e.declare(param.name, param.typ, 0, 0, 0, param.line, param.col, false, param.resolved)!
 		// The arguments a sequence ran out for arrive on the stack, and where
 		// they are is the caller's side of the same rule: the first one the
 		// caller pushed is at the return address, so sixteen bytes past the
@@ -2900,7 +2927,7 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 	// layout of an empty structure is a size the spelling has no width for.
 	measured := e.known_aggregate_bytes(stmt.resolved()) != none || e.storage_of_no_bytes(stmt.resolved())
 	slot := e.declare(stmt.decl_name(), stmt.decl_type(), stmt.decl_count(), stmt.bytes(), stmt.decl_stride(),
-		stmt.line, stmt.col, measured)!
+		stmt.line, stmt.col, measured, stmt.resolved())!
 	// What makes an object an argument list is the type it was declared with,
 	// because that is what says how the four operations over a list may treat it.
 	if abi.is_argument_list(stmt.resolved()) {
@@ -2923,6 +2950,24 @@ fn (mut e Emitter) emit_var_decl(stmt ast.Stmt) !void {
 	init := stmt.initializer()
 	if init.is_none() {
 		return
+	}
+	if slot.vector {
+		// A vector declaration's value is another vector: a copy of one object or
+		// the bytes a call handed back. A brace list never reaches this point,
+		// because it was lowered to one element store per component, and a scalar
+		// initializer is not a vector and is refused rather than converted.
+		if !e.expr_type(init).is_vector() {
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.decl_name()} is a vector, and its initializer is not a vector value')
+			return error('non-vector initializer')
+		}
+		declared := ast.Stmt{
+			kind:   .assign
+			target: stmt.decl_name()
+			expr:   init
+			line:   stmt.line
+			col:    stmt.col
+		}
+		return e.assign_vector_local(declared, slot, 0)
 	}
 	if slot.long_double && slot.count == 0 {
 		// An object of the extended type declared with a value: the value is
@@ -3089,6 +3134,17 @@ fn (mut e Emitter) emit_assign(stmt ast.Stmt, depth int) !void {
 		}
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.target} is assigned to, and no local of that name is in scope')
 		return error('unknown assignment target')
+	}
+	if target.vector {
+		// A vector assignment is the bytes of another vector written into this
+		// object: a copy of one, or what a call handed back in the registers its
+		// class names. A value that is not a vector is refused by name rather than
+		// stored as one component.
+		if !e.expr_type(expr).is_vector() {
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.target} is a vector, and the value assigned to it is not a vector')
+			return error('non-vector value')
+		}
+		return e.assign_vector_local(stmt, target, depth)
 	}
 	if target.decimal && target.count == 0 {
 		// The same store a declaration of a decimal type makes: a constant of
@@ -3427,6 +3483,23 @@ fn (mut e Emitter) assign_object_local(stmt ast.Stmt, target Slot, depth int) !v
 	return e.assign_object(address, target.width, expr_value, stmt.line, stmt.col, depth)
 }
 
+// assign_vector_local copies a vector value into a vector object of this frame.
+// The destination is the storage at the declaration's slot, and the value is the
+// bytes of another vector object: a copy of one, or what a call handed back in the
+// registers its class names. The width is the size of the whole object and not of
+// one component, because what travels is the vector and not an element of it.
+fn (mut e Emitter) assign_vector_local(stmt ast.Stmt, target Slot, depth int) !void {
+	if stmt.expr.is_none() {
+		return error('assignment without a value')
+	}
+	register := e.accumulator(stmt.line, stmt.col)!
+	frame := e.slot_base_register(target, stmt.line, stmt.col)!
+	e.append(e.target.address_of_slot(frame, i32(target.offset), register))
+	address := e.value_slot(depth)
+	e.store_accumulator(address, stmt.line, stmt.col)!
+	return e.assign_object(address, target.vector_bytes, stmt.expr, stmt.line, stmt.col, depth)
+}
+
 // assign_object_global writes an object into a top-level object: the destination's
 // address is in the image, so it is a reference the layout fills in rather than an
 // offset from the frame.
@@ -3662,9 +3735,26 @@ fn (mut e Emitter) address_of_object(expr ast.Expr, depth int) !void {
 			// is what an object handed over by value is.
 			return e.emit_expr_at(expr, depth)
 		}
+		if e.expr_type(expr).is_vector() {
+			// A call hands a vector back as the bytes of its components in the
+			// registers its class names, or in the storage it lent the callee.
+			// The address of that value is the same one field_object_address
+			// leaves for any call of an object shape, so it is asked rather than
+			// a second copy of the spill being written here.
+			e.field_object_address(expr, depth)!
+			return
+		}
 	}
 	if expr.kind == .ident {
 		node := e.unit.arena.ident(expr)
+		if e.expr_type(expr).is_vector() {
+			// A vector is storage rather than a value one register holds: what a
+			// caller hands over and what a return leaves in the result registers
+			// is read from the bytes of the object, so the address of the object
+			// is what this leaves. Its slot is its first component, and a
+			// top-level one is storage in the image.
+			return e.address_of_vector(node.name, node.line, node.col)
+		}
 		e.address_of_member(node.name, ast.Expr{}, 0, false, depth, node.line, node.col)!
 		return
 	}
@@ -3715,6 +3805,27 @@ fn (mut e Emitter) address_of_object(expr ast.Expr, depth int) !void {
 	}
 	e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: an object handed over by value has to be a name, an element or a member, and this expression is not one')
 	return error('not an object')
+}
+
+// address_of_vector leaves the address of the storage a vector object occupies in
+// the accumulator. A vector is not a value one register holds: it is passed and
+// returned as the bytes of its components, so what a caller or a return needs is
+// where those bytes start. A local's slot is its first component's place in the
+// frame, and a top-level object's storage is in the image.
+fn (mut e Emitter) address_of_vector(name string, line int, col int) !void {
+	if slot := e.lookup(name) {
+		register := e.accumulator(line, col)!
+		frame := e.slot_base_register(slot, line, col)!
+		e.append(e.target.address_of_slot(frame, slot.offset, register))
+		return
+	}
+	if _ := e.global_of(name) {
+		register := e.accumulator(line, col)!
+		e.reference_object_address(register, name)
+		return
+	}
+	e.diagnostics << problem(line, col, 'unsupported: ${name} is a vector handed over by value, and no declaration of that name is in scope')
+	return error('unknown vector')
 }
 
 // aggregate_object evaluates an object of an aggregate type into storage and
@@ -5251,7 +5362,7 @@ fn (e Emitter) known_aggregate_bytes(typ types.Type) ?int {
 // element after another, and what the name is worth in an expression is the
 // address of the first of them. The block is rounded up to the machine's word
 // like every other slot, so no element straddles the end of it.
-fn (mut e Emitter) declare(name string, written string, count int, bytes int, stride int, line int, col int, measured bool) !Slot {
+fn (mut e Emitter) declare(name string, written string, count int, bytes int, stride int, line int, col int, measured bool, resolved types.Type) !Slot {
 	if e.scopes.len > 0 {
 		if name in e.scopes[e.scopes.len - 1] {
 			e.diagnostics << problem(line, col, 'unsupported: ${name} is declared twice in the same block')
@@ -5305,18 +5416,24 @@ fn (mut e Emitter) declare(name string, written string, count int, bytes int, st
 	}
 	slot := if count > 0 { e.reserve(count * width) } else { e.reserve(width) }
 	block := Slot{
-		offset:      slot.offset
-		width:       width
-		count:       count
-		floating:    bytes == 0 && e.writes_a_double(written)
-		single:      bytes == 0 && e.writes_a_float(written)
-		unsigned:    e.written_is_unsigned(written)
-		boolean:     written == '_Bool'
-		bytes:       if wide { wide_bytes } else { bytes }
-		wide:        wide
-		long_double: long_double
-		decimal:     decimal
-		complex:     e.writes_a_complex(written)
+		offset:       slot.offset
+		width:        width
+		count:        count
+		floating:     bytes == 0 && e.writes_a_double(written)
+		single:       bytes == 0 && e.writes_a_float(written)
+		unsigned:     e.written_is_unsigned(written)
+		boolean:      written == '_Bool'
+		bytes:        if wide { wide_bytes } else { bytes }
+		wide:         wide
+		long_double:  long_double
+		decimal:      decimal
+		complex:      e.writes_a_complex(written)
+		vector:       resolved.is_vector()
+		vector_bytes: if resolved.is_vector() {
+			e.representation.size_of(resolved) or { 0 }
+		} else {
+			0
+		}
 	}
 	e.scopes[e.scopes.len - 1][name] = block
 	return block

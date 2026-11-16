@@ -1265,6 +1265,13 @@ pub fn function_type(ret Type, params []Param, variadic bool, prototyped bool) T
 // declare one function.
 pub fn adjust_parameter(t Type) Type {
 	if t.kind == .array {
+		if t.vector {
+			// A GNU vector is an object and not an array for this rule:
+			// 6.7.5.3p7 turns an array parameter into a pointer to its element,
+			// and a vector parameter is handed over as the value it is, which is
+			// what the class of its components describes.
+			return t
+		}
 		mut element := t.base
 		if element == unsafe { nil } {
 			element = &Type{ ...void_type() }
