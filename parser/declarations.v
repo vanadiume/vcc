@@ -6777,6 +6777,15 @@ fn (mut p Parser) vector_type_for(element types.Type, bytes int, at tokenize.Tok
 		p.error_at(at, 'unsupported: a vector_size of ${bytes} bytes on ${element.describe()} is not an integral multiple of the size of one component')
 		return none
 	}
+	if bytes > 16 {
+		// An object of more than sixteen bytes is handed over in memory, and the
+		// memory class for a vector is not written: a 32-byte vector was passed
+		// and returned with the wrong components, which is a silent wrong value
+		// rather than a refusal. Sixteen bytes is one or two eightbytes, which is
+		// the class the back end models, and it is the width the SSE headers use.
+		p.error_at(at, 'unsupported: a vector_size of ${bytes} bytes is not implemented, and this compiler hands a vector of at most sixteen bytes over in registers')
+		return none
+	}
 	count := bytes / width
 	if count & (count - 1) != 0 {
 		p.error_at(at, 'unsupported: a vector_size of ${bytes} bytes on ${element.describe()} makes ${count} components, and that is not a power of two')

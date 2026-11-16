@@ -4832,6 +4832,15 @@ fn test_a_call_of_a_structure_type_is_returned_by_value() {
 	assert run_image(emitted.bytes) == 0
 }
 
+// A vector wider than sixteen bytes is handed over in memory, which the class
+// this back end models does not cover. It is refused at the attribute rather
+// than compiled into a program whose components arrive wrong.
+fn test_a_vector_wider_than_sixteen_bytes_is_refused() {
+	result := translation_unit_refused('typedef float v8 __attribute__((vector_size(32))); int main(void) { return 0; }')
+	assert result.diagnostics.len == 1
+	assert result.diagnostics[0].msg.contains('vector_size of 32 bytes')
+}
+
 // A GNU vector is an object of its components: brace-initialized one component
 // at a time, indexed as an lvalue, sized and aligned to the bytes the attribute
 // named, and passed and returned as the eightbytes its components make. Measured
