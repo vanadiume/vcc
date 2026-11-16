@@ -74,13 +74,37 @@ fn test_the_answers_that_need_no_search() {
 	assert query_answer(cli.parse(['-print-prog-name=nosuchprog'])!, target) == 'nosuchprog'
 }
 
-// No libgcc is linked, so the answer is the name or a path that exists, never a
-// path the linker would refuse to read.
-fn test_the_libgcc_answer_is_the_name_or_a_file() {
+// The libgcc question is the one a --link-libgcc link answers for itself, so the
+// two have to agree: a build tool that asks for the archive and puts the answer
+// on its own link line is asking for the file the link would read. On a machine
+// that keeps libgcc.a in the toolchain's directory the search has it, which is
+// not a directory a -l name goes through; a machine without one answers the bare
+// name, and the file answer names the same thing in both cases.
+fn test_the_libgcc_answer_is_the_file_a_link_takes() {
 	target := backend.host() or { panic('this test needs the host target') }
 	answer := query_answer(cli.parse(['-print-libgcc-file-name'])!, target)
-	if answer != 'libgcc.a' {
+	named := query_answer(cli.parse(['-print-file-name=libgcc.a'])!, target)
+	assert answer == named
+	if path := target.link_file('libgcc.a', []) {
+		assert answer == path, 'the link reads ${path} and the query answered ${answer}'
 		assert os.is_file(answer)
+	} else {
+		assert answer == 'libgcc.a'
+	}
+}
+
+// The files a link reads from the toolchain's own directory are answered like the
+// ones a -l name reaches: a name that is a path has to name a file that exists,
+// and a start file that only the toolchain directory holds is not a bare name.
+fn test_a_toolchain_file_answer_names_a_file() {
+	target := backend.host() or { panic('this test needs the host target') }
+	for name in ['crtbeginS.o', 'libgcc_eh.a'] {
+		answer := query_answer(cli.parse(['-print-file-name=${name}'])!, target)
+		if path := target.link_file(name, []) {
+			assert answer == path, 'the link reads ${path} and the query answered ${answer}'
+		} else {
+			assert answer == name
+		}
 	}
 }
 

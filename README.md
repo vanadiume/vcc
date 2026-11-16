@@ -176,9 +176,10 @@ The common ones:
 `./vcc -hh` prints the rest, which includes `--version`, `-fno-builtin`,
 `-nostdinc`, `-undef`, `-include`, `-imacros`, the dependency flags,
 `-dM`, `-Wclass`/`-Wno-class`, `-fbracket-depth=N`, `-fvcc-exts=`,
-`-Wpedantic`, `-femulation=NAME`, `-external-linker=NAME`, `-target` and the
-gcc `-print-` family. A flag the compiler does not implement is recorded and
-never refused, so a build system that passes one does not stop here.
+`-Wpedantic`, `-femulation=NAME`, `-external-linker=NAME`, `-target`,
+`--link-libgcc`, `-shared-libvcc`, `-shared-libgcc` and the gcc `-print-`
+family. A flag the compiler does not implement is recorded and never refused,
+so a build system that passes one does not stop here.
 
 ### The runtime archive
 
@@ -197,6 +198,19 @@ complex values is one instruction per component and stays inline.
 `libvcc.so.0`, and `-shared-libvcc` makes the image name it instead of pulling
 the archive's members in. It is refused with `-static`, with `--link-libgcc` and
 with `-shared-libgcc`, because each of those names a different runtime.
+
+`--link-libgcc` puts the toolchain's `libgcc.a` where libvcc would go: the helper
+names are libgcc's, so a program this compiler emits runs against the runtime gcc
+emits for. A division of two `__int128` values, or a product of two complex ones,
+is a call into the archive the link took. The archive is looked for where a link
+looks, and that search ends with the toolchain's own directory, so a machine with
+gcc installed needs no `-L`; a machine without one refuses the flag by name
+rather than linking a program that cannot run. `-shared-libgcc` beside it takes
+`libgcc_s.so.1` instead, and the image names that library for the loader.
+`--link-libgcc` is refused with `-shared-libvcc`, since that names the other
+runtime; `-shared-libgcc` is refused with `-static` and with `-shared-libvcc` in
+the same way, and it needs `--link-libgcc` because it is the shared form of the
+runtime that flag selects.
 
 `-nodefaultlibs` keeps the start files and takes the C library and libvcc away;
 `-nostdlib` takes the start files too, and the program leaves through the

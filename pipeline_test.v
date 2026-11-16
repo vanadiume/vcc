@@ -4554,20 +4554,16 @@ fn test_a_nostdlib_program_whose_library_the_command_line_names_runs() {
 }
 
 // The archive a link takes is this compiler's own unless --link-libgcc asked for
-// the toolchain's. The flag is experimental, so this test has a branch per kind
-// of binary rather than one answer: a build without the define never sees it, and
-// its answer is the default.
-fn test_the_runtime_archive_is_libvcc_unless_the_experimental_flag_says_otherwise() {
+// the toolchain's, and that one's shared form when -shared-libgcc is beside it.
+fn test_the_runtime_archive_is_libvcc_unless_the_link_libgcc_flag_says_otherwise() {
 	plain := cli.parse(['a.c']) or { panic(err) }
 	assert runtime_library_name(plain) == 'libvcc.a'
 	shared := cli.parse(['-shared-libvcc', 'a.c']) or { panic(err) }
 	assert runtime_library_name(shared) == 'libvcc.so'
-	$if experimental_libgcc ? {
-		asked := cli.parse(['--link-libgcc', 'a.c']) or { panic(err) }
-		assert runtime_library_name(asked) == 'libgcc.a'
-		both := cli.parse(['--link-libgcc', '-shared-libgcc', 'a.c']) or { panic(err) }
-		assert runtime_library_name(both) == 'libgcc_s.so.1'
-	}
+	asked := cli.parse(['--link-libgcc', 'a.c']) or { panic(err) }
+	assert runtime_library_name(asked) == 'libgcc.a'
+	both := cli.parse(['--link-libgcc', '-shared-libgcc', 'a.c']) or { panic(err) }
+	assert runtime_library_name(both) == 'libgcc_s.so.1'
 }
 
 // -static asks for a program with every library resolved into the file. The

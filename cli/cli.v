@@ -154,9 +154,7 @@ pub mut:
 	// toolchain's libgcc rather than this compiler's own libvcc. The two define
 	// the same helper names, so a link takes one of them and never both, and the
 	// flag is how a program built by another compiler's runtime is measured
-	// against one built by this one. It is experimental: only a binary compiled
-	// with -d experimental_libgcc accepts the flag, and every other binary
-	// refuses it by name rather than recording it.
+	// against one built by this one.
 	link_libgcc bool
 	// shared_libvcc is -shared-libvcc: the runtime a program links is this
 	// compiler's libvcc.so rather than libvcc.a, so the program names the
@@ -166,9 +164,9 @@ pub mut:
 	// runtime, or a link with no loader at all, are refused beside it.
 	shared_libvcc bool
 	// shared_libgcc is -shared-libgcc: with --link-libgcc, the runtime is
-	// libgcc_s.so.1 rather than libgcc.a. It is experimental for the reason
-	// --link-libgcc is, and it needs that flag because libgcc_s is the shared
-	// form of the runtime that flag selects rather than a runtime of its own.
+	// libgcc_s.so.1 rather than libgcc.a. It needs that flag because libgcc_s
+	// is the shared form of the runtime that flag selects rather than a runtime
+	// of its own.
 	shared_libgcc bool
 	preprocess    bool
 	// print_ast stops after the tree is built: nothing is emitted and nothing is
@@ -452,16 +450,15 @@ pub fn parse(args []string) !Options {
 		} else if arg == '-nodefaultlibs' {
 			opts.nodefaultlibs = true
 		} else if arg == '-shared-libvcc' || arg == '--shared-libvcc' {
-			// Not experimental: this is this compiler's own runtime in its
-			// shared form, and every binary this tree builds can name it.
+			// This compiler's own runtime in its shared form, which every
+			// binary this tree builds can name.
 			opts.shared_libvcc = true
 		} else if arg == '-shared-libgcc' || arg == '--shared-libgcc' {
 			opts.shared_libgcc = true
 		} else if arg == '-link-libgcc' || arg == '--link-libgcc' {
 			// Recorded here and judged once the whole line has been read, so a
 			// line naming two runtimes is told about the pair rather than about
-			// whichever flag came first. V's -d names a comptime identifier, so
-			// the define is spelled experimental_libgcc.
+			// whichever flag came first.
 			opts.link_libgcc = true
 		} else if arg == '-undef' {
 			opts.undef_builtins = true
@@ -622,26 +619,14 @@ pub fn parse(args []string) !Options {
 	}
 	// The runtime flags are judged here, in this order, rather than where each
 	// one was read. Two runtimes on one line is a pair that cannot mean
-	// anything whatever the binary is, and it is asked first so that the
-	// answer names both flags; a flag the binary cannot honor is refused once
-	// the line is known to name one runtime, so a build that mixed an
-	// experimental flag with a flag it cannot have is told about the pair.
+	// anything, and it is asked first so that the answer names both flags.
 	if refusal := opts.runtime_conflict_refusal() {
 		return error(refusal)
 	}
-	$if experimental_libgcc ? {
-		// -shared-libgcc is the shared form of the runtime --link-libgcc
-		// selects, so on its own it names nothing a link could take.
-		if opts.shared_libgcc && !opts.link_libgcc {
-			return error('-shared-libgcc needs --link-libgcc, which selects the runtime this flag makes shared')
-		}
-	} $else {
-		if opts.shared_libgcc {
-			return error('-shared-libgcc needs a compiler built with -d experimental_libgcc: this binary links its own libvcc')
-		}
-		if opts.link_libgcc {
-			return error('--link-libgcc needs a compiler built with -d experimental_libgcc: this binary links its own libvcc')
-		}
+	// -shared-libgcc is the shared form of the runtime --link-libgcc selects,
+	// so on its own it names nothing a link could take.
+	if opts.shared_libgcc && !opts.link_libgcc {
+		return error('-shared-libgcc needs --link-libgcc, which selects the runtime this flag makes shared')
 	}
 	return opts
 }
@@ -859,9 +844,10 @@ pub fn usage(all bool) string {
 	out << '  --link-libgcc         the runtime archive a program links is the'
 	out << "                        toolchain's libgcc rather than this compiler's"
 	out << '                        libvcc. The two define the same helpers, so a'
-	out << '                        link takes one of them. Experimental: only a'
-	out << '                        compiler built with -d experimental_libgcc'
-	out << '                        accepts the flag, and another binary refuses it'
+	out << '                        link takes one of them. The archive is looked'
+	out << '                        for where a link looks, which includes the'
+	out << "                        toolchain's own directory, and a machine that"
+	out << '                        has none refuses the flag by name'
 	out << "  -shared-libvcc        the runtime a program links is this compiler's"
 	out << '                        libvcc.so rather than libvcc.a: the loader maps'
 	out << '                        it, and the image records the name the file'
@@ -872,9 +858,9 @@ pub fn usage(all bool) string {
 	out << '  -shared-libgcc        with --link-libgcc, the runtime a program links'
 	out << '                        is libgcc_s.so.1 rather than libgcc.a. It needs'
 	out << '                        --link-libgcc, which selects the runtime this'
-	out << '                        flag makes shared, and it is experimental in the'
-	out << '                        same way: only a compiler built with'
-	out << '                        -d experimental_libgcc accepts it'
+	out << '                        flag makes shared, and it is refused with'
+	out << '                        -static, because libgcc_s is a library the'
+	out << '                        loader maps and a static program names none'
 	out << ''
 	out << 'Query options, which answer a question and stop without compiling (gcc'
 	out << 'spells these the same way; each needs no input file and exits 0):'
