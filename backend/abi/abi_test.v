@@ -44,6 +44,63 @@ fn test_two_doubles_are_two_floating_registers() {
 	assert answer.second_floating
 }
 
+// A `float` is an SSE class the way a `double` is, which is what gcc does and
+// what an object of one or two floats shows when it is linked against a gcc-built
+// caller: the eightbyte travels in xmm0 and not in the general file.
+fn test_a_float_member_makes_an_eightbyte_floating() {
+	one := class(types.struct_type('one_float', [
+		member('x', types.float_type()),
+	]))
+	assert one.bytes == 4
+	assert one.count == 1
+	assert one.first_floating
+	assert !one.second_floating
+	two := class(types.struct_type('two_floats', [
+		member('x', types.float_type()),
+		member('y', types.float_type()),
+	]))
+	assert two.bytes == 8
+	assert two.count == 1
+	assert two.first_floating
+	assert !two.second_floating
+	mixed := class(types.struct_type('float_then_double', [
+		member('f', types.float_type()),
+		member('d', types.double_type()),
+	]))
+	assert mixed.bytes == 16
+	assert mixed.count == 2
+	assert mixed.first_floating
+	assert mixed.second_floating
+}
+
+// The return sequence is numbered per class, so the integer half of an object
+// whose first eightbyte is SSE is the first general result register. Measured on
+// gcc 16.2.1: `struct { double d; long i; }` comes back in xmm0 and rax, and
+// `struct { long i; double d; }` in rax and xmm0.
+fn test_the_second_eightbyte_is_numbered_within_its_own_class() {
+	sse_then_integer := class(types.struct_type('double_then_long', [
+		member('d', types.double_type()),
+		member('i', types.long_type()),
+	]))
+	assert sse_then_integer.count == 2
+	assert sse_then_integer.first_floating
+	assert !sse_then_integer.second_floating
+	assert sse_then_integer.ordinal(1) == 0
+	integer_then_sse := class(types.struct_type('long_then_double', [
+		member('i', types.long_type()),
+		member('d', types.double_type()),
+	]))
+	assert integer_then_sse.count == 2
+	assert !integer_then_sse.first_floating
+	assert integer_then_sse.second_floating
+	assert integer_then_sse.ordinal(1) == 0
+	both_floating := class(types.struct_type('two_doubles_return', [
+		member('a', types.double_type()),
+		member('b', types.double_type()),
+	]))
+	assert both_floating.ordinal(1) == 1
+}
+
 // A complex value has the shape of a struct of its two components, so the class
 // is the one that shape makes. Measured on gcc 16.2.1 across two translation
 // units, a gcc-built caller and a separately gcc-built callee linked and run:

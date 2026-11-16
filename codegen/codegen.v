@@ -1595,18 +1595,9 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 		// A function may hand an object of an aggregate type back, and the value
 		// comes back in the register the class names rather than converted. An
 		// object larger than one eightbyte is two registers or a copy in memory,
-		// which is the half of this that this compiler does not hand over.
-		//
-		// A floating-class object smaller than a word is one this back end
-		// refuses, because it reads such an object as eight bytes; the one
-		// exception is an object that holds a decimal, which is four bytes in
-		// that class and whose four bytes are the whole of the value gcc hands
-		// back in the low half of xmm0.
-		if ret_class.first_floating && ret_class.bytes < e.target.word_size
-			&& !e.type_contains_decimal(decl.ret_type) {
-			e.diagnostics << problem(decl.line, decl.col, 'unsupported: ${decl.name} returns ${decl.ret}, which is an object of ${ret_class.bytes} bytes whose class is the floating-point one, and this compiler moves such an object as eight bytes')
-			return error('aggregate floating class width')
-		}
+		// which is the half of this that this compiler does not hand over. A
+		// floating class one eightbyte wide is a double or one or two floats,
+		// and the return path moves each of them at its own width.
 	} else if e.writes_a_128(decl.ret) {
 		// A 128-bit type is the third shape a value leaves in, and the only one
 		// that needs nothing worked out here: the pair goes back in two fixed
@@ -1897,14 +1888,14 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 			}
 			if class.first_floating {
 				if register := e.target.float_arg_reg(doubles) {
-					e.store_double_register(object, register, param.line, param.col)!
+					e.store_floating_object(object, register, class.bytes, param.line, param.col)!
 					doubles++
 					continue
 				}
 				double_register := e.float_accumulator(param.line, param.col)!
 				base := e.frame_pointer(param.line, param.col)!
 				e.append(e.target.load_double_slot(base, stacked_at, double_register)!)
-				e.store_double_register(object, double_register, param.line, param.col)!
+				e.store_floating_object(object, double_register, class.bytes, param.line, param.col)!
 				stacked++
 				continue
 			}
@@ -2571,32 +2562,44 @@ fn (mut e Emitter) emit_return(stmt ast.Stmt) !void {
 		// The value is an object, and the machine hands it back as its bytes in
 		// the registers the classes name: the address of the object is taken and
 		// each eightbyte is read from it, which is the same bytes a caller reads
-		// out of those registers. The first eightbyte of a pair goes into the
-		// register a value of its class comes back in and the second into the one
-		// after it, so the two files are numbered apart and both are read here.
-		// The object is evaluated once and its address parked, rather than a
-		// second time for the first eightbyte: an expression that is not
-		// already an object, such as a complex sum, has to build one, and
-		// building it again for the second read would use the register the
-		// first read left the second eightbyte in.
+		// out of those registers. An eightbyte goes into the register whose
+		// number is how many eightbytes of its own class come before it, so the
+		// two sequences are numbered apart. The object is evaluated once and its
+		// address parked, rather than a second time for the first eightbyte: an
+		// expression that is not already an object, such as a complex sum, has
+		// to build one, and building it again for the second read would use the
+		// register the first read left the second eightbyte in.
 		address := e.value_slot(0)
 		e.object_hand_over_address(expr, e.return_class, 0)!
 		e.store_accumulator(address, stmt.line, stmt.col)!
-		if e.return_class.count == 2 {
-			// The second eightbyte is read first and eight bytes further in, and
-			// the object's address is read again for the first one, because the
-			// address travels in the register the first general eightbyte goes
-			// back in.
-			e.load_accumulator(address, stmt.line, stmt.col)!
-			base := e.accumulator(stmt.line, stmt.col)!
-			e.append(e.target.add_immediate(base, e.target.word_size))
-			e.load_return_eightbyte(base, 1, e.return_class.bytes - e.target.word_size,
-				e.return_class.second_floating, stmt.line, stmt.col)!
-		}
+		first_width := low_eightbyte_width(e.return_class.bytes, e.target.word_size)
+		second_width := e.return_class.bytes - e.target.word_size
 		e.load_accumulator(address, stmt.line, stmt.col)!
 		base := e.accumulator(stmt.line, stmt.col)!
-		e.load_return_eightbyte(base, 0, low_eightbyte_width(e.return_class.bytes, e.target.word_size),
-			e.return_class.first_floating, stmt.line, stmt.col)!
+		if e.return_class.count == 2 && !e.return_class.second_floating
+			&& e.return_class.first_floating {
+			// The integer half is the first general eightbyte, so it goes back
+			// in the register the object's address is in. The floating half is
+			// read first and the address advanced after it, which leaves the
+			// integer in the result register and the floating value in xmm0.
+			e.load_return_eightbyte(base, 0, first_width, e.return_class.first_floating,
+				stmt.line, stmt.col)!
+			e.append(e.target.add_immediate(base, e.target.word_size))
+			e.load_return_eightbyte(base, 0, second_width, false, stmt.line, stmt.col)!
+		} else {
+			if e.return_class.count == 2 {
+				// The second eightbyte is read first and eight bytes further in,
+				// and the object's address is read again for the first one,
+				// because the address travels in the register the first general
+				// eightbyte goes back in.
+				e.append(e.target.add_immediate(base, e.target.word_size))
+				e.load_return_eightbyte(base, e.return_class.ordinal(1), second_width,
+					e.return_class.second_floating, stmt.line, stmt.col)!
+				e.load_accumulator(address, stmt.line, stmt.col)!
+			}
+			e.load_return_eightbyte(base, 0, first_width, e.return_class.first_floating,
+				stmt.line, stmt.col)!
+		}
 		e.append(e.target.frame_epilogue())
 		return
 	}
@@ -3408,7 +3411,7 @@ fn (mut e Emitter) assign_object(address Slot, width int, expr ast.Expr, line in
 				class.first_floating, call.line, call.col)!
 			if class.count == 2 {
 				e.append(e.target.add_immediate(base, e.target.word_size))
-				e.store_return_eightbyte(base, 1, class.bytes - e.target.word_size,
+				e.store_return_eightbyte(base, class.ordinal(1), class.bytes - e.target.word_size,
 					class.second_floating, call.line, call.col)!
 			}
 			return
@@ -3768,7 +3771,7 @@ fn (mut e Emitter) field_object_address(expr ast.Expr, depth int) !void {
 				class.first_floating, call.line, call.col)!
 			if class.count == 2 {
 				e.append(e.target.add_immediate(base, e.target.word_size))
-				e.store_return_eightbyte(base, 1, class.bytes - e.target.word_size,
+				e.store_return_eightbyte(base, class.ordinal(1), class.bytes - e.target.word_size,
 					class.second_floating, call.line, call.col)!
 			}
 			register := e.accumulator(call.line, call.col)!
@@ -6256,6 +6259,30 @@ fn (mut e Emitter) float_scratch(line int, col int) !backend.Register {
 fn (mut e Emitter) store_double_register(slot Slot, register backend.Register, line int, col int) !void {
 	base := e.slot_base_register(slot, line, col)!
 	e.append(e.target.store_double_slot(base, slot.offset, register)!)
+}
+
+// store_floating_object writes the register a one-eightbyte floating-class
+// object arrives in into the object's storage. The object is eight bytes when it
+// is a double or a pair of floats, and four when it is one float: an eight-byte
+// store into a four-byte slot would write the field after it.
+fn (mut e Emitter) store_floating_object(slot Slot, register backend.Register, bytes int, line int, col int) !void {
+	if bytes < e.target.word_size {
+		e.store_single_register(slot, register, line, col)!
+		return
+	}
+	e.store_double_register(slot, register, line, col)!
+}
+
+// load_floating_object reads the bytes of a one-eightbyte floating-class object
+// into a floating-point register. A double and a pair of floats are eight bytes
+// and a single float is four, and the four-byte read leaves the rest of the
+// register cleared rather than taking the bytes past the object.
+fn (mut e Emitter) load_floating_object(base backend.Register, bytes int, register backend.Register) !void {
+	if bytes < e.target.word_size {
+		e.append(e.target.load_float_indirect(base, register)!)
+		return
+	}
+	e.append(e.target.load_double_indirect(base, register)!)
 }
 
 // store_double_accumulator writes the floating-point accumulator into a slot,
@@ -12115,7 +12142,7 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 			base := e.accumulator(line, col)!
 			if class.first_floating {
 				double_register := e.float_accumulator(line, col)!
-				e.append(e.target.load_double_indirect(base, double_register)!)
+				e.load_floating_object(base, class.bytes, double_register)!
 				e.store_double_accumulator(e.value_slot(depth + i), line, col)!
 				continue
 			}
@@ -12612,12 +12639,12 @@ struct ArgPlace {
 // store_return_eightbyte writes one of the registers a call handed its object back
 // in into storage the caller has the address of: the same two files the return read
 // from, in the same order.
-fn (mut e Emitter) store_return_eightbyte(base backend.Register, offset int, width int, floating bool, line int, col int) !void {
+fn (mut e Emitter) store_return_eightbyte(base backend.Register, ordinal int, width int, floating bool, line int, col int) !void {
 	// base is the address the eightbyte is stored at, which the caller has already
-	// advanced for the second one of a pair; offset only says which of the two it
-	// is, because that is the register the value came back in.
+	// advanced for the second one of a pair; ordinal is its place in the return
+	// sequence of its own class, which is the register the value came back in.
 	if floating {
-		value := if offset == 0 {
+		value := if ordinal == 0 {
 			e.float_accumulator(line, col)!
 		} else {
 			e.target.float_scratch() or {
@@ -12635,7 +12662,7 @@ fn (mut e Emitter) store_return_eightbyte(base backend.Register, offset int, wid
 		e.append(e.target.store_double_indirect(base, value)!)
 		return
 	}
-	value := if offset == 0 { e.accumulator(line, col)! } else { e.remainder(line, col)! }
+	value := if ordinal == 0 { e.accumulator(line, col)! } else { e.remainder(line, col)! }
 	if !machine_width_is_a_move(width) {
 		// An object narrower than a word: the low bytes of the register are the
 		// whole of it, and only those bytes may be written.
@@ -12651,14 +12678,14 @@ fn (mut e Emitter) store_return_eightbyte(base backend.Register, offset int, wid
 // number of eightbytes of that class before this one, which is why the first read
 // here is always register zero and the second is register zero or one of the file its
 // class names.
-fn (mut e Emitter) load_return_eightbyte(base backend.Register, offset int, width int, floating bool, line int, col int) !void {
+fn (mut e Emitter) load_return_eightbyte(base backend.Register, ordinal int, width int, floating bool, line int, col int) !void {
 	// base is the address the eightbyte is read from, which the caller has already
-	// advanced for the second one of a pair; offset only says which of the two it is,
-	// because that is the register the value goes back in. The general file's result
-	// registers are the accumulator and the one beside it, and the floating file's are
-	// its first register and the one beside it.
+	// advanced for the second one of a pair; ordinal is its place in the return
+	// sequence of its own class, which is the register the value goes back in. The
+	// general file's result registers are the accumulator and the one beside it, and
+	// the floating file's are its first register and the one beside it.
 	if floating {
-		register := if offset == 0 {
+		register := if ordinal == 0 {
 			e.float_accumulator(line, col)!
 		} else {
 			e.target.float_scratch() or {
@@ -12678,7 +12705,7 @@ fn (mut e Emitter) load_return_eightbyte(base backend.Register, offset int, widt
 	// The first general eightbyte goes into the accumulator last, because the address
 	// it is read through is in the accumulator too and reading into the register one
 	// has just advanced would read from the value rather than from the object.
-	register := if offset == 0 { e.accumulator(line, col)! } else { e.remainder(line, col)! }
+	register := if ordinal == 0 { e.accumulator(line, col)! } else { e.remainder(line, col)! }
 	if !machine_width_is_a_move(width) {
 		// An object narrower than a word is read a chunk at a time, so the read
 		// does not take up the bytes after it.
@@ -12972,12 +12999,10 @@ fn (e Emitter) call_widths(call ast.Call) []int {
 fn (mut e Emitter) passed_width(call ast.Call, widths []int, position int, arg ast.Expr, floating bool) !int {
 	// An object of an aggregate type is the parameter's own type rather than a
 	// value of some width: the two are the same type or the type checker refused
-	// the call, and what travels is the object's bytes.
+	// the call, and what travels is the object's bytes. A floating-class object
+	// smaller than a word is a single float, and the moves that carry it take
+	// four bytes rather than eight.
 	if class := e.aggregate_argument(call, position) {
-		if class.first_floating && class.bytes != e.target.word_size {
-			e.diagnostics << problem(e.expr_line(arg), e.expr_col(arg), 'unsupported: argument ${position + 1} of the call to ${call.name} is an object of ${class.bytes} bytes whose class is the floating-point one, and this compiler moves such an object as eight bytes')
-			return error('aggregate floating class width')
-		}
 		return class.bytes
 	}
 	if floating {
@@ -15078,8 +15103,8 @@ fn (mut e Emitter) emit_complex_call(dest Slot, call ast.Call, depth int) !void 
 	e.store_return_eightbyte(base, 0, e.target.word_size, class.first_floating, call.line, call.col)!
 	if class.count == 2 {
 		e.append(e.target.add_immediate(base, e.target.word_size))
-		e.store_return_eightbyte(base, 1, class.bytes - e.target.word_size, class.second_floating,
-			call.line, call.col)!
+		e.store_return_eightbyte(base, class.ordinal(1), class.bytes - e.target.word_size,
+			class.second_floating, call.line, call.col)!
 	}
 }
 
