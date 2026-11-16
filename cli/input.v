@@ -74,17 +74,14 @@ pub fn (kind InputKind) describe() string {
 
 // input_refusal is the message for an input this run will not read, and the one
 // place the wording lives. It names the construct and the path, the way the
-// other refusals here do, and says what the run was doing instead: an object or
-// an archive is read by a link, and the options that stop before one read a
-// single source file. The file is fine; the run reached a kind of input its
-// options have nothing to do with.
+// other refusals here do, and says what the run was doing instead: an object, an
+// archive or a shared object is read by a link, and the options that stop before
+// one read a single source file. The file is fine; the run reached a kind of
+// input its options have nothing to do with.
 pub fn input_refusal(path string, kind InputKind) string {
 	match kind {
-		.object, .archive {
+		.object, .archive, .shared_object {
 			return '${path}: ${kind.describe()} is an input to a link, and this run stops before one: -c, -E, -M and -print-ast each read source'
-		}
-		.shared_object {
-			return '${path}: a shared object is not an input this compiler reads: -external-linker=NAME hands the link to a linker that reads one'
 		}
 		.program {
 			return '${path}: a program is not an input this compiler reads'

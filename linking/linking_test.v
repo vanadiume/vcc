@@ -1,8 +1,11 @@
 module linking
 
 import backend
+import backend.os.elf
+import backend.os.linux
 import image
 import linking.symbols
+import os
 
 // The merge is checked on programs built here rather than on the output of
 // codegen, because the questions worth pinning are about the merge's own rules:
@@ -561,4 +564,76 @@ fn test_function_bodies_move_with_their_unit_into_the_merged_code() {
 	assert merged.function_runs[0].len == 2
 	assert merged.function_runs[1].base == 3
 	assert merged.function_runs[1].len == 3
+}
+
+// A shared object named as a file is not merged into the image: the loader maps
+// it beside the image, so the link takes the names it defines as answers for the
+// image's imports and records the name the loader is asked for. The library here
+// is one this compiler writes, which has no section header table, so the test is
+// also the one that says a vcc-written shared object is read through the dynamic
+// table its header already points at rather than through a table it does not
+// have.
+fn test_a_shared_object_named_as_a_file_answers_an_import_and_is_named() {
+	dir := os.join_path(os.temp_dir(), 'vcc_linking_shared_${os.getpid()}')
+	os.mkdir_all(dir) or { panic(err) }
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	mut library := image.Program{}
+	library.text = []u8{len: 16, init: u8(0x90)}
+	library.defined['helper'] = true
+	library.labels['helper'] = 0
+	bytes := elf.write(library, host(), .shared) or {
+		panic('the shared object was not written: ${err.msg()}')
+	}
+	path := os.join_path(dir, 'libhelper.so')
+	os.write_file_array(path, bytes) or { panic(err) }
+	named := linux.shared_library(path) or { panic(err) }
+	assert named.path == path
+	// A vcc-written shared object carries no SONAME, so it is recorded under
+	// its own file name, which is the name the loader searches for.
+	assert named.soname == 'libhelper.so'
+	mut stub := defining('main', []u8{len: 4, init: u8(0x90)})
+	stub.imports << 'helper'
+	merged := link([stub], Options{
+		entry:            'main'
+		target:           host()
+		shared_libraries: [named]
+	}) or { panic('the link failed: ${err.msg()}') }
+	// The name is still an import: the loader writes its address, and nothing
+	// in this image stands for it.
+	assert 'helper' in merged.imports
+	assert 'helper' !in merged.bound
+	assert merged.libraries == ['libhelper.so']
+}
+
+// The same input with a name no library defines is still refused by name, so
+// accepting a shared object as an input does not turn the import check off.
+fn test_a_shared_object_does_not_answer_a_name_it_does_not_define() {
+	dir := os.join_path(os.temp_dir(), 'vcc_linking_shared_missing_${os.getpid()}')
+	os.mkdir_all(dir) or { panic(err) }
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	mut library := image.Program{}
+	library.text = []u8{len: 8, init: u8(0x90)}
+	library.defined['helper'] = true
+	library.labels['helper'] = 0
+	bytes := elf.write(library, host(), .shared) or {
+		panic('the shared object was not written: ${err.msg()}')
+	}
+	path := os.join_path(dir, 'libhelper.so')
+	os.write_file_array(path, bytes) or { panic(err) }
+	named := linux.shared_library(path) or { panic(err) }
+	mut stub := defining('main', []u8{len: 4, init: u8(0x90)})
+	stub.imports << 'nowhere'
+	link([stub], Options{
+		entry:            'main'
+		target:           host()
+		shared_libraries: [named]
+	}) or {
+		assert err.msg().contains('nowhere')
+		return
+	}
+	assert false, 'the link accepted an import no unit and no library defines'
 }

@@ -155,14 +155,15 @@ fn main() {
 	// path so that standard input, which cannot be read twice, is decided by the
 	// same rule.
 	//
-	// A single object or archive is a link with one input, so a run that writes
-	// a program hands it to the linker's path, which reads it as the unit it
-	// holds. The options that read one file stop before a link and are refused
-	// by name. A program or a shared object is a link input this compiler does
-	// not read at all.
+	// A single object, archive or shared object is a link with one input, so a
+	// run that writes a program hands it to the linker's path, which reads it
+	// as the unit it holds or as a library it names. The options that read one
+	// file stop before a link and are refused by name. A program is not a link
+	// input at all.
 	kind := cli.classify_input(source, path, opts.input_type)
 	if kind != .source {
-		if !opts.links() || (kind != .object && kind != .archive) {
+		if !opts.links()
+			|| (kind != .object && kind != .archive && kind != .shared_object) {
 			abort(cli.input_refusal(path, kind))
 			return
 		}
@@ -577,6 +578,11 @@ fn link_inputs(opts cli.Options) {
 	// link reaches a library.
 	output_kind := link_kind(opts)
 	mut units := []unit.Program{cap: opts.inputs.len + 1}
+	// The shared objects the command line named as files. They are not units:
+	// the link records them as libraries the image asks the loader for and
+	// leaves the names they define to the loader, so they travel beside the
+	// units rather than into the merge.
+	mut shared := []linux.Library{}
 	mut reading := i64(0)
 	mut parsing := i64(0)
 	mut optimizing := i64(0)
@@ -640,12 +646,29 @@ fn link_inputs(opts cli.Options) {
 		}
 		// What the input is decides how it is read, by the rule the single-input
 		// path uses: source is compiled into a unit, an object is read back into
-		// the unit it holds, and an archive the command line named as a file is
-		// read where it stands, the same way its -l spelling would be. A program
-		// or a shared object is an input this compiler does not read, and
-		// reading one as source would answer a wrong input kind with a parse
-		// error raised from inside a binary file.
+		// the unit it holds, a shared object is read for the name the loader is
+		// asked for, and an archive the command line named as a file is read
+		// where it stands, the same way its -l spelling would be. A program is
+		// an input this compiler does not read, and reading one as source would
+		// answer a wrong input kind with a parse error raised from inside a
+		// binary file.
 		kind := cli.classify_input(source, path, opts.input_type)
+		if kind == .shared_object {
+			// A static program has no loader, so a library it cannot unpack
+			// into itself has no way to answer a name when the program runs.
+			// The refusal names the file rather than leaving the merge to
+			// report a symbol, because the file is the thing that cannot be
+			// used here.
+			if output_kind == .static_program {
+				abort('${path}: a shared object is not an input to a static link: a static program is started with no loader to map it')
+				return
+			}
+			shared << linux.shared_library(path) or {
+				abort('${path}: ${err.msg()}')
+				return
+			}
+			continue
+		}
 		if kind == .object {
 			read := object.read(source.bytes(), target) or {
 				abort('${path}: ${err.msg()}')
@@ -895,6 +918,7 @@ fn link_inputs(opts cli.Options) {
 		target:               target
 		libraries:            opts.libraries
 		library_dirs:         opts.library_dirs
+		shared_libraries:     shared
 		no_default_libraries: !default_libraries(opts, target)
 	}) or {
 		abort(err.msg())

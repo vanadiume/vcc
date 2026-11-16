@@ -45,13 +45,16 @@ file it finds is one, and the SONAME of the file at the end of that is what
 the image asks for, which is how `-lm` gets `sqrt` to resolve. `-c` writes a
 real ELF64 relocatable object. `-fPIC` reaches top-level objects through the
 global offset table, so the object can go into a shared library later.
-`-shared` writes a shared object and `-static` writes a program with its
-libraries resolved into the file. Thread-local storage, `.eh_frame` and
+`-shared` writes a shared object, which a later vcc link reads as an input, by
+file or through `-l`. It carries no section header table, so GNU ld refuses it
+as an input even though the dynamic loader maps it. `-static` writes a program
+with its libraries resolved into the file. Thread-local storage, `.eh_frame` and
 `.eh_frame_hdr`, and the runtime archive `libvcc.a` are part of what the
 compiler emits and links.
 
 The in-house linker merges translation units, reads relocatable objects and
-`ar` archives, and refuses an unresolved import at compile time by name.
+`ar` archives, reads a shared object's dynamic table for the names it defines,
+and refuses an unresolved import at compile time by name.
 
 ## Dialects and the -std= modes
 
