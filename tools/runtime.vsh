@@ -34,7 +34,7 @@
 import os
 
 const runtime_repo = 'https://github.com/vanadiume/libvcc'
-const runtime_commit = '0f457bf8618faa8f5799764081655fecd880cd0e'
+const runtime_commit = 'f41e169a4d2e247fb132c4d7bb63dea0791b91b5'
 const runtime_archive = 'libvcc.a'
 
 // The helpers a corpus program can reach. A runtime that answers fewer than

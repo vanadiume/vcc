@@ -37,7 +37,7 @@ env:
   # has to name a commit whose archive answers the complex helpers, because the
   # compiler emits calls to them for a complex product and quotient.
   LIBVCC_REPO: https://github.com/vanadiume/libvcc
-  LIBVCC_COMMIT: 0f457bf8618faa8f5799764081655fecd880cd0e
+  LIBVCC_COMMIT: f41e169a4d2e247fb132c4d7bb63dea0791b91b5
 
 jobs:
   version:
