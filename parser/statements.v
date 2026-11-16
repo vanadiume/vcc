@@ -2622,17 +2622,31 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		if static_storage {
 			declaration_init = none
 		}
+		// A vector declaration is storage for its components, and the back end
+		// reads and writes one component at a time: the declaration carries the
+		// component's spelling and the count the vector was sized with, not the
+		// whole vector's `float[4]` spelling, so an element store is the float
+		// store a `float[4]` array makes rather than an integer store of the
+		// converted value. That conversion is what made `(int)a[0]` read the bits
+		// of 1.0f as an integer and answer zero.
+		decl_type := if spec.auto_deduced {
+			declared.describe()
+		} else if declared.is_vector() {
+			if element := declared.element() {
+				element.storage_spelling()
+			} else {
+				p.spelling_of(spec, d.pointer_count())
+			}
+		} else {
+			p.spelling_of(spec, d.pointer_count())
+		}
 		if !spec.is_typedef && !(spec.is_extern && !has_initializer) {
 			stmts << ast.Stmt{
 				kind:  .var_decl
 				extra: p.arena.box_extra(ast.StmtExtra{
 					init:          declaration_init or { ast.Expr{} }
 					decl_name:     d.name
-					decl_type:     if spec.auto_deduced {
-						declared.describe()
-					} else {
-						p.spelling_of(spec, d.pointer_count())
-					}
+					decl_type:     decl_type
 					decl_count:    count
 					decl_stride:   vla_stride
 					decl_vla_size: vla_size or { ast.Expr{} }
