@@ -68,6 +68,34 @@ pub fn integer_promotion(t Type, rep Representation) !Type {
 	return int_type()
 }
 
+// default_promotes_to_a_compatible_type says whether the default argument
+// promotions of 6.5.2.2p6 leave the type compatible with itself: the integer
+// promotions are applied to each argument of an integer type, a `float` argument
+// becomes a `double`, and every other type is handed over unchanged.
+//
+// It is the question 6.7.5.3p15 asks of each parameter of a function type that is
+// being paired with one written with an empty identifier list. The parameter's
+// type has to be compatible with its own default-promoted type, so `int` and
+// `double` pass and `char` and `float` do not; measured, gcc 16.2.1 refuses
+// `int (*p)() = f;` for `int f(char)` and `int f(float)` and accepts it for
+// `int f(int)` and `int f(double)`.
+//
+// No Representation is asked for. `unsigned short` is the one integer whose
+// promotion depends on the machine, to `int` or to `unsigned int`, and both of
+// those are a different type from it, so the answer is the same either way. An
+// enumerated type promotes to the integer type it is compatible with, which is
+// the underlying-type rule #45 is about: until that lands the answer for an enum
+// is no, so a parameter of an enumerated type keeps the pair refused rather than
+// being accepted on a compatibility this model does not answer yet.
+pub fn default_promotes_to_a_compatible_type(t Type) bool {
+	if t.kind == .unknown {
+		// Nothing is claimed about a type this compiler did not resolve.
+		return false
+	}
+	return !(t.kind in [.bool_, .char_, .signed_char, .unsigned_char, .short, .unsigned_short,
+		.float, .enum_])
+}
+
 // usual_arithmetic_conversions is 6.3.1.8: the type both operands of an
 // arithmetic operator are converted to before it runs.
 //

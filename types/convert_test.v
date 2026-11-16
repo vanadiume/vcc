@@ -714,28 +714,110 @@ fn test_two_function_types_differ_in_a_parameter_type() {
 	assert !takes_int_char.compatible(takes_char_int)
 }
 
-// 6.7.6.3: a function type written with no parameter list says nothing about the
-// arguments a call may pass and is not a prototype; a prototype that names no
-// parameters says the function takes none. The two are different types, so two
-// declarations of one function may not mix them.
-fn test_a_function_without_a_parameter_list_is_not_compatible_with_a_prototype() {
+// 6.7.5.3p15: a function type written with no parameter list says nothing about
+// the arguments a call may pass and is not a prototype. A prototype written with
+// types may still be paired with it, because the call the empty list allows
+// hands over the default-promoted types, so the two are compatible when every
+// parameter of the prototype is compatible with its own default-promoted type.
+fn test_a_function_without_a_parameter_list_pairs_with_a_prototype_through_the_default_promotions() {
 	no_list := function_type(int_type(), [], false, false)
 	prototype_none := function_type(int_type(), [], false, true)
-	prototype_one := function_type(int_type(), [
+	prototype_int := function_type(int_type(), [
 		Param{
 			name: 'a'
 			typ:  int_type()
 		},
 	], false, true)
-	assert !no_list.compatible(prototype_none)
-	assert !prototype_none.compatible(no_list)
-	assert !no_list.compatible(prototype_one)
-	assert !prototype_one.compatible(no_list)
+	// `(void)` takes no parameters, so there is nothing the empty list's call
+	// could hand over that this list does not take.
+	assert no_list.compatible(prototype_none)
+	assert prototype_none.compatible(no_list)
+	// int is its own default promotion, so the call and the parameter agree.
+	assert no_list.compatible(prototype_int)
+	assert prototype_int.compatible(no_list)
 	// Two functions that both wrote no list are one type.
 	assert no_list.compatible(function_type(int_type(), [], false, false))
+	// char promotes to int and float promotes to double, so neither is a
+	// parameter type a call through the empty list hands over.
+	assert !no_list.compatible(function_type(int_type(), [
+		Param{
+			name: 'a'
+			typ:  char_type()
+		},
+	], false, true))
+	assert !no_list.compatible(function_type(int_type(), [
+		Param{
+			name: 'a'
+			typ:  float_type()
+		},
+	], false, true))
+	// An ellipsis names arguments the empty list says nothing about.
+	assert !no_list.compatible(function_type(int_type(), [
+		Param{
+			name: 'a'
+			typ:  int_type()
+		},
+	], true, true))
+	// The return type is part of the pair whether or not a list was written.
+	assert !no_list.compatible(function_type(void_type(), [], false, true))
 	// The type itself says which of the two spellings it was.
 	assert prototype_none.prototyped
 	assert !no_list.prototyped
+}
+
+// 6.5.2.2p6: the default argument promotions are the integer promotions on each
+// integer argument and `double` in place of `float`. So a call through an empty
+// list hands over an int and a double, and a parameter written `char`,
+// `unsigned short` or `float` is not a type that call can reach.
+fn test_the_default_argument_promotions_change_only_the_narrow_integers_and_float() {
+	assert default_promotes_to_a_compatible_type(int_type())
+	assert default_promotes_to_a_compatible_type(unsigned_int_type())
+	assert default_promotes_to_a_compatible_type(long_long_type())
+	assert default_promotes_to_a_compatible_type(double_type())
+	assert default_promotes_to_a_compatible_type(long_double_type())
+	// A pointer, an aggregate and void are handed over unchanged.
+	assert default_promotes_to_a_compatible_type(pointer_to(char_type()))
+	assert default_promotes_to_a_compatible_type(struct_type('S', []Member{}))
+	assert default_promotes_to_a_compatible_type(void_type())
+	assert !default_promotes_to_a_compatible_type(bool_type())
+	assert !default_promotes_to_a_compatible_type(char_type())
+	assert !default_promotes_to_a_compatible_type(signed_char_type())
+	assert !default_promotes_to_a_compatible_type(unsigned_char_type())
+	assert !default_promotes_to_a_compatible_type(short_type())
+	assert !default_promotes_to_a_compatible_type(unsigned_short_type())
+	assert !default_promotes_to_a_compatible_type(float_type())
+	// An enumerated type promotes to the integer type it is compatible with,
+	// which is the underlying-type rule #45 is about: until that lands the
+	// answer keeps the pair refused rather than guessing at it.
+	assert !default_promotes_to_a_compatible_type(enum_type('E', .int_))
+}
+
+// The pair #53 reports, asked the way an assignment asks it: a pointer to a
+// function written with an empty identifier list and a pointer to the `(void)`
+// prototype are one pointer type, in both directions. A list the promotions
+// change is still another type.
+fn test_a_pointer_to_an_empty_list_function_is_compatible_with_a_void_prototype() {
+	empty := pointer_to(function_type(void_type(), [], false, false))
+	prototype := pointer_to(function_type(void_type(), [], false, true))
+	assert reason(empty, prototype, false) == ''
+	assert reason(prototype, empty, false) == ''
+	empty_int := pointer_to(function_type(int_type(), [], false, false))
+	takes_int := pointer_to(function_type(int_type(), [
+		Param{
+			name: 'a'
+			typ:  int_type()
+		},
+	], false, true))
+	assert reason(empty_int, takes_int, false) == ''
+	assert reason(takes_int, empty_int, false) == ''
+	takes_float := pointer_to(function_type(int_type(), [
+		Param{
+			name: 'a'
+			typ:  float_type()
+		},
+	], false, true))
+	assert only_reason(empty_int, takes_float, false, 'compatible')
+	assert only_reason(takes_float, empty_int, false, 'compatible')
 }
 
 // The variadic flag is part of the type: `int f(int)` and `int f(int, ...)` do
