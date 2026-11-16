@@ -1095,3 +1095,4 @@ it owns the change, which is the same vocabulary the commits use.
 
 * cli: the -print- file answers name the search the link makes (ce5fca8)
 * cli: --link-libgcc and -shared-libgcc are main flags (3b7ac76)
+* docs: the libgcc flags in the README, the wiki and the changelog (5d063e5)
