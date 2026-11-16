@@ -669,6 +669,53 @@ fn test_an_undefine_from_the_command_line_takes_a_macro_away() {
 	assert result.tokens[3].text == 'N'
 }
 
+// -D and -U take effect where they were written, so a define after an undefine
+// is in force and a define before one is not. Applying every -D before every
+// -U, which is what the two flat lists did, gets both of those wrong.
+fn test_a_define_and_an_undefine_are_applied_in_the_order_they_were_written() {
+	last_define_wins := preprocess('N', 'test.c', Options{
+		actions: [
+			DefineAction{ name: 'N=1' },
+			DefineAction{ name: 'N', undefine: true },
+			DefineAction{ name: 'N=2' },
+		]
+	})
+	assert last_define_wins.diagnostics.len == 0
+	assert last_define_wins.tokens.map(it.text) == ['2']
+	define_after_undefine := preprocess('N', 'test.c', Options{
+		actions: [
+			DefineAction{ name: 'N', undefine: true },
+			DefineAction{ name: 'N=1' },
+		]
+	})
+	assert define_after_undefine.diagnostics.len == 0
+	assert define_after_undefine.tokens.map(it.text) == ['1']
+	undefine_last := preprocess('N', 'test.c', Options{
+		actions: [
+			DefineAction{ name: 'N=1' },
+			DefineAction{ name: 'N', undefine: true },
+		]
+	})
+	assert undefine_last.diagnostics.len == 0
+	assert undefine_last.tokens.map(it.text) == ['N']
+}
+
+// A command line without `=` defines the name as 1: `gcc -DVAL -E` and
+// `tcc -DVAL -E` both print 1 for a file that is just VAL. `-DVAL=` is how an
+// empty body is asked for.
+fn test_a_bare_command_line_define_has_the_body_one() {
+	result := preprocess('VAL', 'test.c', Options{
+		actions: [DefineAction{ name: 'VAL' }]
+	})
+	assert result.diagnostics.len == 0
+	assert result.tokens.map(it.text) == ['1']
+	empty := preprocess('VAL', 'test.c', Options{
+		actions: [DefineAction{ name: 'VAL=' }]
+	})
+	assert empty.diagnostics.len == 0
+	assert empty.tokens.len == 0
+}
+
 fn test_ifdef_reads_the_branch_that_is_taken() {
 	assert processed('#ifdef N\nint x;\n#endif\n') == [] // N is not defined
 	assert processed('#define N\n#ifdef N\nint x;\n#endif\n') == ['int', 'x', ';']

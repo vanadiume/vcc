@@ -378,7 +378,7 @@ fn read_options(opts cli.Options) preprocess.Options {
 	return preprocess.Options{
 		include_dirs:   opts.include_dirs
 		defines:        language_defines(opts)
-		undefines:      opts.undefines
+		actions:        opts.define_actions
 		standard_dirs:  standard_include_dirs_for(opts)
 		preludes:       opts.preludes
 		undef_builtins: opts.undef_builtins
@@ -998,21 +998,21 @@ fn link_inputs(opts cli.Options) {
 }
 
 // language_defines are the -D arguments the compiler hands the preprocessor: the
-// macros that identify this compiler, the ones the selected mode adds, the
-// conformance claims the implementation makes about its types, and then the ones
-// the command line wrote. That order is what makes a -D win over the mode and
-// over the identity, the way it wins over a built-in in gcc. -undef takes all of
-// the compiler's own macros away with every other macro that describes the
-// target.
+// ones that identify this compiler, the ones the selected mode adds, and the
+// conformance claims the implementation makes about its types. They are applied
+// before the command line, which is what makes a -D win over the mode and over
+// the identity, the way it wins over a built-in in gcc: the command line's
+// arguments arrive separately as cli.Options.define_actions and are applied
+// after these, in the order they were written. -undef takes all of the
+// compiler's own macros away with every other macro that describes the target.
 fn language_defines(opts cli.Options) []string {
 	if opts.undef_builtins {
-		return opts.defines
+		return []
 	}
 	mut out := []string{}
 	out << preprocess.identity_defines(cli.version)
 	out << preprocess.standard_defines(opts.dialect, opts.emulation)
 	out << preprocess.conformance_defines(opts.dialect)
-	out << opts.defines
 	return out
 }
 
@@ -1596,7 +1596,7 @@ fn compile_source_object(path string, source string, opts cli.Options) ![]u8 {
 	processed := preprocess.preprocess(source, path, preprocess.Options{
 		include_dirs:   opts.include_dirs
 		defines:        language_defines(opts)
-		undefines:      opts.undefines
+		actions:        opts.define_actions
 		standard_dirs:  standard_include_dirs_for(opts)
 		preludes:       opts.preludes
 		undef_builtins: opts.undef_builtins

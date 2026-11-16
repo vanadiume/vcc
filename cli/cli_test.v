@@ -1,6 +1,7 @@
 module cli
 
 import os
+import preprocess
 import v.vmod
 
 fn test_an_input_and_an_output() {
@@ -670,6 +671,25 @@ fn test_the_naming_flags_read_their_own_arguments() {
 	assert parse(['-x', 'c', 'x.c'])!.input_type == 'c'
 	assert parse(['-B', '/dir', 'x.c'])!.ignored == ['-B /dir']
 	assert parse(['-B/dir', 'x.c'])!.ignored == ['-B/dir']
+}
+
+// -D and -U are applied in the order they were written, so the reader keeps
+// that order as well as the per-flag lists. `-D A=1 -U A -D A=2` ends with A
+// defined as 2; applying every -D before every -U, which is what the two flat
+// lists do, ends with it undefined.
+fn test_the_define_and_undefine_arguments_keep_the_order_they_were_written() {
+	opts := parse(['-D', 'A=1', '-UA', '-D', 'A=2', 'x.c'])!
+	expected := [
+		preprocess.DefineAction{ name: 'A=1' },
+		preprocess.DefineAction{ name: 'A', undefine: true },
+		preprocess.DefineAction{ name: 'A=2' },
+	]
+	assert opts.define_actions == expected
+	// The lists sorted by flag still hold what each flag named, which is what
+	// the existing readers ask for.
+	assert opts.defines == ['A=1', 'A=2']
+	assert opts.undefines == ['A']
+	assert parse(['x.c'])!.define_actions.len == 0
 }
 
 // A flag that names a path or a name is given once per directory, header and

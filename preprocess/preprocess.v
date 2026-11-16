@@ -26,9 +26,15 @@ pub mut:
 	// the hosted answer because that is what a run with nothing said builds for.
 	hosted bool = true
 	// defines and undefines are the -D and -U arguments, applied to the macro
-	// table before the first file is read.
+	// table before the first file is read. The two lists lose the order the
+	// command line wrote them in, so a command line that mixes them also
+	// fills `actions`, which keeps it.
 	defines   []string
 	undefines []string
+	// actions are the -D and -U arguments in the order the command line wrote
+	// them, applied after `defines` and before `undefines`. This is the list
+	// that makes `-D N=1 -U N -D N=2` end with N as 2.
+	actions []DefineAction
 	// standard_dirs are the system directories, searched for either spelling
 	// after the -I ones. They arrive from the command line because where a
 	// machine keeps its headers is the command line's business — -nostdinc is
@@ -50,6 +56,16 @@ pub mut:
 	// written down. `.none`, no `-std` at all, is the default dialect, which is
 	// gnu-like, so it leaves the bytes alone too.
 	dialect standard.Mode
+}
+
+// DefineAction is one -D or -U argument as the command line wrote it, with the
+// flag stripped: `-DA=1` is `A=1` and `-UA` is `A` with `undefine` set. One
+// list of these keeps the order the arguments arrived in, which is the order
+// they take effect in; two lists sorted by flag cannot.
+pub struct DefineAction {
+pub:
+	name     string
+	undefine bool
 }
 
 // Prelude is one file to read before the source. `macros_only` is what
@@ -301,80 +317,104 @@ mut:
 // apply_command_line_defines puts the -D and -U arguments into the macro table
 // before any file is read, which is the order C asks for: a -D is as if the
 // definition had been written at the top of the translation unit. -Dname=value
-// defines the name with that replacement and a bare -Dname defines it empty.
+// defines the name with that replacement, a bare -Dname defines it as 1, which
+// is what gcc and tcc do, and -U removes a name.
 //
-// The two lists are applied in the order they arrive rather than in the order
-// they were written on the command line, so `-D N=1 -U N -D N=2` ends with N
-// undefined here; a command line that mixes them in that way is rare enough to
-// wait for the day it matters.
+// `defines` is applied first, then `actions` in the order the command line
+// wrote them, then `undefines`. A command line fills `actions`, so
+// `-D N=1 -U N -D N=2` ends with N defined as 2; a caller that only has one of
+// the flat lists still gets it applied.
 fn (mut p Processor) apply_command_line_defines() {
 	for define in p.opts.defines {
-		mut name := define
-		mut body := ''
-		mut params := []string{}
-		mut variadic := false
-		mut variadic_name := ''
-		mut function_like := false
-		if at := define.index('=') {
-			name = define[..at]
-			body = define[at + 1..]
-		}
-		// `-DF(x)=...` defines a macro that takes arguments, the same way a
-		// #define does: the shape of the name decides and not the flag. A
-		// command line that writes the parameters without closing the list is
-		// left alone rather than guessed at.
-		if open := name.index('(') {
-			if close := name.index(')') {
-				if close > open {
-					function_like = true
-					for part in name[open + 1..close].split(',') {
-						param := part.trim_space()
-						if param == '' {
-							continue
-						}
-						// `name...` is the GNU spelling that names the variable
-						// arguments, the same shape `#define` accepts.
-						if param.ends_with('...') {
-							variadic = true
-							named := param[..param.len - 3].trim_space()
-							if named != '' {
-								variadic_name = named
-							}
-							continue
-						}
-						params << param
-					}
-					name = name[..open]
-				}
+		p.command_line_define(define)
+	}
+	for action in p.opts.actions {
+		if action.undefine {
+			if action.name in p.macros {
+				p.macros.delete(action.name)
 			}
+			continue
 		}
-		replacement := tokenize.lex_fragment(body, standard.has_digraphs(p.opts.dialect))
-		at := tokenize.Token{
-			kind: .identifier
-			text: name
-			line: 1
-			col:  1
-			file: '<command line>'
-		}
-		writes_va_opt := p.check_replacement(at, replacement, variadic)
-		p.macros[name] = Macro{
-			name:          name
-			function_like: function_like
-			params:        params
-			variadic:      variadic
-			variadic_name: variadic_name
-			has_va_opt:    writes_va_opt
-			body:          replacement
-			file:          '<command line>'
-			line:          1
-			col:           1
-		}
+		p.command_line_define(action.name)
 	}
 	for name in p.opts.undefines {
 		if name in p.macros {
 			p.macros.delete(name)
 		}
 	}
+}
+
+// command_line_define is one -D argument. -Dname=value gives the name that
+// replacement and a bare -Dname gives it 1, the body gcc and tcc give it;
+// -Dname= with the `=` and nothing after it is the empty body.
+fn (mut p Processor) command_line_define(define string) {
+	mut name := define
+	mut body := '1'
+	mut params := []string{}
+	mut variadic := false
+	mut variadic_name := ''
+	mut function_like := false
+	if at := define.index('=') {
+		name = define[..at]
+		body = define[at + 1..]
+	}
+	// `-DF(x)=...` defines a macro that takes arguments, the same way a
+	// #define does: the shape of the name decides and not the flag. A
+	// command line that writes the parameters without closing the list is
+	// left alone rather than guessed at.
+	if open := name.index('(') {
+		if close := name.index(')') {
+			if close > open {
+				function_like = true
+				for part in name[open + 1..close].split(',') {
+					param := part.trim_space()
+					if param == '' {
+						continue
+					}
+					// `name...` is the GNU spelling that names the variable
+					// arguments, the same shape `#define` accepts.
+					if param.ends_with('...') {
+						variadic = true
+						named := param[..param.len - 3].trim_space()
+						if named != '' {
+							variadic_name = named
+						}
+						continue
+					}
+					params << param
+				}
+				name = name[..open]
+			}
+		}
+	}
+	p.macros[name] = Macro{
+		name:          name
+		function_like: function_like
+		params:        params
+		variadic:      variadic
+		variadic_name: variadic_name
+		has_va_opt:    p.command_line_writes_va_opt(name, body, variadic)
+		body:          tokenize.lex_fragment(body, standard.has_digraphs(p.opts.dialect))
+		file:          '<command line>'
+		line:          1
+		col:           1
+	}
+}
+
+// command_line_writes_va_opt asks whether the replacement the flag wrote is one
+// check_replacement has to read: `__VA_OPT__` in a -D body is the same
+// construct a `#define` writes, so it is checked the same way and the answer is
+// what the macro records.
+fn (mut p Processor) command_line_writes_va_opt(name string, body string, variadic bool) bool {
+	replacement := tokenize.lex_fragment(body, standard.has_digraphs(p.opts.dialect))
+	at := tokenize.Token{
+		kind: .identifier
+		text: name
+		line: 1
+		col:  1
+		file: '<command line>'
+	}
+	return p.check_replacement(at, replacement, variadic)
 }
 
 // line_directive renumbers what follows it. The number is the number of the line

@@ -83,7 +83,12 @@ pub mut:
 	link_items []LinkItem
 	defines    []string
 	undefines  []string
-	target     string
+	// define_actions are the -D and -U arguments in the order the command
+	// line wrote them. The two lists above sort them by flag, which loses
+	// that order: `-D A=1 -U A` and `-U A -D A=1` have the same defines and
+	// undefines and different answers, and only this list tells them apart.
+	define_actions []preprocess.DefineAction
+	target         string
 	// standard is the -std= spelling as it was written, and dialect is the mode
 	// that spelling names. Both are kept because both are asked for: the
 	// spelling is what the command line, a verbose mode and a build compare
@@ -450,13 +455,31 @@ pub fn parse(args []string) !Options {
 				macros_only: true
 			}
 		} else if arg == '-D' {
-			opts.defines << cursor.value_of('')!
+			value := cursor.value_of('')!
+			opts.defines << value
+			opts.define_actions << preprocess.DefineAction{
+				name: value
+			}
 		} else if arg.starts_with('-D') {
-			opts.defines << arg[2..]
+			value := arg[2..]
+			opts.defines << value
+			opts.define_actions << preprocess.DefineAction{
+				name: value
+			}
 		} else if arg == '-U' {
-			opts.undefines << cursor.value_of('')!
+			value := cursor.value_of('')!
+			opts.undefines << value
+			opts.define_actions << preprocess.DefineAction{
+				name:     value
+				undefine: true
+			}
 		} else if arg.starts_with('-U') {
-			opts.undefines << arg[2..]
+			value := arg[2..]
+			opts.undefines << value
+			opts.define_actions << preprocess.DefineAction{
+				name:     value
+				undefine: true
+			}
 		} else if arg == '-L' {
 			opts.library_dirs << cursor.value_of('')!
 		} else if arg.starts_with('-L') {
