@@ -96,9 +96,10 @@ const keywords = ['_Atomic', '_BitInt', '_Bool', '_Complex', '_Decimal32', '_Dec
 	'do', 'double', 'else', 'enum', 'extern', 'float', 'for', 'goto', 'if', 'inline', 'int', 'long',
 	'register', 'restrict', 'return', 'short', 'signed', 'sizeof', 'static', 'struct', 'switch',
 	'typedef', 'typeof', 'typeof_unqual', 'union', 'unsigned', 'void', 'volatile', 'while', '__asm',
-	'__asm__', '__attribute__', '__const', '__const__', '__extension__', '__inline', '__inline__',
-	'__int128', '__restrict', '__restrict__', '__signed', '__signed__', '__thread', '__typeof',
-	'__typeof__', '__typeof_unqual__', '__volatile', '__volatile__', '__auto_type', '__float128']
+	'__asm__', '__attribute', '__attribute__', '__const', '__const__', '__extension__', '__inline',
+	'__inline__', '__int128', '__restrict', '__restrict__', '__signed', '__signed__', '__thread',
+	'__typeof', '__typeof__', '__typeof_unqual__', '__volatile', '__volatile__', '__auto_type',
+	'__float128']
 
 // is_keyword says whether a spelling is one of the reserved words. Nothing in the
 // language may use one as an identifier, so the question is asked by the declarator
@@ -111,7 +112,7 @@ fn is_keyword(text string) bool {
 // past: an attribute list and an assembler name. Both arrive in system
 // headers, and a parser that stops at one stops in the middle of the
 // declaration it belongs to.
-const gnu_postfix = ['__attribute__', '__asm__', '__asm']
+const gnu_postfix = ['__attribute__', '__attribute', '__asm__', '__asm']
 
 // A declarator or a tag body nests through the same brackets the expression
 // reader counts, so it is bounded by the same number: `-fbracket-depth` sets
@@ -135,8 +136,8 @@ fn (mut p Parser) starts_declaration(t tokenize.Token) bool {
 	// int g(void)`, with the attribute in front of the declaration specifiers.
 	// The attribute says something about the declaration and the specifiers
 	// follow it, so a declaration the reader will otherwise read correctly opens
-	// here.
-	if t.text == '__attribute__' {
+	// here. GNU accepts the single-underscore spelling of the keyword too.
+	if is_attribute_spelling(t.text) {
 		return true
 	}
 	return is_specifier_word(t.text) || p.is_type_name(t.text)
@@ -6709,7 +6710,7 @@ fn (mut p Parser) skip_gnu_postfix(report bool) !AttributeSet {
 		if t.kind != .identifier || t.text !in gnu_postfix {
 			return set
 		}
-		if t.text == '__attribute__' {
+		if is_attribute_spelling(t.text) {
 			set = merge_attributes(set, p.parse_attribute_specifiers(report))
 			continue
 		}

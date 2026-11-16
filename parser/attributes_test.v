@@ -63,6 +63,29 @@ fn test_a_list_of_attributes_is_read_together() {
 	assert result.unit.decls[0].weak
 }
 
+// GNU C reads the single-underscore `__attribute` as the same keyword as
+// `__attribute__`; gcc 16.2.1, clang and tcc accept both, and libgc's `gc.h`
+// writes the single-underscore one. The spelling opens a declaration, sits
+// between the specifiers and the declarator, follows a declarator, and repeats
+// as a run of specifiers.
+fn test_the_single_underscore_attribute_spelling_is_read() {
+	prefix := attributes_of('__attribute((weak)) int f(void) { return 1; }\n__attribute((weak)) int proto(void);')
+	assert prefix.diagnostics.len == 0
+	assert prefix.unit.decls.len == 2
+	assert prefix.unit.decls[0].weak
+	assert prefix.unit.decls[1].weak
+	assert !prefix.unit.decls[1].defined
+	quiet := attributes_of('__attribute((noreturn)) void die(void) {}\n__attribute((noinline)) int g(void) { return 2; }')
+	assert quiet.diagnostics.len == 0
+	assert quiet.unit.decls.len == 2
+	run := attributes_of('__attribute((weak)) __attribute((noinline)) int h(void) { return 3; }')
+	assert run.diagnostics.len == 0
+	assert run.unit.decls[0].weak
+	postfix := attributes_of('extern int slot __attribute((weak));')
+	assert postfix.diagnostics.len == 0
+	assert postfix.unit.extern_objects[0].weak
+}
+
 // `aligned(N)` on an object at file scope is a layout request the object keeps:
 // the alignment travels on the object so the image can place it there.
 fn test_aligned_on_a_top_level_object_is_recorded() {
