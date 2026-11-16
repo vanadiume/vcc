@@ -3806,6 +3806,32 @@ fn test_a_complex_quotient_is_the_runtime_helper_call() {
 	assert run_image(emitted.bytes) == 0
 }
 
+// A complex object assigned to after its declaration holds the value it was
+// given, at every width. The extended width was the one that did not: the store
+// read the width off two of the three complex types, called the third a double
+// complex object, and copied sixteen bytes of a thirty-two byte value, so both
+// components answered whatever was beside the object in the frame. Measured on
+// gcc 16.2.1, this program exits 0.
+fn test_a_complex_object_takes_an_assignment_at_every_width() {
+	source := 'int main(void) {' +
+		' long double _Complex z = 3.0L + 4.0Li;' +
+		' long double _Complex l;' +
+		' l = z;' +
+		' if (__real__ l != 3.0L || __imag__ l != 4.0L) { return 1; }' +
+		' double _Complex d = 1.0 + 2.0i;' +
+		' double _Complex e;' +
+		' e = d;' +
+		' if (__real__ e != 1.0 || __imag__ e != 2.0) { return 2; }' +
+		' float _Complex f = 5.0f + 6.0fi;' +
+		' float _Complex g;' +
+		' g = f;' +
+		' if (__real__ g != 5.0f || __imag__ g != 6.0f) { return 3; }' +
+		' return 0; }'
+	emitted := emit(translation_unit(source), Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 0
+}
+
 // The part of a complex value is the component `__real__` or `__imag__` names,
 // and what the operator is worth is not the operand. A program that compares the
 // part with the component, uses it as one, passes it onward and writes it through

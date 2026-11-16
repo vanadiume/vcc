@@ -15006,13 +15006,18 @@ fn (mut e Emitter) assign_complex_local(stmt ast.Stmt, target Slot, depth int) !
 		return error('assignment without a value')
 	}
 	expr := stmt.expr
-	destination := if target.width == 8 {
-		types.complex_float_type()
-	} else {
-		types.complex_double_type()
+	// The destination is the type of the object written to, all three widths of
+	// it. Reading the width off two of them and calling the third a double
+	// complex object is what made `l = z` for an extended object copy sixteen
+	// bytes of a thirty-two byte value and read the rest of the frame.
+	destination := match target.width {
+		8 { types.complex_float_type() }
+		16 { types.complex_double_type() }
+		else { types.complex_long_double_type() }
 	}
 	source := e.complex_object_as(expr, destination, depth)!
-	return e.copy_complex_frame(source, target, target.width, stmt.line, stmt.col)
+	return e.copy_complex_frame(source, target, complex_object_bytes(destination.kind), stmt.line,
+		stmt.col)
 }
 
 // emit_condition leaves the truth of a condition in the accumulator as zero or
