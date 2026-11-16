@@ -324,6 +324,59 @@ pub fn standard_defines(mode standard.Mode, emulation Emulation) []string {
 	return out
 }
 
+// conformance_defines are the macros a header asks when it wants to know what
+// this implementation promises about its character and floating types, rather
+// than which machine or language level it has. They are the conformance claims
+// of C99 and C11 6.10.8.2, and the values are gcc 16.2.1's for this target,
+// taken from `gcc -std=X -dM -E -x c /dev/null`.
+//
+// Three of them describe the target and are defined in every mode, as gcc
+// defines them: wchar_t here is the signed 32-bit int __WCHAR_TYPE__ names and a
+// wide literal stores an ISO 10646 code point in one (parser/literals.v), so
+// __STDC_ISO_10646__ is the revision of ISO 10646 whose code points it carries;
+// and float and double are the IEC 60559 binary32 and binary64 the target's
+// __FLT_*__ and __DBL_*__ values describe.
+//
+// __STDC_UTF_16__ and __STDC_UTF_32__ are C11's macros and gcc gates them on
+// the language level: measured, `gcc -std=c89`, `-std=c99` and `-std=gnu89`
+// with -dM print neither, while c11, c17, c23, gnu99, gnu11, gnu17, gnu23 and
+// no -std print both. gnu99 is the mode that separates "C11" from "GNU C99":
+// the types are C11's, and a GNU dialect takes them from gnu99 on (measured,
+// gcc compiles `u"x"` under gnu99 and refuses it under gnu89). The types
+// themselves are not gated that way: char16_t and char32_t are
+// __uint_least16_t and __uint_least32_t in <uchar.h>, which the target's
+// headers define in every mode, and this compiler reads objects of them in
+// every mode too. So the gate follows the standard and not the type. No -std at
+// all, and a -std spelling this compiler does not implement, take the default
+// dialect's answer, which is the gnu-like one gcc's own default gives.
+//
+// __STDC_IEC_559_COMPLEX__ and __STDC_IEC_60559_COMPLEX__ are not defined in
+// any mode, on purpose. They claim the complex arithmetic conforms to IEC 60559,
+// and the tree's _Complex row in standard/features.v records three refusals
+// still open (a file-scope object initialized from a complex expression, a
+// complex value in a brace initializer for a real member, and the scalar
+// operators !, && and || on a complex value), while _Imaginary is not
+// implemented at all. A macro is a promise a header acts on, and this compiler
+// cannot keep that one, so a program that asks takes the fallback path. The
+// omission is the answer; defining the macro would be worse than the gap.
+//
+// glibc's <stdc-predef.h> is what makes the omission hold in a real program: it
+// defines the two complex macros itself unless __GCC_IEC_559_COMPLEX is
+// predefined and zero, which is the name gcc uses to say whether its complex
+// arithmetic conforms (gcc says 2 here). So this compiler predefines it 0, and
+// a header that includes <features.h> keeps the two macros undefined instead of
+// taking the branch reserved for a compiler too old to have been asked.
+pub fn conformance_defines(mode standard.Mode) []string {
+	mut out := ['__STDC_ISO_10646__=201706L', '__STDC_IEC_559__=1', '__STDC_IEC_60559_BFP__=201404L']
+	if mode == .none || mode == .other || mode.includes(.c11)
+		|| (mode.is_gnu() && mode.includes(.c99)) {
+		out << '__STDC_UTF_16__=1'
+		out << '__STDC_UTF_32__=1'
+	}
+	out << '__GCC_IEC_559_COMPLEX=0'
+	return out
+}
+
 // gnu_claim is the answer a GNU dialect gives a header that asks whether a GNU
 // compiler is reading it: the names glibc's __GNUC_PREREQ is built from, which is
 // `(__GNUC__ << 16) + __GNUC_MINOR__ >= (maj << 16) + min`, so the first two are
