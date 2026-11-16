@@ -407,6 +407,40 @@ fn test_an_object_like_alias_with_no_call_is_a_name() {
 	assert processed('#define G G(x)\nG\n') == ['G', '(', 'x', ')']
 }
 
+fn test_a_replacement_that_ends_with_an_open_parenthesis_reads_the_arguments() {
+	// C99 6.10.3p4 rescans a replacement with the text after the use, so the (
+	// the replacement ends with opens a list the file finishes. Read on its own
+	// the replacement was a call that never ended, and it was reported as one.
+	assert processed('#define F(x) ((x) + 1)\n#define A F(\nA 1)\n') == ['(', '(', '1', ')', '+',
+		'1', ')']
+	// The arguments are the tokens after the use, however many the list has.
+	assert processed('#define G(a, b) ((a) + (b))\n#define A G(\nA 1, 2)\n') == ['(', '(', '1',
+		')', '+', '(', '2', ')', ')']
+	// The list can be complete in the replacement, and then nothing follows.
+	assert processed('#define F(x) ((x) + 1)\n#define B F(1)\nB\n') == ['(', '(', '1', ')', '+',
+		'1', ')']
+	// A replacement a call produced opens the list the same way.
+	assert processed('#define F(x) ((x) + 1)\n#define H(y) F(\nH(1) 2)\n') == ['(', '(', '2', ')',
+		'+', '1', ')']
+	// A name an alias stands for opens it through the alias as well.
+	assert processed('#define F(x) ((x) + 1)\n#define B F(\n#define A B\nA 1)\n') == [
+		'(',
+		'(',
+		'1',
+		')',
+		'+',
+		'1',
+		')',
+	]
+	// The text after the closing ) is read where it stands, once.
+	assert processed('#define F(x) x\n#define A F(\nA 1) + 2\n') == ['1', '+', '2']
+}
+
+fn test_a_replacement_whose_list_nothing_closes_is_diagnosed() {
+	messages := diagnostics_of('#define F(x) x\n#define A F(\nA 1\n')
+	assert messages == ['the arguments of F have no closing )']
+}
+
 fn test_a_macro_that_calls_itself_stops() {
 	assert processed('#define F(x) F(x)\nF(1)\n') == ['F', '(', '1', ')']
 	assert processed('#define F(x) G(x)\n#define G(x) F(x)\nF(1)\n') == ['F', '(', '1', ')']
