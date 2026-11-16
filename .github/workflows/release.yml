@@ -2,9 +2,9 @@ name: release
 
 # A release is automatic, and v.mod decides when. Every push to main reads the
 # version v.mod names; if no release carries that version yet, the compiler and
-# its runtime archive are built, put through the same gate a pull request goes
-# through, run once, staged as /usr/bin/vcc and /usr/lib/libvcc.a, and attached
-# as one tarball. A push whose v.mod version already has a release does nothing,
+# its runtime are built, put through the same gate a pull request goes through,
+# run once, staged as /usr/bin/vcc with /usr/lib/libvcc.a and the libvcc.so
+# chain beside it, and attached as one tarball. A push whose v.mod version already has a release does nothing,
 # so the way to cut a release is to bump the version in v.mod and merge. v.mod is
 # the single source: the tag, the release title and the binary's `--version` all
 # come from it, and a compiler that reports the wrong version is one V will key
@@ -30,12 +30,14 @@ env:
   # `.github/workflows/ci.yml` says why the snapshot is pinned.
   VC_COMMIT: bcfdc7f33e7b7908ee40f76d059c0e2894fb4a3b
   V_DIR: /opt/v
-  # libvcc is the runtime archive every program that reaches a helper links
-  # against, and the release carries it beside the compiler. It is pinned for the
-  # same reason V is: a release is built from commits, not from whatever the two
-  # repositories held that morning.
+  # libvcc is the runtime every program that reaches a helper links against, and
+  # the release carries both the archive and the shared library beside the
+  # compiler. It is pinned for the same reason V is: a release is built from
+  # commits, not from whatever the two repositories held that morning. The pin
+  # has to name a commit whose archive answers the complex helpers, because the
+  # compiler emits calls to them for a complex product and quotient.
   LIBVCC_REPO: https://github.com/vanadiume/libvcc
-  LIBVCC_COMMIT: cf3f6624e7a7dfe895a88c262df82014c2b25de5
+  LIBVCC_COMMIT: 0f457bf8618faa8f5799764081655fecd880cd0e
 
 jobs:
   version:
@@ -143,7 +145,7 @@ jobs:
             usr
           (cd "$RUNNER_TEMP" && sha256sum "${stem}.tar.gz" > "${stem}.tar.gz.sha256")
 
-      - name: the tarball holds a compiler that links against the archive beside it
+      - name: the tarball holds a compiler that links against the runtime beside it
         run: |
           stem="vcc-${{ needs.version.outputs.version }}-x86_64-linux"
           root="$RUNNER_TEMP/extract"
@@ -163,6 +165,21 @@ jobs:
           fi
           if [ "$status" -ne 42 ]; then
             echo "the packaged compiler linked a program that exited ${status}, and its helper divides 84 by 2" >&2
+            exit 1
+          fi
+          # The shared runtime is the other half. A program linked with
+          # -shared-libvcc records the library's soname rather than the name it
+          # was linked through, so the loader's path names the extracted lib
+          # directory and the run proves the soname resolves there.
+          printf 'double _Complex __muldc3(double, double, double, double);\nint main(void) { double _Complex z = __muldc3(1.0, 2.0, 3.0, 4.0); return (int)__real__ z + 5; }\n' > "$work/shared.c"
+          "$root/usr/bin/vcc" "$work/shared.c" -L "$root/usr/lib" -shared-libvcc -o "$work/shared"
+          if LD_LIBRARY_PATH="$root/usr/lib" "$work/shared"; then
+            status=0
+          else
+            status=$?
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "the packaged compiler linked a -shared-libvcc program that exited ${status}, and its helper multiplies (1+2i)(3+4i)" >&2
             exit 1
           fi
           answer="$("$root/usr/bin/vcc" --version | awk '{print $2}')"
