@@ -1513,8 +1513,8 @@ struct CaseRange {
 // parse_case_label reads `case constant: stmt`, or the GNU range spelling
 // `case low ... high: stmt`. The value is converted to the type of the
 // controlling expression where the label is placed, so what is kept here is the
-// constant as written; what this reader refuses is a value it cannot reduce to
-// one, which is a constant expression that is not a written constant.
+// constant as written; what this reader refuses is an expression that is not an
+// integer constant expression it can compute, such as one that names an object.
 //
 // A range is one label for every value from low to high, so it takes the same
 // duplicate check a single value does: it is refused where it overlaps a label
@@ -1558,14 +1558,14 @@ fn (mut p Parser) parse_case_label() ![]ast.Stmt {
 		// The label is refused for its value, and the statement under it is
 		// still read: the arm is not a place the switch can jump to, and
 		// skipping it would report the statements after it a second time.
-		p.error_at(t, 'unsupported: this case value is not one this reader reduces to an integer constant, and only a written integer constant or one of those negated is read')
+		p.error_at(t, 'unsupported: this case value is not an integer constant expression this compiler can compute')
 		return p.statement_under_label()
 	}
 	mut high := value
 	if is_range {
 		end := range_end or { return p.statement_under_label() }
 		high = p.case_constant(end) or {
-			p.error_at(t, 'unsupported: this case value is not one this reader reduces to an integer constant, and only a written integer constant or one of those negated is read')
+			p.error_at(t, 'unsupported: this case value is not an integer constant expression this compiler can compute')
 			return p.statement_under_label()
 		}
 	}
@@ -1663,39 +1663,20 @@ fn (mut p Parser) parse_default_label() ![]ast.Stmt {
 }
 
 // case_constant is the integer a case label names. 6.8.4.2 asks for an integer
-// constant expression, and what this reader reduces is a written integer
-// constant, a character constant, or a chain of `-`, `+` and `~` over one of
-// those: an expression worked out from several terms is refused by name rather
-// than guessed at, and the chain is walked with a loop because how many
-// operators one has is what the source says and not something a compiler
-// chooses.
+// constant expression, which is 6.6's set and not the shapes a label happens to
+// be written with, so the label is folded with the same folder an array bound
+// and a file-scope initializer go through: arithmetic, the shifts, the
+// comparisons, the bitwise and logical operators, the prefix operators, a cast
+// to an integer type and the conditional, over written constants and enum
+// constants, which are their values before they reach here. Measured on gcc
+// 16.2.1 under `-std=c99`, `case 1 + 1:`, `case (1 << 3):` and `case A + 1:`
+// with A an enumerator are all accepted; `case n:` for an object is still `case
+// label does not reduce to an integer constant`, and answers none here.
+//
+// The folder walks a chain of operators with a loop, so a label built from a
+// long run of them costs no stack per term.
 fn (mut p Parser) case_constant(expr ast.Expr) ?i64 {
-	mut operators := []string{}
-	mut node := expr
-	for node.kind == .unary {
-		unary := p.arena.unary(node)
-		operators << unary.op
-		node = unary.expr
-	}
-	if node.kind != .int_lit {
-		return none
-	}
-	mut value := p.arena.int_lit(node).value
-	for i := operators.len - 1; i >= 0; i-- {
-		match operators[i] {
-			'-' {
-				value = -value
-			}
-			'~' {
-				value = ~value
-			}
-			'+' {}
-			else {
-				return none
-			}
-		}
-	}
-	return value
+	return p.constant_value(expr)
 }
 
 // parse_for_clause_statements reads a for clause whose value is thrown away:

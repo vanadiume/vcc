@@ -2533,6 +2533,35 @@ fn test_a_case_value_that_is_not_a_constant_is_refused_by_name() {
 	assert result.diagnostics[0].line == 1
 }
 
+// A case label is an integer constant expression and not only a written
+// constant: 6.8.4.2p3 asks for one, and 6.6 leaves the arithmetic, the shifts,
+// the bitwise operators and the names of enum constants in. Measured on gcc
+// 16.2.1 under `-std=c99`, `case 1 + 1:`, `case (1 << 3):` and `case A + 1:`
+// with A an enumerator are all accepted, so the label goes through the folder an
+// array bound does and the value the switch matches against is the folded one.
+fn test_a_case_label_that_is_a_constant_expression_is_folded() {
+	result := parsed('enum E { A = 3 };\nint main(void) { int v = 8; switch (v) { case 1 + 1: v = 0; break; case (1 << 3): v = 1; break; case A + 1: v = 2; break; default: v = 3; } return v; }')
+	assert result.diagnostics.len == 0
+	arms := result.unit.decls[0].body[1].body[0].body
+	assert arms[0].kind == .case_stmt
+	assert arms[0].case_value() == 2
+	assert arms[3].kind == .case_stmt
+	assert arms[3].case_value() == 8
+	assert arms[6].kind == .case_stmt
+	assert arms[6].case_value() == 4
+	assert arms[9].kind == .default_stmt
+}
+
+// Two labels that are one value written two ways collide, which is the
+// constraint 6.8.4.2 states: gcc 16.2.1 refuses `case 1:` beside `case 1 + 0:`
+// with `duplicate case value`. The check reads the folded value, so the spelling
+// is not what makes two labels the same.
+fn test_a_duplicate_case_value_is_diagnosed_across_spellings() {
+	result := parsed('int main(void) { int n = 0; switch (n) { case 1: n = 1; break; case 1 + 0: n = 2; break; } return n; }')
+	assert result.diagnostics.len == 1
+	assert result.diagnostics[0].msg.contains('duplicate case value 1')
+}
+
 // Two case labels of one switch with the same value are refused where the second
 // is written, which is the constraint 6.8.4.2 states: measured on gcc 16.2.1,
 // `duplicate case value`.
