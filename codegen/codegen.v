@@ -14658,9 +14658,31 @@ fn complex_object_bytes(kind types.Kind) int {
 // because the object the member lies in may be a pointer's target and the store
 // then cannot be an offset from the frame.
 fn (mut e Emitter) copy_complex_into(address Slot, source Slot, kind types.Kind, line int, col int) !void {
+	bytes := complex_object_bytes(kind)
+	if kind == .complex_long_double {
+		// An extended component is sixteen bytes and no floating instruction
+		// moves one, so the object travels as words: four eight-byte moves out
+		// of the frame and into the address. The component-wise path below
+		// would write the low half of each component and leave the rest of the
+		// member holding what was there, which is what a union member of the
+		// type answered before this.
+		frame := e.slot_base_register(source, line, col)!
+		base := e.scratch(line, col)!
+		value := e.remainder(line, col)!
+		e.load_argument(address, base, e.target.word_size, line, col)!
+		mut done := 0
+		for done < bytes {
+			e.append(e.target.load_slot(frame, i32(source.offset + done), value, 8)!)
+			e.append(e.target.store_slot(base, 0, value, 8)!)
+			done += 8
+			if done < bytes {
+				e.append(e.target.add_immediate(base, 8))
+			}
+		}
+		return
+	}
 	single := kind == .complex_float
 	step := complex_component_width(complex_type_of(kind))
-	bytes := complex_object_bytes(kind)
 	frame := e.slot_base_register(source, line, col)!
 	base := e.scratch(line, col)!
 	e.load_argument(address, base, e.target.word_size, line, col)!

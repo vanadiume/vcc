@@ -3832,6 +3832,26 @@ fn test_a_complex_object_takes_an_assignment_at_every_width() {
 	assert run_image(emitted.bytes) == 0
 }
 
+// The same store through a member: an object of the extended complex type that
+// is a member of another object takes the value at the member's own address, and
+// the component-wise path wrote the low half of each sixteen-byte component and
+// left the rest of the member holding what was there. Measured on gcc 16.2.1,
+// this program exits 0.
+fn test_an_extended_complex_member_takes_an_assignment() {
+	source := 'struct W { long double _Complex z; long double tail; };' +
+		' int main(void) {' +
+		' long double _Complex z = 3.0L + 4.0Li;' +
+		' struct W w;' +
+		' w.tail = 2.5L;' +
+		' w.z = z;' +
+		' if (__real__ w.z != 3.0L || __imag__ w.z != 4.0L) { return 1; }' +
+		' if (w.tail != 2.5L) { return 2; }' +
+		' return 0; }'
+	emitted := emit(translation_unit(source), Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 0
+}
+
 // The part of a complex value is the component `__real__` or `__imag__` names,
 // and what the operator is worth is not the operand. A program that compares the
 // part with the component, uses it as one, passes it onward and writes it through
