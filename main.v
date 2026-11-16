@@ -1808,7 +1808,12 @@ fn query_answer(opts cli.Options, target backend.Target) string {
 		// asked of the install directory too. That is the search
 		// runtime_archive makes, and the two answers agreeing is what makes
 		// `-print-file-name=libvcc.a` name the file a link would take.
-		return target.library_file(opts.print_file_name, opts.library_dirs) or {
+		//
+		// The search is the link's own rather than the one a -l name goes
+		// through: libgcc.a and crtbeginS.o are in the toolchain's directory,
+		// which no -l name searches, and a query that stopped at the library
+		// directories answered a bare name while the link read the file.
+		return target.link_file(opts.print_file_name, opts.library_dirs) or {
 			linux.find_runtime_library(opts.print_file_name, target.library_dirs_for(opts.library_dirs),
 				install_dir()) or { opts.print_file_name }
 		}
@@ -1821,11 +1826,16 @@ fn query_answer(opts cli.Options, target backend.Target) string {
 		return opts.print_prog_name
 	}
 	if opts.print_libgcc_file_name {
-		// No libgcc is linked, so this answers what a search of the libraries
-		// finds for libgcc.a: on a machine that keeps it beside gcc the search
-		// has none and the name comes back, which is gcc's answer for a libgcc
-		// it does not have.
-		return target.library_file('libgcc.a', opts.library_dirs) or { 'libgcc.a' }
+		// The file a --link-libgcc link reads, which is the resolution that
+		// link makes rather than a search of the library directories: libgcc.a
+		// lives in the toolchain's own directory, and on a machine that keeps
+		// it there a search of the library directories has none and answered
+		// the name back. A machine without it answers the name, which is gcc's
+		// answer for a libgcc it does not have.
+		if runtime := target.runtime_archive(linux.libgcc_library, opts.library_dirs, install_dir()) {
+			return runtime.path
+		}
+		return linux.libgcc_library
 	}
 	if opts.print_multi_directory {
 		// One compilation variant exists, and its directory is the default one.

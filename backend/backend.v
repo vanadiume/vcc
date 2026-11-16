@@ -1560,6 +1560,16 @@ pub fn (t &Target) library_file(name string, given []string) ?string {
 	return linux.find_file(name, t.library_dirs_for(given))
 }
 
+// link_file is the file a name resolves to in the search a link makes, which is
+// the one above with the toolchain's own support directories after it. The two
+// searches are not the same and the difference is a file: libgcc.a,
+// crtbeginS.o, crtend.o and libgcc_eh.a are in no directory a -l name goes
+// through, so a query that asked only that search answered a bare name while the
+// link read the file.
+pub fn (t &Target) link_file(name string, given []string) ?string {
+	return linux.find_file(name, t.link_dirs(given))
+}
+
 // resolve_libraries is the linker's own resolution of the -l names: the file
 // behind each one and the name the image carries, in the order they were given
 // and without repeating one. A name that resolved to an archive is left out,
