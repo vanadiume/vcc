@@ -3574,7 +3574,34 @@ fn (e Emitter) aggregate_argument(call ast.Call, position int) ?abi.Class {
 			return classes[position]
 		}
 	}
+	if position < call.args.len && e.variadic_argument(call, position) {
+		// An unnamed argument is handed over as its own type: the default
+		// promotions reach the integer and floating types and never an object,
+		// so a structure written past the named parameters travels as itself.
+		typ := e.unit.arena.typ(call.args[position])
+		if typ.kind in [.struct_, .union_] {
+			class := abi.class_of(e.representation, typ)
+			if class.bytes > 0 {
+				return class
+			}
+		}
+	}
 	return none
+}
+
+// variadic_argument says whether argument `position` of a call is one of the
+// unnamed arguments of a variadic callee. A call written to a name reads the
+// parameter widths the declarations filled: the parser refuses a call with more
+// arguments than a fixed parameter list has, so a position past that list is one
+// of the ellipsis. A call through an expression reads the function type the
+// pointer carries, which says the same thing.
+fn (e Emitter) variadic_argument(call ast.Call, position int) bool {
+	if !call.callee.is_none() {
+		signature := e.call_signature(call) or { return false }
+		return signature.variadic && position >= signature.params().len
+	}
+	widths := e.signatures[call.name] or { return false }
+	return position >= widths.len
 }
 
 // address_of_object leaves the address of the object an expression names in the
@@ -3590,6 +3617,16 @@ fn (mut e Emitter) address_of_object(expr ast.Expr, depth int) !void {
 		comma := e.unit.arena.comma(expr)
 		e.emit_effect(comma.left, depth + 1)!
 		return e.address_of_object(comma.right, depth)
+	}
+	if expr.kind == .call {
+		node := e.unit.arena.call(expr)
+		if node.name == '__builtin_va_arg' && node.typ.is_aggregate() {
+			// The argument's bytes are in the list's register save area or on
+			// the caller's stack, and emit_va_arg copies them into a temporary
+			// of this frame and leaves that address in the accumulator, which
+			// is what an object handed over by value is.
+			return e.emit_expr_at(expr, depth)
+		}
 	}
 	if expr.kind == .ident {
 		node := e.unit.arena.ident(expr)
@@ -10992,8 +11029,9 @@ fn (mut e Emitter) emit_va_start(call ast.Call) !void {
 fn (mut e Emitter) emit_va_arg(call ast.Call) !void {
 	line := call.line
 	col := call.col
-	if call.typ.kind !in [types.Kind.int_, .unsigned_int, .long, .unsigned_long, .long_long,
-		.unsigned_long_long, .pointer, .double] {
+	aggregate := call.typ.kind in [types.Kind.struct_, .union_]
+	if !aggregate && call.typ.kind !in [types.Kind.int_, .unsigned_int, .long, .unsigned_long,
+		.long_long, .unsigned_long_long, .pointer, .double] {
 		e.diagnostics << problem(line, col, 'unsupported: __builtin_va_arg reads ${call.typ.describe()} out of an argument list, and an int, a 64-bit integer, a pointer and a double are the arguments this back end reads')
 		return error('unsupported argument type')
 	}
@@ -11004,6 +11042,17 @@ fn (mut e Emitter) emit_va_arg(call ast.Call) !void {
 	name := e.unit.arena.ident(call.args[0]).name
 	source := e.the_argument_list(name, '__builtin_va_arg', line, col) or {
 		return error('no argument list')
+	}
+	if aggregate {
+		// A structure is not a value: its bytes are read from where the
+		// argument is and copied into a temporary of this frame, and that
+		// address is what the expression is worth.
+		class := abi.class_of(e.representation, call.typ)
+		if class.bytes == 0 {
+			e.diagnostics << problem(line, col, 'unsupported: __builtin_va_arg reads ${call.typ.describe()} out of an argument list, and an object of no bytes is not one this back end reads')
+			return error('unsupported argument type')
+		}
+		return e.emit_va_arg_object(class, source, line, col)
 	}
 	base := e.frame_pointer(line, col)!
 	work := e.accumulator(line, col)!
@@ -11079,6 +11128,150 @@ fn (mut e Emitter) emit_va_arg(call ast.Call) !void {
 		e.append(e.target.load_indirect(work, work, width)!)
 	}
 	e.place(done)
+}
+
+// emit_va_arg_object reads a structure out of an argument list and leaves the
+// address of its bytes in the accumulator.
+//
+// The list keeps one cursor per register file and one address past the arguments
+// the registers ran out for. An object of one or two eightbytes is in the
+// registers when every one of its eightbytes has a register of its class left,
+// and on the stack when any one does not: the convention does not split an
+// object between the two. An object of more than two eightbytes is in memory
+// always. What is read is a copy: the bytes are written into a temporary of this
+// frame, and the expression is worth the address of that copy, which is what an
+// object handed over by value is everywhere else in this back end.
+fn (mut e Emitter) emit_va_arg_object(class abi.Class, source Slot, line int, col int) !void {
+	list := abi.argument_list()
+	area := abi.register_area()
+	base := e.frame_pointer(line, col)!
+	work := e.accumulator(line, col)!
+	pointer := e.scratch(line, col)!
+	cursor := e.remainder(line, col)!
+	object := e.reserve(class.bytes)
+	first := e.reserve(e.target.word_size)
+	second := e.reserve(e.target.word_size)
+	destination := e.reserve(e.target.word_size)
+	word := e.target.word_size
+	// The list keeps its place in the frame, so the read and the step both go
+	// through the address the name holds rather than through a copy of the tag.
+	e.append(e.target.load_slot(base, source.offset, pointer, word)!)
+	stacked := e.label()
+	done := e.label()
+	if class.count <= 2 {
+		// Is there a register of each file this object needs? An object of two
+		// eightbytes of the same class needs two registers of that file, and
+		// one whose eightbytes are of different classes needs one of each.
+		if class.count == 2 && class.first_floating == class.second_floating {
+			offset_at := if class.first_floating { list.fp_offset_at } else { list.gp_offset_at }
+			stride := if class.first_floating { area.fp_stride } else { area.gp_stride }
+			limit := if class.first_floating { abi.fp_limit() } else { abi.gp_limit() }
+			e.append(e.target.move_register64(work, pointer)!)
+			e.append(e.target.add_immediate(work, i32(offset_at)))
+			e.append(e.target.load_indirect(work, cursor, 4)!)
+			e.append(e.target.move_immediate32(work, u32(limit - stride))!)
+			e.append(e.target.compare_unsigned('<', cursor, work)!)
+			e.append(e.target.test(cursor)!)
+			e.branch(.branch_zero, stacked, line, col)!
+		} else {
+			if class.count == 2 || !class.first_floating {
+				e.append(e.target.move_register64(work, pointer)!)
+				e.append(e.target.add_immediate(work, i32(list.gp_offset_at)))
+				e.append(e.target.load_indirect(work, cursor, 4)!)
+				e.append(e.target.move_immediate32(work, u32(abi.gp_limit()))!)
+				e.append(e.target.compare_unsigned('<', cursor, work)!)
+				e.append(e.target.test(cursor)!)
+				e.branch(.branch_zero, stacked, line, col)!
+			}
+			if class.count == 2 || class.first_floating {
+				e.append(e.target.move_register64(work, pointer)!)
+				e.append(e.target.add_immediate(work, i32(list.fp_offset_at)))
+				e.append(e.target.load_indirect(work, cursor, 4)!)
+				e.append(e.target.move_immediate32(work, u32(abi.fp_limit()))!)
+				e.append(e.target.compare_unsigned('<', cursor, work)!)
+				e.append(e.target.test(cursor)!)
+				e.branch(.branch_zero, stacked, line, col)!
+			}
+		}
+		// The first eightbyte is at the cursor the tag holds for its file. The
+		// step past it is the stride of that file, so the second eightbyte in
+		// the same file is at the cursor the first one left, and one in the
+		// other file is at a cursor the first eightbyte did not touch.
+		e.append(e.target.move_register64(work, pointer)!)
+		e.append(e.target.add_immediate(work, i32(if class.first_floating {
+			list.fp_offset_at
+		} else {
+			list.gp_offset_at
+		})))
+		e.append(e.target.load_indirect(work, cursor, 4)!)
+		e.append(e.target.move_register64(work, pointer)!)
+		e.append(e.target.add_immediate(work, i32(list.area_at)))
+		e.append(e.target.load_indirect(work, work, 8)!)
+		e.append(e.target.add_reg64(work, cursor))
+		e.store_accumulator(first, line, col)!
+		e.append(e.target.add_immediate(cursor, i32(if class.first_floating {
+			area.fp_stride
+		} else {
+			area.gp_stride
+		})))
+		e.append(e.target.add_immediate(pointer, i32(if class.first_floating {
+			list.fp_offset_at
+		} else {
+			list.gp_offset_at
+		})))
+		e.append(e.target.store_indirect(pointer, cursor, 4)!)
+		first_width := if class.bytes < word { class.bytes } else { word }
+		e.append(e.target.address_of_slot(base, i32(object.offset), work))
+		e.store_accumulator(destination, line, col)!
+		e.copy_address_object(first, destination, first_width, line, col)!
+		if class.count == 2 {
+			e.append(e.target.load_slot(base, source.offset, pointer, word)!)
+			e.append(e.target.move_register64(work, pointer)!)
+			e.append(e.target.add_immediate(work, i32(if class.second_floating {
+				list.fp_offset_at
+			} else {
+				list.gp_offset_at
+			})))
+			e.append(e.target.load_indirect(work, cursor, 4)!)
+			e.append(e.target.move_register64(work, pointer)!)
+			e.append(e.target.add_immediate(work, i32(list.area_at)))
+			e.append(e.target.load_indirect(work, work, 8)!)
+			e.append(e.target.add_reg64(work, cursor))
+			e.store_accumulator(second, line, col)!
+			e.append(e.target.add_immediate(cursor, i32(if class.second_floating {
+				area.fp_stride
+			} else {
+				area.gp_stride
+			})))
+			e.append(e.target.add_immediate(pointer, i32(if class.second_floating {
+				list.fp_offset_at
+			} else {
+				list.gp_offset_at
+			})))
+			e.append(e.target.store_indirect(pointer, cursor, 4)!)
+			e.append(e.target.address_of_slot(base, i32(object.offset + word), work))
+			e.store_accumulator(destination, line, col)!
+			e.copy_address_object(second, destination, class.bytes - word, line, col)!
+		}
+		e.jump(done)!
+	}
+	e.place(stacked)
+	// The registers had none left, or the object is larger than two eightbytes:
+	// its bytes are the words at the overflow address, and that address moves
+	// past the words it read.
+	e.append(e.target.move_register64(cursor, pointer)!)
+	e.append(e.target.add_immediate(cursor, i32(list.overflow_at)))
+	e.append(e.target.load_indirect(cursor, work, 8)!)
+	e.store_accumulator(first, line, col)!
+	e.append(e.target.move_register64(cursor, work)!)
+	e.append(e.target.add_immediate(cursor, i32(class.count * word)))
+	e.append(e.target.add_immediate(pointer, i32(list.overflow_at)))
+	e.append(e.target.store_indirect(pointer, cursor, 8)!)
+	e.append(e.target.address_of_slot(base, i32(object.offset), work))
+	e.store_accumulator(destination, line, col)!
+	e.copy_address_object(first, destination, class.bytes, line, col)!
+	e.place(done)
+	e.append(e.target.address_of_slot(base, i32(object.offset), work))
 }
 
 // emit_va_copy copies one argument list into another.
