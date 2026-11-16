@@ -151,11 +151,13 @@ mut:
 	// body is being read, and is set aside and given back around each top-level
 	// definition so one function's nested names do not leak into the next.
 	nested_names map[string]string
-	// nested_declared is the nested functions a block has written without a body,
-	// with the place each was written. A nested function is emitted from the
-	// definition it is, so a declaration only puts a name in scope: gcc reads a
-	// definition of a declared name as the static one against the declaration's
-	// own linkage and refuses the pair, and so does this reader.
+	// nested_declared is the function declarations a block has written without a
+	// body, with the place each was written. Such a declaration is an ordinary
+	// one (6.2.2p5) and writes no code, so it is not emitted from here: the name
+	// it puts in scope is the symbol it names. A definition of that name written
+	// later in the same block is a nested function, whose definition is static
+	// where the declaration is not, and gcc refuses the pair; this reader
+	// reports it where the definition is written.
 	nested_declared map[string]tokenize.Token
 	// nested_owned says this block's nested_names is the block's own copy and not
 	// the one it was handed. A block that declares no nested function never

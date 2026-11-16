@@ -165,24 +165,29 @@ fn test_a_tag_does_not_hide_an_object_and_an_object_does_not_hide_a_tag() {
 // written.
 fn test_linkage_comes_from_the_storage_class_and_the_scope() {
 	// At file scope external unless static makes it internal.
-	assert linkage_for(.automatic, true, none) == .external
-	assert linkage_for(.extern_, true, none) == .external
-	assert linkage_for(.static_, true, none) == .internal
+	assert linkage_for(.automatic, true, false, none) == .external
+	assert linkage_for(.extern_, true, false, none) == .external
+	assert linkage_for(.static_, true, false, none) == .internal
 	// A typedef names a type and has no linkage at all.
-	assert linkage_for(.typedef_, true, none) == .none
-	assert linkage_for(.typedef_, false, none) == .none
+	assert linkage_for(.typedef_, true, false, none) == .none
+	assert linkage_for(.typedef_, false, false, none) == .none
 	// Inside a body, nothing has linkage except extern, which takes the linkage
 	// of the declaration outside it when there is one.
-	assert linkage_for(.automatic, false, none) == .none
-	assert linkage_for(.static_, false, none) == .none
-	assert linkage_for(.register_, false, none) == .none
-	assert linkage_for(.extern_, false, none) == .external
+	assert linkage_for(.automatic, false, false, none) == .none
+	assert linkage_for(.static_, false, false, none) == .none
+	assert linkage_for(.register_, false, false, none) == .none
+	assert linkage_for(.extern_, false, false, none) == .external
+	// A function declared in a body is external without the storage class
+	// written (6.2.2p5), and keeps the linkage of the declaration outside it.
+	assert linkage_for(.automatic, false, true, none) == .external
+	assert linkage_for(.extern_, false, true, none) == .external
 	outside := Symbol{
 		name:    'x'
 		linkage: .internal
 	}
-	assert linkage_for(.extern_, false, outside) == .internal
-	assert linkage_for(.extern_, true, outside) == .external
+	assert linkage_for(.extern_, false, false, outside) == .internal
+	assert linkage_for(.automatic, false, true, outside) == .internal
+	assert linkage_for(.extern_, true, false, outside) == .external
 }
 
 fn test_an_enumeration_constant_is_found_with_its_value() {

@@ -3208,13 +3208,35 @@ fn (mut p Parser) parse_nested_function(spec DeclSpec, d Declarator) ?ast.Stmt {
 		return none
 	}
 	if !p.at_punct('{') {
-		// A nested function written as a declaration puts a name in scope for the
-		// rest of the block and writes no code. gcc reads one whose body never
-		// comes, and a call to a name nothing defines is the symbol the link has
-		// to answer for, so there is nothing here to emit and nothing to report.
+		// A function declaration in a body is an ordinary declaration of an
+		// ordinary identifier (6.2.1p4, 6.2.2p5), and a function is not a
+		// nested function for being declared where one is written. It writes no
+		// code, and the name it puts in scope is the symbol it names: the call
+		// the rest of the block writes is a call to that symbol, which is the
+		// file-scope function when the file has one and the external one the
+		// link answers for when it does not. Measured before this reader gave
+		// the declaration a symbol of its own, `int f(char *p) { return *p + 1;
+		// } int main(void) { char s = 1; int f(char *); return f(&s) == 2 ? 0 :
+		// 1; }` was refused at the call with `main.f is used here and nothing in
+		// this file declares it`, which is the name of a nested function no
+		// statement defines.
+		//
+		// The storage class is the one thing C refuses here: 6.7.1 does not
+		// allow `static` on a function declared in a body. Measured on gcc
+		// 16.2.1, `int main(void) { static int f(char *); return 0; }` is
+		// `error: invalid storage class for function 'f'`. The name is recorded
+		// anyway, so one declaration costs one diagnostic and the call to it is
+		// not reported a second time as a name nothing declares.
+		if p.pending_storage !in [.automatic, .extern_] {
+			p.error_at(d.name_at, 'a constraint violation: ${d.name} is a function declared in a body, and the only storage class a function declaration there can be written with is extern')
+		}
 		p.own_nested()
-		p.nested_names[d.name] = p.nested_symbol(parent, d.name)
+		// The definition of a nested function is static, so a definition written
+		// after a declaration of the name is not the declaration's function and
+		// gcc refuses the pair. Recording the name is what lets the definition
+		// report it.
 		p.nested_declared[d.name] = d.name_at
+		p.declare_name(d.name, p.declared_type(spec.clause, d), d.name_at, false)
 		p.skip_declaration()
 		return none
 	}
