@@ -4844,6 +4844,7 @@ fn test_a_vector_is_an_object_of_its_components() {
 		' int take(v4 a) { return (int)a[3]; }' +
 		' v4i makei(void) { v4i a = {1, 2, 3, 4}; return a; }' +
 		' v2 maked(void) { v2 a = {1.5, 2.5}; return a; }' +
+		' v4 gv;' +
 		' int main(void) {' +
 		' v4 a = {1, 2, 3, 4};' +
 		' if (sizeof(v4) != 16 || __alignof__(v4) != 16) return 1;' +
@@ -4876,6 +4877,8 @@ fn test_a_vector_is_an_object_of_its_components() {
 		' v4 via;' +
 		' *(v4 *)&via = b;' +
 		' if ((int)via[1] != 20) return 16;' +
+		' gv = b;' +
+		' if ((int)gv[2] != 30) return 17;' +
 		' return 0; }'
 	emitted := emit(translation_unit(source), Options{})
 	assert emitted.diagnostics.len == 0

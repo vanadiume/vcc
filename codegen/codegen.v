@@ -3130,6 +3130,26 @@ fn (mut e Emitter) emit_assign(stmt ast.Stmt, depth int) !void {
 			if object.object && object.count == 0 {
 				return e.assign_object_global(stmt, object, depth)
 			}
+			if global := e.global_definition(stmt.target) {
+				if global.resolved.is_vector() {
+					// A top-level vector takes the bytes of another vector, which is
+					// the copy a local vector assignment makes: the object is the
+					// components, and storing one float would write the first only.
+					if !e.expr_type(expr).is_vector() {
+						e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.target} is a vector, and the value assigned to it is not a vector')
+						return error('non-vector value')
+					}
+					width := e.representation.size_of(global.resolved) or {
+						e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.target} is a vector whose size this back end does not know')
+						return error('unknown vector size')
+					}
+					register := e.accumulator(stmt.line, stmt.col)!
+					e.reference_object_address(register, stmt.target)
+					address := e.value_slot(depth)
+					e.store_accumulator(address, stmt.line, stmt.col)!
+					return e.assign_object(address, width, expr, stmt.line, stmt.col, depth)
+				}
+			}
 			return e.assign_global(stmt, object, expr, depth)
 		}
 		e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: ${stmt.target} is assigned to, and no local of that name is in scope')
