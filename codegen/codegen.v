@@ -3779,6 +3779,15 @@ fn (mut e Emitter) address_of_object(expr ast.Expr, depth int) !void {
 		}
 	}
 	typ := e.expr_type(expr)
+	if typ.is_vector() {
+		// A vector value in a place this back end has no computation for. The
+		// element-wise operators are lowered where a vector declaration is
+		// initialized, one component store per lane; a sum handed to a return or
+		// an assignment is not one of those places, and refusing it by name is
+		// the honest answer rather than computing one lane or a wrong width.
+		e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: the vector value of ${typ.describe()} is used where this back end does not compute it, and element-wise arithmetic is implemented only in the initializer of a vector declaration')
+		return error('vector value')
+	}
 	if typ.kind.is_complex() {
 		// A complex value that is not a name, a member or an element has no
 		// storage of its own: it is computed into a temporary and the address of

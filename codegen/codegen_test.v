@@ -4861,6 +4861,16 @@ fn test_a_vector_is_an_object_of_its_components() {
 		' if ((int)(d[0] * 2.0) != 3 || (int)(d[1] * 2.0) != 5) return 8;' +
 		' v4 e = {0};' +
 		' if ((int)e[3] != 0) return 9;' +
+		' v4 dv = b - a;' +
+		' if ((int)dv[0] != 9) return 10;' +
+		' v4 mv = a * b;' +
+		' if ((int)mv[1] != 40) return 11;' +
+		' v4 qv = b / a;' +
+		' if ((int)qv[0] != 10) return 12;' +
+		' v4 kv = a * 2;' +
+		' if ((int)kv[3] != 8) return 13;' +
+		' v4i j = i * 2;' +
+		' if (j[3] != 8) return 14;' +
 		' return 0; }'
 	emitted := emit(translation_unit(source), Options{})
 	assert emitted.diagnostics.len == 0
