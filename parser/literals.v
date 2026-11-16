@@ -1073,8 +1073,10 @@ fn hex_infinity(single bool) f64 {
 }
 
 // parse_character_literal reads a character constant into its value. The result
-// is an int in C, so that is what it becomes here.
-fn parse_character_literal(text string) !i64 {
+// is an int in C, so that is what it becomes here. The #if reader calls this too,
+// because C99 6.10.1p4 evaluates a character constant in a condition the way
+// 6.4.4.4 does, and two readers of the same constant must not disagree.
+pub fn parse_character_literal(text string) !i64 {
 	mut body := text
 	mut narrow := true
 	if body.len > 0 && (body[0] == `L` || body[0] == `u` || body[0] == `U`) {
@@ -1092,7 +1094,7 @@ fn parse_character_literal(text string) !i64 {
 		if inner.len > 1 {
 			return error('${text}: multi-character constants are not implemented')
 		}
-		return i64(inner[0])
+		return if narrow { narrow_character_value(i64(inner[0])) } else { i64(inner[0]) }
 	}
 	if inner.len >= 2 && (inner[1] == `u` || inner[1] == `U`) {
 		// A universal character name in a character constant names one
@@ -1107,7 +1109,22 @@ fn parse_character_literal(text string) !i64 {
 		}
 		return i64(name)
 	}
-	return parse_escape(inner[1..]) or { error('${text}: ${err.msg()}') }
+	value := parse_escape(inner[1..]) or { error('${text}: ${err.msg()}') }
+	if narrow {
+		return narrow_character_value(value)
+	}
+	return value
+}
+
+// narrow_character_value is the value an integer character constant holding one
+// character has when it is written without a prefix. C99 6.4.4.4 makes it the
+// character's representation read as an int, and plain char is signed on this
+// target, so the escape is cut to the byte it writes and that byte is sign
+// extended. Measured on gcc 16.2.1: '\377' is -1, '\200' is -128, '\777' is -1
+// and '\x1234' is 52.
+fn narrow_character_value(value i64) i64 {
+	low := value & 0xff
+	return if low > 127 { low - 256 } else { low }
 }
 
 fn parse_escape(rest string) !i64 {

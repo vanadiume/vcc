@@ -1,5 +1,6 @@
 module preprocess
 
+import parser
 import tokenize
 
 // The controlling expression of an #if is read before anything else on the
@@ -326,51 +327,12 @@ fn digit_value(c u8) ?int {
 }
 
 // character_value reads a character constant to the value it stands for. The
-// escapes are the ones a C compiler has to know; a multi-character constant is
-// C's implementation-defined case and is refused rather than guessed at.
+// escapes are C99 6.4.4.4's, and the parser already reads them for an expression,
+// so this is that reader and not a second copy of it: the two stages then agree
+// on the value of the same constant, including the plain-char constants outside
+// the range of char, and on the multi-character constant both refuse.
 fn character_value(text string) ?i64 {
-	// C99 6.4.4.4 lets a character constant name the encoding of what it holds: `L` for
-	// wchar_t, `u` for char16_t, `U` for char32_t. The #if evaluator wants the value, and
-	// the prefix does not change it, so the prefix is dropped and the constant read the
-	// same way either side of it. This is not a corner: glibc's <bits/wchar.h> asks
-	// `#elif L'\0' - 1 > 0`, so a prefix refused here refuses every translation unit that
-	// includes <wchar.h>.
-	mut quoted := text
-	for prefix in ['u8', 'L', 'u', 'U'] {
-		if quoted.starts_with(prefix) {
-			quoted = quoted[prefix.len..]
-			break
-		}
-	}
-	if quoted.len < 3 || quoted[0] != `'` || quoted[quoted.len - 1] != `'` {
-		return none
-	}
-	body := quoted[1..quoted.len - 1]
-	if body.len == 0 {
-		return none
-	}
-	if body[0] == `\\` {
-		if body.len < 2 {
-			return none
-		}
-		escaped := body[1]
-		return match escaped {
-			`n` { i64(10) }
-			`t` { i64(9) }
-			`r` { i64(13) }
-			`0` { i64(0) }
-			`a` { i64(7) }
-			`b` { i64(8) }
-			`f` { i64(12) }
-			`v` { i64(11) }
-			`\\`, `'`, `"`, `?` { i64(escaped) }
-			else { none }
-		}
-	}
-	if body.len != 1 {
-		return none
-	}
-	return i64(body[0])
+	return parser.parse_character_literal(text) or { return none }
 }
 
 // The wrapping arithmetic is the same three helpers the emitter uses, written
