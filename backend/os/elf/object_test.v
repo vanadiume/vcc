@@ -958,3 +958,22 @@ fn test_object_in_place_settles_the_jump_in_the_program_and_object_does_not() {
 	assert in_place == copied
 	assert program.text[1..5] == [u8(0xfb), u8(0xff), u8(0xff), u8(0xff)]
 }
+
+// The stack permission a program carries travels into the object's
+// `.note.GNU-stack` section as SHF_EXECINSTR on the section header. A program
+// with no trampoline leaves the flag clear, which is what tells a linker the
+// stack can stay non-executable.
+fn test_the_stack_note_carries_the_program_stack_permission() {
+	plain := object(one_call(), x86_64()) or {
+		panic('the object was not written: ${err.msg()}')
+	}
+	quiet := section_header_at(plain, section_gnu_stack)
+	assert u64_at(plain, quiet + 8) == 0
+	mut program := one_call()
+	program.executable_stack = true
+	needed_bytes := object(program, x86_64()) or {
+		panic('the object was not written: ${err.msg()}')
+	}
+	needed := section_header_at(needed_bytes, section_gnu_stack)
+	assert u64_at(needed_bytes, needed + 8) == shf_execinstr
+}

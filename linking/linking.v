@@ -204,6 +204,7 @@ pub fn link(units []image.Program, options Options) !image.Program {
 		text:                 merge_text(units, layout)
 		labels:               labels
 		stub:                 has_stub(units)
+		executable_stack:     merge_executable_stack(units)
 		entry_place:          place_of_entry
 		function_runs:        merge_function_runs(units, layout)
 		string_blob:          read_only.blob
@@ -490,6 +491,21 @@ fn merge_ifuncs(units []image.Program) map[string]bool {
 		}
 	}
 	return ifuncs
+}
+
+// merge_executable_stack answers whether the merged program's stack has to be
+// executable. The permission belongs to the image rather than to a unit, so one
+// unit's request is the link's: dropping it would take the code that runs out of
+// its frame and hand it a stack the kernel maps read-only. An input that says
+// nothing contributes nothing, which is the same answer ELF gives a note that
+// does not set the execute flag.
+fn merge_executable_stack(units []image.Program) bool {
+	for unit in units {
+		if unit.executable_stack {
+			return true
+		}
+	}
+	return false
 }
 
 // merge_read_only concatenates the units' read-only data at its final length and

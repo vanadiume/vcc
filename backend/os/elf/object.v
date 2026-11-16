@@ -80,8 +80,9 @@ const section_data = 4
 const section_symtab = 5
 const section_strtab = 6
 const section_shstrtab = 7
-// The note that says the stack does not have to be executable. It holds nothing,
-// and its presence is the whole point: a linker that does not find it has to
+// The note that states the stack permission. It holds nothing: the section's
+// SHF_EXECINSTR flag is the answer, set when the code runs instructions it wrote
+// into its own frame. A linker that does not find the section at all has to
 // assume the worst and asks about it.
 const section_gnu_stack = 8
 // The relocations against the writable data: one per eight bytes of a top-level
@@ -471,7 +472,8 @@ fn object_over(program image.Program, target backend.Target, mut text []u8) ![]u
 	} else {
 		u64(8)
 	}
-	emit_object_section_headers(mut output, parts, sizes, names, data_alignment, first_global)
+	emit_object_section_headers(mut output, parts, sizes, names, data_alignment, first_global,
+		program.executable_stack)
 	emit_object_header(mut output, target, parts)
 	return output
 }
@@ -810,7 +812,7 @@ fn put_symbol(mut output []u8, at int, name int, info u8, section u16, value u64
 // emit_object_section_headers writes the section header table, which a
 // relocatable file needs and a program does not: a linker reads the sections it
 // is told about, and there are no program headers to read instead.
-fn emit_object_section_headers(mut output []u8, parts PartOffsets, sizes PartSizes, names NameOffsets, data_alignment u64, first_global int) {
+fn emit_object_section_headers(mut output []u8, parts PartOffsets, sizes PartSizes, names NameOffsets, data_alignment u64, first_global int, executable_stack bool) {
 	// The null section is the whole of offset zero in the table, and the zeroes
 	// the file was made of are what belongs there, so nothing is written.
 	put_section_header(mut output, parts.headers + section_text * elf_section_header_size,
@@ -835,7 +837,7 @@ fn emit_object_section_headers(mut output []u8, parts PartOffsets, sizes PartSiz
 		names.shstrtab, sht_strtab, 0, parts.shstrtab, sizes.shstrtab,
 		0, 0, 1, 0)
 	put_section_header(mut output, parts.headers + section_gnu_stack * elf_section_header_size,
-		names.gnu_stack, sht_progbits, 0, 0, 0, 0, 0, 1, 0)
+		names.gnu_stack, sht_progbits, if executable_stack { shf_execinstr } else { 0 }, 0, 0, 0, 0, 1, 0)
 	put_section_header(mut output, parts.headers + section_rela_data * elf_section_header_size,
 		names.rela_data, sht_rela, 0, parts.rela_data, sizes.rela_data,
 		section_symtab, section_data, 8, elf_relocation_size)
