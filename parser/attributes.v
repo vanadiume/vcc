@@ -7,14 +7,15 @@ import tokenize
 // declaration may carry several of them, in one list or in several specifiers.
 //
 // Reading and keeping are different answers here, the same as everywhere else in
-// this file's neighbours. Three of the attributes this compiler reads say
-// something about the object the compiler emits, and only two of those change
-// it: `weak` changes a symbol's binding, `aligned(N)` asks for a stricter
-// alignment than the object's type would give it, and `noreturn`, `noinline` and
-// `dllimport` change nothing on this target, which is what gcc on Linux emits for
-// them too. Every other attribute is a claim about the object this compiler
-// cannot keep, so it is refused by name at the place it was written rather than
-// read past.
+// this file's neighbours. Three of the attributes this compiler reads change the
+// object it emits: `weak` changes a symbol's binding, `visibility("hidden")`
+// takes a name out of what the image exports, and `aligned(N)` asks for a
+// stricter alignment than the object's type would give it. `noreturn`,
+// `noinline` and `dllimport` change nothing on this target, which is what gcc on
+// Linux emits for them too. `section(name)` names a part of the object this
+// image has no place for, so it is refused by name at the place it was written,
+// and so is every other attribute this compiler does not implement: reading past
+// one would emit an object the program's author asked to be something else.
 
 // AttributeSet is what the attributes on one declaration say about the object it
 // declares. Zero is no attributes.
@@ -27,6 +28,13 @@ mut:
 	// alignment is the strictest alignment the declaration asked for with
 	// `aligned(N)`, and zero when it asked for none.
 	alignment int
+	// hidden says the declaration asked for its name to be hidden from what
+	// the image exports, which is what `visibility("hidden")` means: a name
+	// the object defines, calls inside the image reach, and nothing outside
+	// can bind to. `visibility("default")` is what a name without the
+	// attribute has, so it records nothing; `protected` and `internal` are
+	// refused by name, because neither is a binding this compiler can write.
+	hidden bool
 	// cleanup is the name of the function a declaration asked for with
 	// `cleanup(name)`, which the declaration runs on the object when the block
 	// it was declared in ends. It is empty when none was asked for.
@@ -42,9 +50,12 @@ mut:
 // declaration may carry more than one `__attribute__` specifier and 6.7 makes
 // all of them say something about the same object, so a strict alignment asked
 // for twice is the stricter of the two and a weak binding asked for once is
-// enough. A cleanup asked for twice is a constraint violation in gcc, and the
-// later name is the one kept here: the reader that places the attribute reports
-// the second, so this folding never has to.
+// enough. A name asked to be hidden once is hidden for the same reason: a
+// `visibility("default")` beside it only names what the absence of the
+// attribute already is, so it never takes the request back. A cleanup asked for
+// twice is a constraint violation in gcc, and the later name is the one kept
+// here: the reader that places the attribute reports the second, so this folding
+// never has to.
 //
 // A vector_size written twice with the same count is that count, and one list
 // that says nothing about a vector leaves the other's count alone. Two different
@@ -55,6 +66,7 @@ mut:
 fn merge_attributes(a AttributeSet, b AttributeSet) AttributeSet {
 	return AttributeSet{
 		weak:        a.weak || b.weak
+		hidden:      a.hidden || b.hidden
 		alignment:   if b.alignment > a.alignment { b.alignment } else { a.alignment }
 		cleanup:     if b.cleanup != '' { b.cleanup } else { a.cleanup }
 		vector_size: if b.vector_size > a.vector_size { b.vector_size } else { a.vector_size }
@@ -182,6 +194,54 @@ fn (mut p Parser) read_attribute(at tokenize.Token, args []tokenize.Token, repor
 				weak: true
 			}
 		}
+		'visibility' {
+			// GCC's manual gives this attribute in 6.33 and 6.34, and the one
+			// argument names how far the name reaches. This compiler carries the
+			// two ends of that answer. A hidden name is one the image defines,
+			// that calls inside the image reach, and that nothing outside can
+			// bind to: it is left out of what a shared object exports. The
+			// default is what a name with no attribute already is, so it is
+			// accepted and records nothing. The two middle answers, `protected`
+			// and `internal`, are refusals by name rather than a quiet
+			// narrowing to one of the ends: a program that asked for
+			// `protected` asked for a binding this object cannot write.
+			reach := attribute_visibility(args) or {
+				p.error_at(at, "unsupported: the attribute 'visibility' asks for '${attribute_argument_value(args)}', and this compiler reads 'default' or 'hidden'")
+				return AttributeSet{}
+			}
+			if reach == 'default' {
+				return AttributeSet{}
+			}
+			return AttributeSet{
+				hidden: true
+			}
+		}
+		'section' {
+			// GCC's manual gives this attribute in 6.33.1 and 6.34, and the
+			// argument names the section the definition is to be placed in. This
+			// compiler has no place to put one: the image model carries code,
+			// read-only data and writable data, and the container that wraps an
+			// image writes program headers and no section header table, so a
+			// named section is not something the object writer or the image
+			// writer can state. Refusing is the only honest answer: placing the
+			// object in `.data` and dropping the name would be an object that
+			// reads as correct while being what the declaration asked it not to
+			// be.
+			//
+			// Measured on gcc 16.2.1, `int g __attribute__((section(".mysec")))
+			// = 7;` puts `g` in `.mysec`. The refusal here names the section
+			// and the location so a program that needs one knows why it cannot
+			// be built, rather than finding out from a link that lost a
+			// section nothing named.
+			//
+			// The refusal is made wherever the attribute is written, not only
+			// where `report` is set, because the position after a declarator is
+			// the one `int g __attribute__((section(".mysec"))) = 7;` writes,
+			// and reading past it there is the silent drop this compiler used
+			// to do.
+			p.error_at(at, "unsupported: the attribute 'section' asks for '${attribute_argument_value(args)}', and this compiler places every object in .text, .rodata or .data: it has no named section to put one in")
+			return AttributeSet{}
+		}
 		'aligned' {
 			value := attribute_alignment(args) or {
 				if report {
@@ -269,6 +329,36 @@ fn attribute_arguments_text(args []tokenize.Token) string {
 		parts << t.text
 	}
 	return parts.join(' ')
+}
+
+// attribute_argument_value is one attribute's argument as a refusal should name
+// it: the literal's own bytes when the argument is a single string, so a
+// refusal over `section(".mysec")` says `.mysec` rather than the quoting around
+// it, and the argument as written otherwise.
+fn attribute_argument_value(args []tokenize.Token) string {
+	if args.len == 1 && args[0].kind == .string {
+		literal := parse_string_literal(args[0].text) or {
+			return attribute_arguments_text(args)
+		}
+		return literal.value
+	}
+	return attribute_arguments_text(args)
+}
+
+// attribute_visibility reads the one argument `visibility("...")` takes: the
+// name of how far the symbol reaches, written as a string literal. Only the
+// spelling this reader can carry is returned; an argument that is not a single
+// literal is `none`, and so is a name this compiler does not implement, because
+// the caller's refusal names both.
+fn attribute_visibility(args []tokenize.Token) ?string {
+	if args.len != 1 || args[0].kind != .string {
+		return none
+	}
+	literal := parse_string_literal(args[0].text) or { return none }
+	if literal.value != 'default' && literal.value != 'hidden' {
+		return none
+	}
+	return literal.value
 }
 
 // attribute_alignment reads the one argument `aligned(N)` takes. The argument is

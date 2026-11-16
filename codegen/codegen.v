@@ -1091,6 +1091,12 @@ fn (mut e Emitter) build() ![]u8 {
 			if decl.weak {
 				e.program.weak[decl.name] = true
 			}
+			// A definition the file asked to keep out of what the image exports
+			// is recorded the same way, and for the same reason: only a
+			// definition is a name something outside could bind to.
+			if decl.hidden {
+				e.program.hidden[decl.name] = true
+			}
 			// A definition the file wrote `static` has internal linkage, so
 			// its object symbol wears the local binding and another unit may
 			// define the same name. A prototype never reaches the symbol
@@ -1276,6 +1282,16 @@ fn (mut e Emitter) build() ![]u8 {
 			e.program.weak[decl.name] = true
 		} else if decl.name in e.program.imports {
 			e.program.weak_imports[decl.name] = true
+		}
+	}
+	// `visibility("hidden")` belongs to the name the same way, so a prototype
+	// that carries it hides the definition however the two are ordered. The
+	// name is the image's own either way: only a definition is a name another
+	// object could bind to, so a hidden declaration of a function nothing here
+	// defines says nothing the export list reads.
+	for decl in declared_functions {
+		if decl.hidden && decl.name in e.program.defined {
+			e.program.hidden[decl.name] = true
 		}
 	}
 	// Every import this image made has to have something to bind to. The loader
@@ -13931,6 +13947,12 @@ fn (mut e Emitter) place_defined_objects() {
 		// not a function reached it, because the symbol table names them all.
 		if global.static_ {
 			e.program.internal[global.name] = true
+		}
+		// An object asked to be hidden is recorded for every definition in the
+		// unit for the same reason a static one is: the export list names the
+		// definitions, and a name no function reached still defines something.
+		if global.hidden {
+			e.program.hidden[global.name] = true
 		}
 		if global.resolved.kind.is_decimal() {
 			// A top-level object of a decimal type is storage the image would

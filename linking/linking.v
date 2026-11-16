@@ -217,6 +217,7 @@ pub fn link(units []image.Program, options Options) !image.Program {
 		read_only_alignment:  names.read_only_alignment
 		defined:              names.defined
 		weak:                 names.weak
+		hidden:               names.hidden
 		internal:             names.internal
 		imports:              names.imports
 		object_imports:       names.object_imports

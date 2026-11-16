@@ -856,6 +856,7 @@ fn (mut p Parser) parse_declaration() []ast.FnDecl {
 						params:   d.function_params()
 						defined:  true
 						weak:     spec.attributes.weak || trailing.weak
+						hidden:   spec.attributes.hidden || trailing.hidden
 						static_:  spec.storage == .static_
 						inline_:  spec.is_inline
 						extern_:  spec.is_extern
@@ -882,6 +883,7 @@ fn (mut p Parser) parse_declaration() []ast.FnDecl {
 					resolved: p.declared_type(spec.clause, d)
 					params:   d.function_params()
 					weak:     spec.attributes.weak || trailing.weak
+					hidden:   spec.attributes.hidden || trailing.hidden
 					static_:  spec.storage == .static_
 					inline_:  spec.is_inline
 					extern_:  spec.is_extern
@@ -936,12 +938,13 @@ fn (mut p Parser) parse_declaration() []ast.FnDecl {
 fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, trailing AttributeSet) bool {
 	mut data_defined := false
 	mut data_name := ''
-	// data_weak and data_alignment are what the attributes on a top-level
-	// object asked for: a weak symbol binding, and a stricter alignment than the
-	// object's type gives it. They are read where the object's type is, because
-	// the declaration is known to be an object only after the declarator has
-	// been read.
+	// data_weak, data_hidden and data_alignment are what the attributes on a
+	// top-level object asked for: a weak symbol binding, a name the image does
+	// not export, and a stricter alignment than the object's type gives it.
+	// They are read where the object's type is, because the declaration is
+	// known to be an object only after the declarator has been read.
 	mut data_weak := false
+	mut data_hidden := false
 	mut data_alignment := 0
 	mut data_at := spec.start
 	// What a definition of an object at the top level needs to be laid out: the
@@ -1074,6 +1077,7 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 	// the declarator, so the two lists are read together.
 	asked := merge_attributes(spec.attributes, trailing)
 	data_weak = asked.weak
+	data_hidden = asked.hidden
 	data_alignment = asked.alignment
 	// A name that stands for an array type hides the brackets in
 	// the specifiers, so a file-scope object may be an array the
@@ -1521,6 +1525,7 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 				// attribute here left the name looking like a plain undefined
 				// one, which a link has to find a definition for.
 				weak:     data_weak
+				hidden:   data_hidden
 				external: true
 				line:     data_at.line
 				col:      data_at.col
@@ -1631,6 +1636,7 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 			bytes:        bytes
 			alignment:    data_alignment
 			weak:         data_weak
+			hidden:       data_hidden
 			static_:      spec.storage == .static_
 			init:         data_init
 			init_float:   data_init_float
@@ -1724,6 +1730,7 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 		count:         data_count
 		alignment:     data_alignment
 		weak:          data_weak
+		hidden:        data_hidden
 		static_:       spec.storage == .static_
 		init:          init
 		init_float:    init_float

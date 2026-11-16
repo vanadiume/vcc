@@ -608,7 +608,11 @@ fn irelative_count(program image.Program, extra []string) int {
 // export_names is the names a shared object defines and offers to whatever loads
 // it: every function this image defines and every object it holds, with the
 // internal ones left out, because internal linkage is a promise that the name
-// does not leave the image (6.2.2p3). The two sets are sorted, functions before
+// does not leave the image (6.2.2p3), and the ones the program asked to hide
+// with `visibility("hidden")` left out for the same reason. A hidden name is one
+// the image defines and its own references reach; what it is not is a name the
+// loader finds, so the table that answers a loader does not carry it. The two
+// sets are sorted, functions before
 // objects, so the same program writes the same table every run; `defined` and
 // `globals` are maps and a map's order is not. `labels` is not the set to read:
 // it holds the jump labels inside a function beside the function names, and a
@@ -620,12 +624,12 @@ fn export_names(program image.Program) []string {
 	objects.sort()
 	mut names := []string{}
 	for name in functions {
-		if name !in program.internal {
+		if name !in program.internal && name !in program.hidden {
 			names << name
 		}
 	}
 	for name in objects {
-		if name !in program.internal {
+		if name !in program.internal && name !in program.hidden {
 			names << name
 		}
 	}

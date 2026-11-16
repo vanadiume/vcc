@@ -131,6 +131,11 @@ const stt_gnu_ifunc = u8(10)
 const stb_local = u8(0)
 const stb_weak = u8(2)
 
+// st_other's low two bits are a symbol's visibility. STV_HIDDEN is what
+// `__attribute__((visibility("hidden")))` asks a compiler to write: the symbol
+// is still global, and a name with it is not one another image may bind to.
+const stv_hidden = u8(2)
+
 // The relocation kinds this reader carries, by the psABI numbers an ELF64
 // x86-64 object carries, and the width of the field each one fills. The ones
 // with four-byte pc-relative fields come in two spellings: a direct reference to
@@ -350,6 +355,7 @@ pub fn read(bytes []u8, target backend.Target) !image.Program {
 		globals:             map[string]image.GlobalSlot{}
 		internal:            map[string]bool{}
 		weak:                map[string]bool{}
+		hidden:              map[string]bool{}
 		weak_imports:        map[string]bool{}
 		tls_slots:           map[string]bool{}
 		read_only_globals:   map[string]GlobalSlot{}
@@ -722,14 +728,14 @@ fn read_definitions(bytes []u8, sections []Section, layout Layout, mut program i
 			if align > program.globals_alignment {
 				program.globals_alignment = align
 			}
-			record_linkage(mut program, name, bind)
+			record_linkage(mut program, name, bind, sym.other)
 			continue
 		}
 		match layout.blob_of[int(sym.shndx)] {
 			.code {
 				program.labels[name] = layout.base_of[int(sym.shndx)] + int(sym.value)
 				program.defined[name] = true
-				record_linkage(mut program, name, bind)
+				record_linkage(mut program, name, bind, sym.other)
 			}
 			.writable {
 				width := if sym.size > 0 { int(sym.size) } else { 8 }
@@ -737,7 +743,7 @@ fn read_definitions(bytes []u8, sections []Section, layout Layout, mut program i
 					offset: layout.base_of[int(sym.shndx)] + int(sym.value)
 					width:  width
 				}
-				record_linkage(mut program, name, bind)
+				record_linkage(mut program, name, bind, sym.other)
 			}
 			.read_only {
 				// An object defined in read-only data: a `const` object at
@@ -750,7 +756,7 @@ fn read_definitions(bytes []u8, sections []Section, layout Layout, mut program i
 					offset: layout.base_of[int(sym.shndx)] + int(sym.value)
 					width:  width
 				}
-				record_linkage(mut program, name, bind)
+				record_linkage(mut program, name, bind, sym.other)
 			}
 			.tls {
 				offset := layout.base_of[int(sym.shndx)] + int(sym.value)
@@ -763,7 +769,7 @@ fn read_definitions(bytes []u8, sections []Section, layout Layout, mut program i
 					function: false
 					tls:      true
 				}
-				record_linkage(mut program, name, bind)
+				record_linkage(mut program, name, bind, sym.other)
 			}
 			.none {}
 		}
@@ -773,15 +779,21 @@ fn read_definitions(bytes []u8, sections []Section, layout Layout, mut program i
 	}
 }
 
-// record_linkage marks a definition with the binding its st_info byte carries.
-// A local binding is what a file-scope `static` gives a name, and a weak one is
-// what a definition a link may replace carries.
-fn record_linkage(mut program image.Program, name string, bind u8) {
+// record_linkage marks a definition with the binding its st_info byte carries
+// and the visibility its st_other byte carries. A local binding is what a
+// file-scope `static` gives a name, a weak one is what a definition a link may
+// replace carries, and a hidden visibility is what `visibility("hidden")` asks
+// for. The last is not a binding: the name is still global, and what it is not
+// is a name the image a link builds may offer to anything outside it.
+fn record_linkage(mut program image.Program, name string, bind u8, other u8) {
 	if bind == stb_local {
 		program.internal[name] = true
 	}
 	if bind == stb_weak {
 		program.weak[name] = true
+	}
+	if other & 0x3 == stv_hidden {
+		program.hidden[name] = true
 	}
 }
 
