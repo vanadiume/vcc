@@ -33,6 +33,18 @@ pub fn version_line() string {
 	return 'vcc ${version} (pure V)'
 }
 
+// LinkItem is one word of a link in the place the command line wrote it: an
+// input file, or a -l name the link resolves when it reaches it. The two lists
+// beside it cannot say this between themselves, and the order is part of what
+// the command line means: a linker searches a library after the objects written
+// before it and before the objects written after it, so a name a library answers
+// is one the objects before it opened and not one a later object opens.
+pub struct LinkItem {
+pub:
+	value   string
+	library bool
+}
+
 // Options is the command line after it has been read, in the terms the rest of
 // the compiler uses.
 //
@@ -63,9 +75,13 @@ pub mut:
 	nodefaultlibs bool
 	library_dirs  []string
 	libraries     []string
-	defines       []string
-	undefines     []string
-	target        string
+	// link_items are the inputs and -l names in the order they were written.
+	// A link reads this rather than the two lists above, because the place a
+	// library holds on the line decides which objects it answers.
+	link_items []LinkItem
+	defines    []string
+	undefines  []string
+	target     string
 	// standard is the -std= spelling as it was written, and dialect is the mode
 	// that spelling names. Both are kept because both are asked for: the
 	// spelling is what the command line, a verbose mode and a build compare
@@ -252,6 +268,9 @@ pub fn parse(args []string) !Options {
 	}
 	mut optimization := opts.optimization
 	mut positional := []string{}
+	// link_items follows the words in the order the loop reads them, so the
+	// place a -l name holds beside the inputs is kept for the link.
+	mut link_items := []LinkItem{}
 	mut end_of_flags := false
 	mut cursor := Cursor{
 		args: expanded
@@ -260,6 +279,9 @@ pub fn parse(args []string) !Options {
 		arg := cursor.next()
 		if end_of_flags {
 			positional << arg
+			link_items << LinkItem{
+				value: arg
+			}
 			continue
 		}
 		if arg == '--' {
@@ -268,6 +290,9 @@ pub fn parse(args []string) !Options {
 		}
 		if arg == '-' || !arg.starts_with('-') {
 			positional << arg
+			link_items << LinkItem{
+				value: arg
+			}
 			continue
 		}
 		if arg == '--version' || arg == '-v' {
@@ -427,9 +452,18 @@ pub fn parse(args []string) !Options {
 		} else if arg.starts_with('-L') {
 			opts.library_dirs << arg[2..]
 		} else if arg == '-l' {
-			opts.libraries << cursor.value_of('')!
+			name := cursor.value_of('')!
+			opts.libraries << name
+			link_items << LinkItem{
+				value:   name
+				library: true
+			}
 		} else if arg.starts_with('-l') {
 			opts.libraries << arg[2..]
+			link_items << LinkItem{
+				value:   arg[2..]
+				library: true
+			}
 		} else if arg == '-target' || arg == '--target' {
 			opts.target = cursor.value_of('')!
 		} else if arg.starts_with('--target=') {
@@ -476,8 +510,24 @@ pub fn parse(args []string) !Options {
 	if opts.run && positional.len > 0 {
 		opts.inputs = [positional[0]]
 		opts.run_args = positional[1..]
+		// Only the first word is a link input in a run: the rest are the
+		// program's own arguments. A library is a flag wherever it was
+		// written, so it stays in the order even past the arguments, and
+		// an input after the first is dropped because the run never reads
+		// it.
+		mut seen_input := false
+		for item in link_items {
+			if !item.library {
+				if seen_input {
+					continue
+				}
+				seen_input = true
+			}
+			opts.link_items << item
+		}
 	} else {
 		opts.inputs = positional
+		opts.link_items = link_items
 	}
 	return opts
 }
