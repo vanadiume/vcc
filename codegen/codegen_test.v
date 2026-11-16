@@ -4871,6 +4871,11 @@ fn test_a_vector_is_an_object_of_its_components() {
 		' if ((int)kv[3] != 8) return 13;' +
 		' v4i j = i * 2;' +
 		' if (j[3] != 8) return 14;' +
+		' v4i ci = (v4i)a;' +
+		' if (ci[0] != 1065353216) return 15;' +
+		' v4 via;' +
+		' *(v4 *)&via = b;' +
+		' if ((int)via[1] != 20) return 16;' +
 		' return 0; }'
 	emitted := emit(translation_unit(source), Options{})
 	assert emitted.diagnostics.len == 0

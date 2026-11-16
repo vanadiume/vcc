@@ -3240,6 +3240,16 @@ fn (mut e Emitter) assign_deref(stmt ast.Stmt, target ast.Expr, expr ast.Expr, d
 		return e.store_decimal_through_object(address, expr, decimal_width_of(unary.typ),
 			stmt.line, stmt.col, depth)
 	}
+	if unary.typ.is_vector() {
+		// A write through an address of a vector is the object copy an assignment
+		// between two vectors is, at the address the pointer holds: the components
+		// are the bytes of the object and the machine moves them in chunks.
+		width := e.representation.size_of(unary.typ) or {
+			e.diagnostics << problem(stmt.line, stmt.col, 'unsupported: *p is assigned through an address of ${unary.typ.describe()}, and an object of that type has no size here')
+			return error('incomplete vector type')
+		}
+		return e.assign_object(address, width, expr, stmt.line, stmt.col, depth)
+	}
 	if unary.typ.is_aggregate() {
 		// A write through an address of an aggregate type is the object copy an
 		// assignment to an object of the same type is, at the address the
@@ -3777,6 +3787,13 @@ fn (mut e Emitter) address_of_object(expr ast.Expr, depth int) !void {
 			e.emit_expr_at(unary.expr, depth)!
 			return
 		}
+	}
+	if expr.kind == .cast && e.expr_type(expr).is_vector() {
+		// A conversion between two vectors is computed into a temporary of this
+		// frame, and the address of that object is what the conversion is worth:
+		// the same address a vector name is worth, which is what a caller reading
+		// the object and a subscript scaling from it both need.
+		return e.emit_cast(expr, depth)
 	}
 	typ := e.expr_type(expr)
 	if typ.is_vector() {
@@ -8698,6 +8715,33 @@ fn (mut e Emitter) emit_cast(expr ast.Expr, depth int) !void {
 	if message := types.function_void_pointer_problem(cast.typ, e.expr_type(cast.expr)) {
 		e.diagnostics << pedantic(cast.line, cast.col, message)
 		return e.emit_expr_at(cast.expr, depth + 1)
+	}
+	if target.is_vector() {
+		// A conversion between two vectors of the same size is the object's
+		// bytes: GNU C reinterprets the components rather than converting them
+		// one at a time, and the headers write the cast as the way to read a
+		// float vector's bytes as an int vector. The value this back end hands
+		// on for a vector is the address of its storage, so the copy is written
+		// into a temporary and that object's address is what the conversion is
+		// worth. A conversion from or to anything that is not a vector of the
+		// same size is refused by name: no scalar converts to a whole vector here.
+		source := e.expr_type(cast.expr)
+		source_bytes := e.representation.size_of(source) or { 0 }
+		target_bytes := e.representation.size_of(target) or { 0 }
+		if !source.is_vector() || source_bytes == 0 || source_bytes != target_bytes {
+			e.diagnostics << problem(cast.line, cast.col, 'unsupported: a conversion from ${source.describe()} to ${target.describe()} is not one this back end makes, and a vector converts to another vector of the same size')
+			return error('vector conversion')
+		}
+		object := e.reserve(align(target_bytes, e.target.word_size))
+		frame := e.frame_pointer(cast.line, cast.col)!
+		register := e.accumulator(cast.line, cast.col)!
+		e.append(e.target.address_of_slot(frame, i32(object.offset), register))
+		address := e.value_slot(depth)
+		e.store_accumulator(address, cast.line, cast.col)!
+		e.assign_object(address, target_bytes, cast.expr, cast.line, cast.col, depth)!
+		result := e.accumulator(cast.line, cast.col)!
+		e.append(e.target.address_of_slot(frame, i32(object.offset), result))
+		return
 	}
 	if e.decimal_of(cast.expr) {
 		// The conversion of a decimal to another type is the step decimal_step
