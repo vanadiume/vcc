@@ -614,6 +614,79 @@ fn test_link_libgcc_is_accepted_only_by_the_experimental_binary() {
 	}
 }
 
+// -shared-libvcc is not experimental: every binary this tree builds reads it,
+// because it asks for this compiler's own runtime in its shared form and there is
+// nothing here that depends on a toolchain this binary does not carry.
+//
+// The pairs it cannot mean are refused by naming both flags. A program links one
+// runtime, so -shared-libvcc with --link-libgcc or with -shared-libgcc would take
+// one of the two and drop the other, and -static writes a program with no loader
+// in it, so a library the loader maps has nowhere to come from. The pair is
+// judged before either flag's own gate, so a binary that cannot honor
+// --link-libgcc still answers a line naming both with the pair.
+fn test_shared_libvcc_is_read_and_its_conflicts_are_refused() {
+	assert parse(['-shared-libvcc', 'a.c'])!.shared_libvcc
+	assert parse(['--shared-libvcc', 'a.c'])!.shared_libvcc
+	assert !parse(['a.c'])!.shared_libvcc
+	both := parse(['-shared-libvcc', '-static', 'a.c']) or {
+		assert err.msg().contains('-shared-libvcc')
+		assert err.msg().contains('-static')
+		return
+	}
+	_ = both
+	assert false, '-shared-libvcc with -static was accepted'
+}
+
+// The two shared runtimes on one line is the pair that is refused first, so the
+// answer names them and not the runtime either one selects. This needs no
+// experimental binary: the pair is a pair whatever the binary can honor.
+fn test_the_two_shared_runtimes_are_refused_by_name() {
+	parsed := parse(['-shared-libvcc', '-shared-libgcc', 'a.c']) or {
+		assert err.msg().contains('-shared-libvcc')
+		assert err.msg().contains('-shared-libgcc')
+		return
+	}
+	_ = parsed
+	assert false, '-shared-libvcc with -shared-libgcc was accepted'
+	$if experimental_libgcc ? {
+		// The same pair with the flag that selects the libgcc runtime is the
+		// same answer, because the two shared flags are asked about first.
+		asked := parse(['-shared-libvcc', '--link-libgcc', '-shared-libgcc', 'a.c']) or {
+			assert err.msg().contains('-shared-libvcc')
+			assert err.msg().contains('-shared-libgcc')
+			return
+		}
+		_ = asked
+		assert false, '-shared-libvcc with --link-libgcc and -shared-libgcc was accepted'
+	}
+}
+
+// -shared-libgcc is the shared form of the runtime --link-libgcc selects, so it
+// is experimental the same way and needs that flag: alone it names nothing a link
+// could take.
+fn test_shared_libgcc_needs_the_link_libgcc_flag() {
+	$if experimental_libgcc ? {
+		assert parse(['--link-libgcc', '-shared-libgcc', 'a.c'])!.shared_libgcc
+		assert parse(['--link-libgcc', '-shared-libgcc', 'a.c'])!.runtime_conflict_refusal() == none
+		says := parse(['-shared-libgcc', 'a.c']) or {
+			assert err.msg().contains('-shared-libgcc')
+			assert err.msg().contains('--link-libgcc')
+			return
+		}
+		_ = says
+		assert false, '-shared-libgcc without --link-libgcc was accepted'
+	} $else {
+		// The flag does not exist in this binary, so it is refused by name.
+		says := parse(['-shared-libgcc', 'a.c']) or {
+			assert err.msg().contains('-shared-libgcc')
+			assert err.msg().contains('experimental_libgcc')
+			return
+		}
+		_ = says
+		assert false, 'a binary built without -d experimental_libgcc accepted -shared-libgcc'
+	}
+}
+
 // With no flags at all the command line still has to answer: every list empty,
 // every switch off, and the optimizer at the level it runs when nothing says
 // otherwise. This is the baseline a later flag is a change from.

@@ -148,7 +148,19 @@ pub mut:
 	// with -d experimental_libgcc accepts the flag, and every other binary
 	// refuses it by name rather than recording it.
 	link_libgcc bool
-	preprocess  bool
+	// shared_libvcc is -shared-libvcc: the runtime a program links is this
+	// compiler's libvcc.so rather than libvcc.a, so the program names the
+	// shared object and the loader maps it instead of the archive being
+	// merged into the file. The two runtimes define the same helpers and a
+	// program links one of them, which is why the flags that name another
+	// runtime, or a link with no loader at all, are refused beside it.
+	shared_libvcc bool
+	// shared_libgcc is -shared-libgcc: with --link-libgcc, the runtime is
+	// libgcc_s.so.1 rather than libgcc.a. It is experimental for the reason
+	// --link-libgcc is, and it needs that flag because libgcc_s is the shared
+	// form of the runtime that flag selects rather than a runtime of its own.
+	shared_libgcc bool
+	preprocess    bool
 	// print_ast stops after the tree is built: nothing is emitted and nothing is
 	// written, which is what `-print-ast` is for.
 	print_ast     bool
@@ -406,17 +418,18 @@ pub fn parse(args []string) !Options {
 			opts.nostdlib = true
 		} else if arg == '-nodefaultlibs' {
 			opts.nodefaultlibs = true
+		} else if arg == '-shared-libvcc' || arg == '--shared-libvcc' {
+			// Not experimental: this is this compiler's own runtime in its
+			// shared form, and every binary this tree builds can name it.
+			opts.shared_libvcc = true
+		} else if arg == '-shared-libgcc' || arg == '--shared-libgcc' {
+			opts.shared_libgcc = true
 		} else if arg == '-link-libgcc' || arg == '--link-libgcc' {
-			// The flag is experimental and the binary is what decides whether it
-			// exists, so the refusal is here rather than in the link: a run that
-			// records a flag it cannot honor would report a successful link that
-			// linked the wrong runtime. V's -d names a comptime identifier, so
+			// Recorded here and judged once the whole line has been read, so a
+			// line naming two runtimes is told about the pair rather than about
+			// whichever flag came first. V's -d names a comptime identifier, so
 			// the define is spelled experimental_libgcc.
-			$if experimental_libgcc ? {
-				opts.link_libgcc = true
-			} $else {
-				return error('--link-libgcc needs a compiler built with -d experimental_libgcc: this binary links its own libvcc')
-			}
+			opts.link_libgcc = true
 		} else if arg == '-undef' {
 			opts.undef_builtins = true
 		} else if arg == '-dM' {
@@ -574,6 +587,29 @@ pub fn parse(args []string) !Options {
 		opts.inputs = positional
 		opts.link_items = link_items
 	}
+	// The runtime flags are judged here, in this order, rather than where each
+	// one was read. Two runtimes on one line is a pair that cannot mean
+	// anything whatever the binary is, and it is asked first so that the
+	// answer names both flags; a flag the binary cannot honor is refused once
+	// the line is known to name one runtime, so a build that mixed an
+	// experimental flag with a flag it cannot have is told about the pair.
+	if refusal := opts.runtime_conflict_refusal() {
+		return error(refusal)
+	}
+	$if experimental_libgcc ? {
+		// -shared-libgcc is the shared form of the runtime --link-libgcc
+		// selects, so on its own it names nothing a link could take.
+		if opts.shared_libgcc && !opts.link_libgcc {
+			return error('-shared-libgcc needs --link-libgcc, which selects the runtime this flag makes shared')
+		}
+	} $else {
+		if opts.shared_libgcc {
+			return error('-shared-libgcc needs a compiler built with -d experimental_libgcc: this binary links its own libvcc')
+		}
+		if opts.link_libgcc {
+			return error('--link-libgcc needs a compiler built with -d experimental_libgcc: this binary links its own libvcc')
+		}
+	}
 	return opts
 }
 
@@ -642,6 +678,33 @@ pub fn (opts Options) start_files() bool {
 pub fn (opts Options) link_kind_conflict_refusal() ?string {
 	if opts.shared && opts.static_link {
 		return '-shared and -static ask for different links: a shared object is loaded by a program that names it, and a static program is started with its libraries inside it'
+	}
+	return none
+}
+
+// runtime_conflict_refusal is the message for a command line that names two
+// runtimes, or a runtime that cannot be the one the link writes, and none when
+// the command line asks for at most one thing a program can link.
+//
+// The pairs are refused rather than resolved because each one would be a flag
+// dropped in silence: -shared-libvcc and -shared-libgcc make two different
+// libraries shared, -shared-libvcc with --link-libgcc is one runtime against the
+// other, and -shared-libvcc with -static asks for a library the loader maps in a
+// program that names no loader. The two shared runtimes are asked first, so a
+// line naming both is told about the pair rather than about whichever one the
+// other rule would have caught.
+pub fn (opts Options) runtime_conflict_refusal() ?string {
+	if opts.shared_libvcc && opts.shared_libgcc {
+		return '-shared-libvcc and -shared-libgcc name two runtimes: the first makes libvcc shared and the second makes libgcc shared, and a program links one runtime'
+	}
+	if opts.shared_libvcc && opts.link_libgcc {
+		return "-shared-libvcc and --link-libgcc name two runtimes: the first is this compiler's libvcc.so and the second is the toolchain's libgcc, and a program links one runtime"
+	}
+	if opts.shared_libvcc && opts.static_link {
+		return '-shared-libvcc and -static cannot both hold: libvcc.so is mapped by the loader, and a static program is written with no loader named in it'
+	}
+	if opts.shared_libgcc && opts.static_link {
+		return '-shared-libgcc and -static cannot both hold: libgcc_s.so.1 is mapped by the loader, and a static program is written with no loader named in it'
 	}
 	return none
 }
@@ -762,6 +825,19 @@ pub fn usage(all bool) string {
 	out << '                        link takes one of them. Experimental: only a'
 	out << '                        compiler built with -d experimental_libgcc'
 	out << '                        accepts the flag, and another binary refuses it'
+	out << "  -shared-libvcc        the runtime a program links is this compiler's"
+	out << '                        libvcc.so rather than libvcc.a: the loader maps'
+	out << '                        it, and the image records the name the file'
+	out << '                        carries. Refused with -static, with'
+	out << '                        --link-libgcc and with -shared-libgcc, because'
+	out << '                        a program links one runtime and a static'
+	out << '                        program has no loader to map one'
+	out << '  -shared-libgcc        with --link-libgcc, the runtime a program links'
+	out << '                        is libgcc_s.so.1 rather than libgcc.a. It needs'
+	out << '                        --link-libgcc, which selects the runtime this'
+	out << '                        flag makes shared, and it is experimental in the'
+	out << '                        same way: only a compiler built with'
+	out << '                        -d experimental_libgcc accepts it'
 	out << ''
 	out << 'Query options, which answer a question and stop without compiling (gcc'
 	out << 'spells these the same way; each needs no input file and exits 0):'

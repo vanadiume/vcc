@@ -2663,7 +2663,7 @@ fn test_a_top_level_object_of_128_bits_keeps_the_sign_of_its_initializer() {
 
 // The runtime archive's 128-bit names, as the driver hands them to the emitter.
 // They are what keeps the import check from refusing a program that divides a
-// pair, which is the same set runtime_archive_names reads out of libvcc.a.
+// pair, which is the same set runtime_names reads out of libvcc.a.
 const wide_runtime = ['__divti3', '__udivti3', '__modti3', '__umodti3', '__multi3', '__ashlti3',
 	'__ashrti3', '__lshrti3']
 

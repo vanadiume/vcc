@@ -1531,6 +1531,56 @@ fn test_the_extended_complex_type_crosses_a_library_call() {
 	os.rm(binary) or {}
 }
 
+// -shared-libvcc links a program against this compiler's libvcc.so instead of
+// merging libvcc.a into the file. The loader maps the runtime, the image records
+// the name the file carries, and the helpers come from the mapped object rather
+// than from members merged into the program.
+//
+// The runtime here is built by this compiler's own -shared, with the SONAME the
+// released file will have, and the program links it through a `libvcc.so`
+// symlink: so the name in the image has to be the SONAME and not the file the
+// search found, which is what makes a program linked through the symlink run
+// against the versioned file.
+fn test_a_shared_runtime_is_mapped_and_named_by_its_soname() {
+	directory := scratch('shared_runtime_dir')
+	os.mkdir(directory) or { panic(err) }
+	source := scratch('shared_runtime.c')
+	binary := scratch('shared_runtime_prog')
+	os.write_file(source, complex_runtime_source()) or { panic(err) }
+	versioned := os.join_path(directory, 'libvcc.so.0.1')
+	built := cli.parse(['-shared', '-Wl,-soname,libvcc.so.0', source, '-o', versioned]) or {
+		panic(err)
+	}
+	link_inputs(built)
+	assert os.exists(versioned)
+	// The two names a shipped runtime has: the symlink a link searches for and
+	// the soname the loader looks for once the image is written.
+	os.symlink(versioned, os.join_path(directory, 'libvcc.so')) or { panic(err) }
+	os.symlink(versioned, os.join_path(directory, 'libvcc.so.0')) or { panic(err) }
+	program := 'int main(void) {\n' +
+		'\tdouble _Complex z = 3.0 + 4.0i;\n' +
+		'\tdouble _Complex w = 1.0 - 2.0i;\n' +
+		'\tdouble _Complex q = z / w;\n' +
+		'\treturn !(__real__ q == -1.0 && __imag__ q == 2.0);\n' +
+		'}\n'
+	// The program makes no use of the runtime until it divides: the flag is
+	// what puts the library in the image, not the helper the program calls.
+	os.write_file(source, program) or { panic(err) }
+	opts := cli.parse([source, '-L', directory, '-shared-libvcc', '-o', binary]) or { panic(err) }
+	link_inputs(opts)
+	assert os.exists(binary)
+	content := os.read_file(binary) or { panic(err) }
+	assert content.contains('libvcc.so.0'), 'the image does not record the soname'
+	previous := os.getenv('LD_LIBRARY_PATH')
+	os.setenv('LD_LIBRARY_PATH', directory, true)
+	result := os.execute(os.quoted_path(binary))
+	os.setenv('LD_LIBRARY_PATH', previous, true)
+	assert result.exit_code == 0, 'the program answered ${result.exit_code}'
+	os.rm(source) or {}
+	os.rm(binary) or {}
+	os.rmdir_all(directory) or {}
+}
+
 // complex_runtime_names are the six helpers a complex product and a complex
 // quotient are calls to.
 fn complex_runtime_names() []string {
@@ -4373,7 +4423,7 @@ fn test_a_program_that_calls_a_runtime_helper_links_against_the_archive() {
 	os.write_file(source, body) or { panic(err) }
 	opts := cli.parse([source, '-L', directory, '-o', binary]) or { panic(err) }
 	target := backend.resolve(opts.target) or { panic(err.msg()) }
-	names := runtime_archive_names(opts, target)
+	names := runtime_names(opts, target)
 	assert '__divdi3' in names
 	// The emitter counts the archive's names as answered, which is what lets a
 	// single input reach the link at all: the archive is an input, and the
@@ -4483,9 +4533,13 @@ fn test_a_nostdlib_program_whose_library_the_command_line_names_runs() {
 fn test_the_runtime_archive_is_libvcc_unless_the_experimental_flag_says_otherwise() {
 	plain := cli.parse(['a.c']) or { panic(err) }
 	assert runtime_library_name(plain) == 'libvcc.a'
+	shared := cli.parse(['-shared-libvcc', 'a.c']) or { panic(err) }
+	assert runtime_library_name(shared) == 'libvcc.so'
 	$if experimental_libgcc ? {
 		asked := cli.parse(['--link-libgcc', 'a.c']) or { panic(err) }
 		assert runtime_library_name(asked) == 'libgcc.a'
+		both := cli.parse(['--link-libgcc', '-shared-libgcc', 'a.c']) or { panic(err) }
+		assert runtime_library_name(both) == 'libgcc_s.so.1'
 	}
 }
 
