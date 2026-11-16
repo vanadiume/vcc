@@ -175,10 +175,10 @@ The common ones:
 
 `./vcc -hh` prints the rest, which includes `--version`, `-fno-builtin`,
 `-nostdinc`, `-undef`, `-include`, `-imacros`, the dependency flags,
-`-dM`, `-Wclass`/`-Wno-class`, `-fvcc-exts=`, `-Wpedantic`,
-`-femulation=NAME`, `-external-linker=NAME`, `-target` and the gcc `-print-`
-family. A flag the compiler does not implement is recorded and never refused,
-so a build system that passes one does not stop here.
+`-dM`, `-Wclass`/`-Wno-class`, `-fbracket-depth=N`, `-fvcc-exts=`,
+`-Wpedantic`, `-femulation=NAME`, `-external-linker=NAME`, `-target` and the
+gcc `-print-` family. A flag the compiler does not implement is recorded and
+never refused, so a build system that passes one does not stop here.
 
 ### The runtime archive
 

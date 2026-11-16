@@ -57,9 +57,9 @@ const builtin_expression_names = ['__builtin_types_compatible_p', '__builtin_cho
 // level, follows the chain until the stack runs out.
 fn (mut p Parser) parse_builtin_expression(at tokenize.Token) !ast.Expr {
 	p.depth++
-	if p.depth > max_expression_depth {
+	if p.past_limit(p.depth) {
 		p.depth--
-		p.error_at(at, 'expression is nested more than ${max_expression_depth} levels deep')
+		p.error_at(at, 'expression is nested more than ${p.bracket_depth} levels deep')
 		return error('expression nested too deeply')
 	}
 	expr := p.read_builtin_expression(at) or {

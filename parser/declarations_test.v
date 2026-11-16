@@ -1985,7 +1985,7 @@ fn test_an_unterminated_array_bound_is_reported() {
 // the first diagnostic is the one that names why.
 fn test_a_deeply_nested_tag_body_is_reported() {
 	mut source := 'int x;'
-	for _ in 0 .. max_declaration_depth + 5 {
+	for _ in 0 .. default_bracket_depth + 5 {
 		source = 'struct { ${source} } ;'
 	}
 	result := declarations_of(source)

@@ -253,7 +253,7 @@ fn main() {
 	// pointer and of an int, the offset a member sits at, the type a constant is
 	// given and the class an aggregate is handed over in are all the target's, and
 	// a second target would make the host the wrong answer for every one of them.
-	parsed := parser.parse_for(processed.tokens, parser_target(opts.target))
+	parsed := parser.parse_with(processed.tokens, parser_target(opts.target), opts.bracket_depth)
 	phases << cli.Phase{
 		name:   'parse'
 		micros: time.since(started).microseconds()
@@ -315,6 +315,7 @@ fn main() {
 		compile_only:         opts.compile_only
 		pic:                  opts.pic
 		ignore_natives:       opts.ignore_natives
+		bracket_depth:        opts.bracket_depth
 		link_kind:            link_kind(opts)
 		link_options:         link_options
 		libraries:            opts.libraries
@@ -740,7 +741,7 @@ fn link_inputs(opts cli.Options) {
 			exit(1)
 		}
 		started = time.now()
-		parsed := parser.parse_for(processed.tokens, parser_target(opts.target))
+		parsed := parser.parse_with(processed.tokens, parser_target(opts.target), opts.bracket_depth)
 		parsing += time.since(started).microseconds()
 		if report(path, parsed.diagnostics, opts.warnings) > 0 {
 			exit(1)
@@ -754,6 +755,7 @@ fn link_inputs(opts cli.Options) {
 			link:           true
 			link_kind:      output_kind
 			ignore_natives: opts.ignore_natives
+			bracket_depth:  opts.bracket_depth
 			libraries:      opts.libraries
 			library_dirs:   opts.library_dirs
 		})
@@ -1690,7 +1692,7 @@ fn compile_source_object(path string, source string, opts cli.Options) ![]u8 {
 	if report(path, pedantic, opts.warnings) > 0 {
 		return error('the compile stopped at a diagnostic')
 	}
-	parsed := parser.parse_for(processed.tokens, parser_target(opts.target))
+	parsed := parser.parse_with(processed.tokens, parser_target(opts.target), opts.bracket_depth)
 	if report(path, parsed.diagnostics, opts.warnings) > 0 {
 		return error('the compile stopped at a diagnostic')
 	}
@@ -1701,6 +1703,7 @@ fn compile_source_object(path string, source string, opts cli.Options) ![]u8 {
 		compile_only:   true
 		pic:            opts.pic
 		ignore_natives: opts.ignore_natives
+		bracket_depth:  opts.bracket_depth
 		libraries:      opts.libraries
 		library_dirs:   opts.library_dirs
 	})

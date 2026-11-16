@@ -38,6 +38,27 @@ fn (mut p Parser) starts_a_statement_declaration() bool {
 // closed and nothing else: the closing brace the caller is waiting for is gone
 // with it.
 fn (mut p Parser) parse_statement() ![]ast.Stmt {
+	// A statement written inside another is one level of nesting, whether it is
+	// an `if`'s body, a loop's body or a block held by any of them: every one of
+	// those is read through this function, so this is the one place the count
+	// has to rise. Without it the reader follows thousands of `if (1) {` until
+	// the stack runs out.
+	at := p.peek()
+	p.depth++
+	if p.past_limit(p.depth) {
+		p.depth--
+		p.error_at(at, 'statement is nested more than ${p.bracket_depth} levels deep')
+		// The statement is skipped where it stands rather than failing the read.
+		// A failed read unwinds every enclosing statement and leaves the tokens
+		// of this one for the unit reader, which reports each closing brace as
+		// a declaration that is not there: one file becomes thousands of
+		// diagnostics about the wrong thing.
+		p.skip_statement()
+		return []ast.Stmt{}
+	}
+	defer {
+		p.depth--
+	}
 	// A compound literal written anywhere in this statement declares an unnamed
 	// object, and the stores that initialize it belong in front of it. The list
 	// is opened here and closed below: a statement written inside this one opens

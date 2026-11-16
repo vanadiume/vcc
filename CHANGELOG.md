@@ -1086,3 +1086,7 @@ it owns the change, which is the same vocabulary the commits use.
 * preprocess: a replacement that opens an argument list reads it from the file (7a0ef96)
 * regression: a tail that opens an argument list (283cf16)
 * docs: the changelog records the argument list rescan (53dc0f6)
+* parser: bound statement and initializer nesting with one limit (7a2686e)
+* cli: read -fbracket-depth and refuse a negative depth (888b072)
+* codegen: follow the nesting limit the parser was given (10d765f)
+* docs: -fbracket-depth in the README, the wiki and the changelog (5e16a61)

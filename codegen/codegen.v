@@ -54,6 +54,12 @@ pub:
 	// multiply and a shift; a division has no machine instruction and is a call
 	// either way.
 	ignore_natives bool
+	// bracket_depth is the nesting that got this tree here: the -fbracket-depth
+	// the run set, or zero when it asked for no limit. The two stages share the
+	// number so that a tree the parser accepted is one this walk follows, with
+	// the same answer at the same depth. A caller that does not set it gets the
+	// parser's default.
+	bracket_depth int = default_bracket_depth
 	// link_kind is which kind of file the wrapper writes for this unit: a
 	// program, a static program, or a shared object. It is the command line's
 	// -shared and -static decision, and it is an option here because a single
@@ -584,6 +590,9 @@ mut:
 	// levels deep, and an expression that is genuinely nested past the limit still
 	// is.
 	argument_credit int
+	// bracket_depth is the nesting the front end accepted, and zero is its
+	// having been asked for no limit. `past_limit` asks it.
+	bracket_depth int
 	// wide_left and wide_right are the slots a 128-bit step keeps its two
 	// operands in, one slot per level of nesting and one for each side: a pair is
 	// two words, and two pairs do not fit in the registers a step has while the
@@ -647,10 +656,17 @@ const frame_alignment = 16
 // apart by comparing against this rather than by the sign of the offset.
 const vla_no_save = -1
 
-// max_emit_depth is the nesting an expression may have before it is reported.
-// Parentheses are the only way to get deeper in the grammar, and a tree past
-// this is a tree that would take the stack out rather than one a program writes.
-const max_emit_depth = 200
+// bracket_depth is the nesting the front end let an expression reach, which is
+// the -fbracket-depth the run was given. The emitter counts the same brackets
+// the parser counts, so a tree the parser accepted has to be one this walk can
+// follow; the number is an option rather than a constant so the two stages
+// cannot disagree. Zero is the front end having been asked for no limit, and
+// this walk then sets none either. The default is the parser's own.
+const default_bracket_depth = 256
+
+fn (e &Emitter) past_limit(depth int) bool {
+	return e.bracket_depth > 0 && depth > e.bracket_depth
+}
 
 // max_emit_chain is how many terms one operator chain may carry before it is
 // reported. A chain is not nesting: `a + b + c ...` is one node deep in the
@@ -740,6 +756,7 @@ pub fn emit(unit ast.TranslationUnit, opts Options) Result {
 		start_only:           opts.start_only
 		pic:                  opts.pic
 		ignore_natives:       opts.ignore_natives
+		bracket_depth:        opts.bracket_depth
 		link_kind:            opts.link_kind
 		link_options:         opts.link_options
 		internal:             internal
@@ -1329,7 +1346,7 @@ fn (mut e Emitter) check_statements(stmts []ast.Stmt, depth int) !void {
 // check_expression walks one expression. A tree deeper than the emitter's own
 // walk would go is left to the emitter's depth report, which is the same number.
 fn (mut e Emitter) check_expression(expr ast.Expr, depth int) !void {
-	if depth - e.argument_credit > max_emit_depth {
+	if e.past_limit(depth - e.argument_credit) {
 		return
 	}
 	if expr.kind == .int_lit {
@@ -6409,7 +6426,7 @@ fn (e Emitter) double_of(expr ast.Expr) bool {
 }
 
 fn (e Emitter) floating_at(expr ast.Expr, depth int) bool {
-	if depth - e.argument_credit > max_emit_depth {
+	if e.past_limit(depth - e.argument_credit) {
 		return false
 	}
 	typ := e.expr_type(expr)
@@ -6544,7 +6561,7 @@ fn (e Emitter) floating_at(expr ast.Expr, depth int) bool {
 // is the same walk rather than a second idea: every case that answers here also
 // answers floating_at, and the cases that are not a float do not.
 fn (e Emitter) single_at(expr ast.Expr, depth int) bool {
-	if depth - e.argument_credit > max_emit_depth {
+	if e.past_limit(depth - e.argument_credit) {
 		return false
 	}
 	// The same guard floating_at carries: the extended type is not a value of
@@ -7088,8 +7105,8 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 		e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: a value of type ${e.expr_type(expr).describe()} is two components, and a complex value used as a single one is not computed here')
 		return error('complex value as a value')
 	}
-	if depth - e.argument_credit > max_emit_depth {
-		e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: the expression is nested more than ${max_emit_depth} levels deep')
+	if e.past_limit(depth - e.argument_credit) {
+		e.diagnostics << problem(e.expr_line(expr), e.expr_col(expr), 'unsupported: the expression is nested more than ${e.bracket_depth} levels deep')
 		return error('expression nested too deeply')
 	}
 	if value := e.constant(expr) {
@@ -10439,7 +10456,7 @@ fn (e Emitter) width_of(expr ast.Expr) ?int {
 }
 
 fn (e Emitter) width_of_at(expr ast.Expr, depth int) ?int {
-	if depth - e.argument_credit > max_emit_depth {
+	if e.past_limit(depth - e.argument_credit) {
 		return none
 	}
 	return match expr.kind {
@@ -10710,7 +10727,7 @@ fn (e Emitter) constant(expr ast.Expr) ?i64 {
 }
 
 fn (e Emitter) constant_at(expr ast.Expr, depth int) ?i64 {
-	if depth - e.argument_credit > max_emit_depth {
+	if e.past_limit(depth - e.argument_credit) {
 		return none
 	}
 	mut spine := []ast.Binary{}

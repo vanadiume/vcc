@@ -113,11 +113,12 @@ fn is_keyword(text string) bool {
 // declaration it belongs to.
 const gnu_postfix = ['__attribute__', '__asm__', '__asm']
 
-// max_declaration_depth bounds how deep a declarator or a tag body may nest.
-// The nesting is counted rather than followed, because a file that nests a
+// A declarator or a tag body nests through the same brackets the expression
+// reader counts, so it is bounded by the same number: `-fbracket-depth` sets
+// how deep a declarator, a parenthesised pointer and a struct body may go. The
+// nesting is counted rather than followed, because a file that nests a
 // thousand structs is a file attacking the parser, and the answer to that is
 // a diagnostic rather than a stack overflow.
-const max_declaration_depth = 200
 
 // starts_declaration says whether a token can open a declaration: one of the
 // specifier words, a name this file has already declared as a type, or the
@@ -2718,6 +2719,21 @@ struct BraceList {
 // written constant nor an address, and an empty pair of braces, which gives an
 // array no size to be.
 fn (mut p Parser) parse_brace_initializer(body bool) !BraceList {
+	// A brace list written inside another is one level of nesting, and the
+	// element reader recurses through this function for it, so the count rises
+	// here. Without it a file of ten thousand braces follows the recursion until
+	// the stack runs out; measured on this tree, an initializer nested that deep
+	// took the parser down before the limit existed.
+	open := p.peek()
+	p.depth++
+	if p.past_limit(p.depth) {
+		p.depth--
+		p.error_at(open, 'initializer is nested more than ${p.bracket_depth} levels deep')
+		return error('initializer nested too deeply')
+	}
+	defer {
+		p.depth--
+	}
 	// TODO: the element list this answers is read by the caller's walk and then
 	// dropped, and nothing frees it: `elements` was 31.3 MB of the compiler's own
 	// generated C at the peak, and a nested list is one more. The seven call
@@ -2725,7 +2741,7 @@ fn (mut p Parser) parse_brace_initializer(body bool) !BraceList {
 	// there, and it has to walk `BraceElement.list` to free the nested lists too.
 	// The expression each element carries is moved into the statement the walk
 	// builds, so the arrays are the whole of what is left to free.
-	open := p.next() // {
+	p.next() // {
 	if p.at_punct('}') {
 		// An empty list writes no values. C23 6.7.9 makes `{}` a list of no
 		// initializers, gcc 16.2.1 accepts it in every earlier mode as a GNU
@@ -5119,8 +5135,8 @@ struct TagType {
 // nothing declared it before, so that `struct S *p;` read before
 // `struct S { ... };` is a pointer to the type the later declaration defines.
 fn (mut p Parser) parse_tag_specifier(keyword tokenize.Token, depth int) !TagType {
-	if depth > max_declaration_depth {
-		p.error_at(keyword, 'declaration is nested more than ${max_declaration_depth} levels deep')
+	if p.past_limit(depth) {
+		p.error_at(keyword, 'declaration is nested more than ${p.bracket_depth} levels deep')
 		return error('declaration nested too deeply')
 	}
 	kind := tag_kind(keyword.text)
@@ -5566,8 +5582,8 @@ fn (mut p Parser) parse_bitfield_width(at tokenize.Token) !int {
 // were written, because a parenthesised pointer swaps the two: the suffixes
 // outside the parentheses apply to the base before the star does.
 fn (mut p Parser) parse_declarator(depth int) !Declarator {
-	if depth > max_declaration_depth {
-		p.error_at(p.peek(), 'declaration is nested more than ${max_declaration_depth} levels deep')
+	if p.past_limit(depth) {
+		p.error_at(p.peek(), 'declaration is nested more than ${p.bracket_depth} levels deep')
 		return error('declaration nested too deeply')
 	}
 	mut d := Declarator{}
