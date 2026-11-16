@@ -11767,16 +11767,23 @@ fn (mut e Emitter) emit_return_address(call ast.Call) !void {
 	e.append(e.target.load_slot(base, i32(e.target.word_size), register, e.target.word_size)!)
 }
 
-// emit_byte_swap answers `__builtin_bswap16` and `__builtin_bswap32` with the
-// instruction that reverses a value's bytes. The argument is evaluated into the
-// accumulator, where the instruction works in place, and the two builtins differ
-// only in which width the back end swaps.
+// emit_byte_swap answers `__builtin_bswap16`, `__builtin_bswap32` and
+// `__builtin_bswap64` with the instruction that reverses a value's bytes. The
+// argument is evaluated into the accumulator, where the instruction works in
+// place, and the builtins differ only in which width the back end swaps. Only the
+// 64-bit swap reads the whole register, so a narrow argument of that one is first
+// converted to the builtin's 64-bit parameter: `__builtin_bswap64(-1)` swaps
+// 0xffffffffffffffff and `__builtin_bswap64(0xffffffffu)` swaps
+// 0x00000000ffffffff, which is gcc's answer for both. Measured on gcc 16.2.1. The
+// narrower swaps work on the low half of the register, so the bits above it are
+// not theirs to convert.
 fn (mut e Emitter) emit_byte_swap(call ast.Call, depth int) !void {
 	e.emit_expr_at(call.args[0], depth + 1)!
 	register := e.accumulator(call.line, call.col)!
 	if call.name == '__builtin_bswap16' {
 		e.append(e.target.byte_swap_16(register)!)
 	} else if call.name == '__builtin_bswap64' {
+		e.extend_operand_to_word(call.args[0], call.line, call.col)!
 		e.append(e.target.byte_swap_64(register)!)
 	} else {
 		e.append(e.target.byte_swap_32(register)!)
