@@ -350,10 +350,11 @@ fn (mut p Processor) line_directive(tok tokenize.Token, args string) {
 		p.problem(tok, '${hash}line wants a line number')
 		return
 	}
-	number := integer_literal_value(tokens[0].text) or {
+	value := integer_literal_value(tokens[0].text) or {
 		p.problem(tok, '${hash}line wants a number, not ${tokens[0].text}')
 		return
 	}
+	number := i64(value.bits)
 	if number < 1 {
 		p.problem(tok, '${hash}line numbers start at 1')
 		return
@@ -907,7 +908,12 @@ fn (mut p Processor) if_value(tok tokenize.Token, args string) ?i64 {
 	}
 	value := condition.parse()
 	p.diagnostics << condition.diagnostics
-	return value
+	// What the directive asks is whether the expression is nonzero, and the
+	// evaluator's answer carries its type with it, so only the bits are kept.
+	if parsed := value {
+		return if parsed.bits != 0 { i64(1) } else { i64(0) }
+	}
+	return none
 }
 
 // text_directive handles the directives that do something to the text being
