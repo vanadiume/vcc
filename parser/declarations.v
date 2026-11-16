@@ -1419,6 +1419,18 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 			data_init_long = constant.long_floating
 			literal_refused = p.diagnostics.len > before
 		}
+		// An array whose brackets wrote no size takes its count from the
+		// initializer, whichever reader laid that initializer out: `int a[] =
+		// {1, 2, 3};` is an int[3], and `const char *s[] = {"a", "b"};` is an
+		// array of two pointers. The count was recorded where the list was
+		// read; the type is completed here, once, so a later `sizeof` is a
+		// question about the count the list fixed rather than about the
+		// brackets that wrote none.
+		if data_count > 0 && !d.array_sized() && data_clause.is_array()
+			&& !data_clause.is_complete() {
+			element := data_clause.element() or { spec.clause }
+			data_complete = types.array_of(element, data_count)
+		}
 		p.skip_to_separator() or {
 			return false
 		}
