@@ -113,6 +113,40 @@ fn test_the_ignore_natives_flag_is_read_and_can_be_turned_off() {
 	assert usage(false).contains('-fignore-natives')
 }
 
+// -fbracket-depth bounds how deep a construct may nest, and the three answers it
+// has are three different kinds of value: a depth, no limit (0), and a refusal.
+// The default is the 256 clang documents for its flag of the same name.
+fn test_the_bracket_depth_is_read_from_either_spelling() {
+	joined := parse(['-fbracket-depth=512', 'src.c'])!
+	separate := parse(['-fbracket-depth', '512', 'src.c'])!
+	assert joined.bracket_depth == 512
+	assert separate.bracket_depth == 512
+	assert joined.inputs == ['src.c']
+	assert separate.inputs == ['src.c']
+	assert parse(['src.c'])!.bracket_depth == 256
+	assert usage(false).contains('-fbracket-depth=N')
+}
+
+fn test_a_bracket_depth_of_zero_is_no_limit() {
+	assert parse(['-fbracket-depth=0', 'src.c'])!.bracket_depth == 0
+}
+
+fn test_a_negative_bracket_depth_is_refused() {
+	if _ := parse(['-fbracket-depth=-1', 'src.c']) {
+		assert false, 'a negative depth names no nesting and should be refused'
+	} else {
+		assert err.msg().contains('non-negative')
+	}
+}
+
+fn test_a_bracket_depth_that_is_not_a_number_is_refused() {
+	if _ := parse(['-fbracket-depth=three', 'src.c']) {
+		assert false, 'a word is not a depth and should be refused'
+	} else {
+		assert err.msg().contains('takes a number')
+	}
+}
+
 fn test_the_standard_is_recorded_from_either_spelling() {
 	// V passes -std=gnu11 and a person types -std gnu11. The second one has to
 	// be read as a value, or the version name becomes an input file and the

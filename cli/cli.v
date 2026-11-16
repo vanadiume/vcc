@@ -4,8 +4,10 @@ import diagnostics
 import extensions
 import optimizer
 import os
+import parser
 import preprocess
 import standard
+import strconv
 import v.vmod
 
 // version is the compiler's own version, the one v.mod names. v.mod is the
@@ -136,6 +138,14 @@ pub mut:
 	// instruction and is a call to __divti3 or one of its siblings whether the
 	// flag is given or not.
 	ignore_natives bool
+	// bracket_depth is -fbracket-depth: how deep a parenthesised expression, a
+	// statement, a brace initializer or a declarator may nest before the parser
+	// reports instead of following the recursion into the stack. The default is
+	// 256, the number clang documents for the flag of that name. Zero is no
+	// limit: the run asked for the stack to be the only bound, which is what a
+	// generated file past the default needs. A negative number is refused where
+	// the flag is read, because it names no depth at all.
+	bracket_depth int
 	// static_link is -static: the link resolves every library into the file
 	// rather than leaving the loader to map it, and the program that comes out
 	// names no loader and no library.
@@ -287,11 +297,30 @@ fn (mut c Cursor) value_of(joined string) !string {
 	return value
 }
 
+// bracket_depth_value reads the depth a -fbracket-depth spelling carries. The
+// value is a whole number: a fraction, a word or nothing at all is refused where
+// it is read rather than taken as zero by a reader that stopped at the first
+// character it did not understand. Zero is a value and means no limit; a
+// negative depth is refused because it names no nesting at all.
+fn bracket_depth_value(spelling string, text string) !int {
+	if text == '' {
+		return error('${spelling} needs a number: 0 lifts the limit')
+	}
+	depth := strconv.atoi(text) or {
+		return error('${spelling} takes a number, not "${text}": 0 lifts the limit')
+	}
+	if depth < 0 {
+		return error('${spelling} takes a non-negative number, not "${text}": 0 lifts the limit')
+	}
+	return depth
+}
+
 // parse reads a command line in the shape tcc uses.
 pub fn parse(args []string) !Options {
 	expanded := expand_list_files(args)!
 	mut opts := Options{
-		optimization: optimizer.default_options()
+		optimization:  optimizer.default_options()
+		bracket_depth: parser.default_bracket_depth
 	}
 	mut optimization := opts.optimization
 	mut positional := []string{}
@@ -386,6 +415,10 @@ pub fn parse(args []string) !Options {
 			// not. A name this compiler does not have is an error, since naming
 			// an extension is a request; a name it has is recorded.
 			opts.vcc_extensions.accept(arg)!
+		} else if arg == '-fbracket-depth' {
+			opts.bracket_depth = bracket_depth_value(arg, cursor.value_of('')!)!
+		} else if arg.starts_with('-fbracket-depth=') {
+			opts.bracket_depth = bracket_depth_value('-fbracket-depth', arg['-fbracket-depth='.len..])!
 		} else if arg == '-g' {
 			opts.debug = true
 		} else if arg == '-fPIC' || arg == '-fpic' {
@@ -764,6 +797,10 @@ pub fn usage(all bool) string {
 	out << '                a shared object; -fno-pic turns it back off'
 	out << '  -fignore-natives  call the runtime archive for a 128-bit operation the'
 	out << '                machine has instructions for, rather than writing them'
+	out << '  -fbracket-depth=N  how deep a parenthesis, bracket, brace, statement or'
+	out << '                declarator may nest before it is reported (default'
+	out << '                ${parser.default_bracket_depth}); 0 lifts the limit and a'
+	out << '                negative number is an error'
 	out << '  -Idir -Dname -Uname -Ldir -llib -x type -o outfile'
 	out << '  -nostdinc     do not search the standard directories for headers'
 	out << '  -nostdlib     the link takes neither the system start files nor the'
