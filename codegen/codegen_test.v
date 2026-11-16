@@ -4833,6 +4833,68 @@ fn test_a_call_of_a_structure_type_is_returned_by_value() {
 	assert run_image(emitted.bytes) == 0
 }
 
+// A vector wider than sixteen bytes is handed over in memory, which the class
+// this back end models does not cover. It is refused at the attribute rather
+// than compiled into a program whose components arrive wrong.
+fn test_a_vector_wider_than_sixteen_bytes_is_refused() {
+	result := translation_unit_refused('typedef float v8 __attribute__((vector_size(32))); int main(void) { return 0; }')
+	assert result.diagnostics.len == 1
+	assert result.diagnostics[0].msg.contains('vector_size of 32 bytes')
+}
+
+// A GNU vector is an object of its components: brace-initialized one component
+// at a time, indexed as an lvalue, sized and aligned to the bytes the attribute
+// named, and passed and returned as the eightbytes its components make. Measured
+// on gcc 16.2.1, the program below exits 0.
+fn test_a_vector_is_an_object_of_its_components() {
+	source := 'typedef float v4 __attribute__((vector_size(16)));' +
+		' typedef int v4i __attribute__((vector_size(16)));' +
+		' typedef double v2 __attribute__((vector_size(16)));' +
+		' v4 make(void) { v4 a = {10, 20, 30, 40}; return a; }' +
+		' int take(v4 a) { return (int)a[3]; }' +
+		' v4i makei(void) { v4i a = {1, 2, 3, 4}; return a; }' +
+		' v2 maked(void) { v2 a = {1.5, 2.5}; return a; }' +
+		' v4 gv;' +
+		' int main(void) {' +
+		' v4 a = {1, 2, 3, 4};' +
+		' if (sizeof(v4) != 16 || __alignof__(v4) != 16) return 1;' +
+		' if (sizeof(a[0]) != 4 || __alignof__(v4i) != 16) return 2;' +
+		' if ((int)a[0] != 1 || (int)a[2] != 3) return 3;' +
+		' a[2] = 9;' +
+		' if ((int)a[2] != 9) return 4;' +
+		' v4 b = make();' +
+		' if ((int)b[0] != 10 || take(b) != 40) return 5;' +
+		' v4 c = a + b;' +
+		' if ((int)c[0] != 11 || (int)c[2] != 39) return 6;' +
+		' v4i i = makei();' +
+		' if (i[3] != 4) return 7;' +
+		' v2 d = maked();' +
+		' if ((int)(d[0] * 2.0) != 3 || (int)(d[1] * 2.0) != 5) return 8;' +
+		' v4 e = {0};' +
+		' if ((int)e[3] != 0) return 9;' +
+		' v4 dv = b - a;' +
+		' if ((int)dv[0] != 9) return 10;' +
+		' v4 mv = a * b;' +
+		' if ((int)mv[1] != 40) return 11;' +
+		' v4 qv = b / a;' +
+		' if ((int)qv[0] != 10) return 12;' +
+		' v4 kv = a * 2;' +
+		' if ((int)kv[3] != 8) return 13;' +
+		' v4i j = i * 2;' +
+		' if (j[3] != 8) return 14;' +
+		' v4i ci = (v4i)a;' +
+		' if (ci[0] != 1065353216) return 15;' +
+		' v4 via;' +
+		' *(v4 *)&via = b;' +
+		' if ((int)via[1] != 20) return 16;' +
+		' gv = b;' +
+		' if ((int)gv[2] != 30) return 17;' +
+		' return 0; }'
+	emitted := emit(translation_unit(source), Options{})
+	assert emitted.diagnostics.len == 0
+	assert run_image(emitted.bytes) == 0
+}
+
 // The same hand-over through a call written to a pointer: the class is the type
 // the pointer carries, so `p()` hands the object back the way a named call
 // does, whether it is returned, assigned or read for a member. Measured on gcc

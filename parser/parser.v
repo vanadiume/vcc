@@ -1316,22 +1316,38 @@ fn (mut p Parser) binary_type(op tokenize.Token, left ast.Expr, right ast.Expr) 
 		// A GNU vector operator is defined on its elements, so `a + b` adds
 		// lane by lane and the two operands have to be the same vector type.
 		// The arithmetic is element-wise and not the usual arithmetic
-		// conversions: a vector and a scalar do not mix, and two different
-		// vector types do not either.
+		// conversions: a vector and a scalar do not mix under those rules, and
+		// two different vector types have no common type either. GNU C does
+		// define a vector beside a scalar: the scalar is converted to the
+		// element type and every lane is the operator with that value, which is
+		// the mixed form typed here and lowered by `vector_initializer_stores`.
 		//
-		// Only `+` is typed here, which is the operator the corpus checks and
-		// the one this compiler lowers. The other element-wise operators are
-		// refused by name rather than typed and then computed with a scalar
-		// meaning, which would answer one lane or the wrong width.
-		if !(a.is_vector() && b.is_vector()) || !a.same(b) {
-			p.error_at(op, 'unsupported: the type of ${describe_operand(left, &p.arena)} ${op.text} ${describe_operand(right, &p.arena)} is not one this compiler resolves, and a vector operator takes two operands of one vector type')
+		// The four arithmetic operators are the ones this compiler lowers. The
+		// others are refused by name rather than typed and then computed with a
+		// scalar meaning, which would answer one lane or the wrong width.
+		if op.text !in ['+', '-', '*', '/'] {
+			p.error_at(op, 'unsupported: the element-wise operator ${op.text} on vectors is not implemented, and this compiler implements +, -, * and / on a vector')
 			return types.Type{}
 		}
-		if op.text != '+' {
-			p.error_at(op, 'unsupported: the element-wise operator ${op.text} on ${a.describe()} is not implemented, and this compiler implements + on two vectors of one type')
+		if a.is_vector() && b.is_vector() {
+			if !a.same(b) {
+				p.error_at(op, 'unsupported: the type of ${describe_operand(left, &p.arena)} ${op.text} ${describe_operand(right, &p.arena)} is not one this compiler resolves, and a vector operator takes two operands of one vector type, or a vector and a scalar')
+				return types.Type{}
+			}
+			return a
+		}
+		if a.is_vector() {
+			if !b.is_arithmetic() {
+				p.error_at(op, 'unsupported: ${describe_operand(right, &p.arena)} is ${b.describe()}, and the scalar beside a vector has to be an arithmetic type')
+				return types.Type{}
+			}
+			return a
+		}
+		if !a.is_arithmetic() {
+			p.error_at(op, 'unsupported: ${describe_operand(left, &p.arena)} is ${a.describe()}, and the scalar beside a vector has to be an arithmetic type')
 			return types.Type{}
 		}
-		return a
+		return b
 	}
 	if op.text == '+' || op.text == '-' {
 		if a.is_pointer() && b.is_integer() {

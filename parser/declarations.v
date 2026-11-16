@@ -1090,6 +1090,16 @@ fn (mut p Parser) parse_file_object_declarator(mut spec DeclSpec, d Declarator, 
 		data_count = data_clause.count
 		data_array = true
 	}
+	// A vector object at the top level is storage for its components, the same
+	// shape a local vector declaration reaches the back end as: the spelling of
+	// one component and the count the vector was sized with. The whole-vector
+	// spelling `float[4]` would make the image reserve four vectors of four
+	// floats each, and every element read would find the zeros between them.
+	if data_clause.is_vector() {
+		if element := data_clause.element() {
+			data_type = element.storage_spelling()
+		}
+	}
 	if spec.auto_deduced {
 		// C23's auto takes its type from the initializer, and measured
 		// on gcc 16.2.1 it takes it at file scope too: `auto x = 2.5;`
@@ -6294,6 +6304,17 @@ fn (mut p Parser) parameter_type_is_known(spec DeclSpec, stars int) bool {
 		}
 		return spec.clause.is_complete() && p.representation.layout(spec.clause) != none
 	}
+	// A vector parameter is an object whose size and class the model knows, so it
+	// is handed over the way an aggregate is. It is not an array parameter:
+	// 6.7.5.3p7 adjusts an array to a pointer to its element, and a vector is an
+	// object and not an array in that sense. A pointer to a vector is a pointer
+	// like any other, which the question below already answers.
+	if spec.clause.is_vector() {
+		if stars > 0 {
+			return true
+		}
+		return spec.clause.is_complete() && p.representation.size_of(spec.clause) != none
+	}
 	// A 128-bit integer is a type the model knows the width of, sixteen bytes,
 	// so a parameter declared with one is a parameter whose type this reader can
 	// name. The questions about handing a value of that width over are the
@@ -6782,6 +6803,15 @@ fn (mut p Parser) vector_type_for(element types.Type, bytes int, at tokenize.Tok
 	}
 	if width <= 0 || bytes % width != 0 {
 		p.error_at(at, 'unsupported: a vector_size of ${bytes} bytes on ${element.describe()} is not an integral multiple of the size of one component')
+		return none
+	}
+	if bytes > 16 {
+		// An object of more than sixteen bytes is handed over in memory, and the
+		// memory class for a vector is not written: a 32-byte vector was passed
+		// and returned with the wrong components, which is a silent wrong value
+		// rather than a refusal. Sixteen bytes is one or two eightbytes, which is
+		// the class the back end models, and it is the width the SSE headers use.
+		p.error_at(at, 'unsupported: a vector_size of ${bytes} bytes is not implemented, and this compiler hands a vector of at most sixteen bytes over in registers')
 		return none
 	}
 	count := bytes / width

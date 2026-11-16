@@ -63,6 +63,30 @@ pub fn class_of(r types.Representation, declared types.Type) Class {
 			second_floating: count == 2
 		}
 	}
+	if declared.is_vector() {
+		// A vector is an object of its components, so it travels as the
+		// eightbytes those components make: a float or a double component puts
+		// every eightbyte it fills in the floating-point file, the way a
+		// structure of floats does, and an integer component puts them in the
+		// general file. The object is at most the sixteen bytes the reader
+		// accepts, so it is one or two eightbytes and the class answers all of
+		// it. What this compiler hands a gcc-built caller for an integer vector
+		// is the general file and not the SSE register gcc uses, which is a
+		// difference between two compilers and not between two parts of one
+		// program built here.
+		bytes := r.size_of(declared) or { 0 }
+		if bytes == 0 {
+			return Class{}
+		}
+		count := (bytes + 7) / 8
+		floating := vector_eightbyte_is_floating(declared)
+		return Class{
+			bytes:           bytes
+			count:           count
+			first_floating:  floating
+			second_floating: count == 2 && floating
+		}
+	}
 	if declared.kind !in [types.Kind.struct_, .union_] {
 		return Class{}
 	}
@@ -221,6 +245,16 @@ fn eightbyte_is_floating(r types.Representation, declared types.Type, which int)
 	mut cover := EightbyteCover{}
 	note_eightbyte(r, declared, 0, which * 8, which * 8 + 8, mut cover)
 	return cover.covered && !cover.other
+}
+
+// vector_eightbyte_is_floating says whether the vector's components are values the
+// floating-point file carries. A vector is not a structure and has no layout to
+// walk, so the answer is its component type's: every eightbyte of a float or
+// double vector holds nothing but those components, and one of an integer vector
+// holds integers.
+fn vector_eightbyte_is_floating(declared types.Type) bool {
+	element := declared.element() or { return false }
+	return element.kind in [types.Kind.float, .double]
 }
 
 // note_eightbyte marks what a byte range of an object covers. A member that is

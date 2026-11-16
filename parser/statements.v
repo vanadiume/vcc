@@ -2622,17 +2622,31 @@ fn (mut p Parser) parse_local_declaration() []ast.Stmt {
 		if static_storage {
 			declaration_init = none
 		}
+		// A vector declaration is storage for its components, and the back end
+		// reads and writes one component at a time: the declaration carries the
+		// component's spelling and the count the vector was sized with, not the
+		// whole vector's `float[4]` spelling, so an element store is the float
+		// store a `float[4]` array makes rather than an integer store of the
+		// converted value. That conversion is what made `(int)a[0]` read the bits
+		// of 1.0f as an integer and answer zero.
+		decl_type := if spec.auto_deduced {
+			declared.describe()
+		} else if declared.is_vector() {
+			if element := declared.element() {
+				element.storage_spelling()
+			} else {
+				p.spelling_of(spec, d.pointer_count())
+			}
+		} else {
+			p.spelling_of(spec, d.pointer_count())
+		}
 		if !spec.is_typedef && !(spec.is_extern && !has_initializer) {
 			stmts << ast.Stmt{
 				kind:  .var_decl
 				extra: p.arena.box_extra(ast.StmtExtra{
 					init:          declaration_init or { ast.Expr{} }
 					decl_name:     d.name
-					decl_type:     if spec.auto_deduced {
-						declared.describe()
-					} else {
-						p.spelling_of(spec, d.pointer_count())
-					}
+					decl_type:     decl_type
 					decl_count:    count
 					decl_stride:   vla_stride
 					decl_vla_size: vla_size or { ast.Expr{} }
@@ -2936,17 +2950,22 @@ fn (mut p Parser) zero_initializer(at tokenize.Token) ast.Expr {
 // vector_initializer_stores lowers a vector initializer that is a vector value
 // - a sum of two vectors or a copy of one - into the element stores a brace list
 // makes, and answers whether it did. `v4si c = a + b;` becomes c[0] = a[0] +
-// b[0] and so on; `v4si c = a;` copies lane by lane. The `+` is the operator the
-// parser typed for two vectors of one type, and the scalar `+` each lane is
-// lowered to is exactly the element-wise sum, which is what makes this an honest
-// implementation of the operator rather than a compromise.
+// b[0] and so on; `v4si c = a;` copies lane by lane. The operator is the one the
+// parser typed for the vector operands, and the scalar operator each lane is
+// lowered to is exactly the element-wise operation, which is what makes this an
+// honest implementation of the operator rather than a compromise.
 //
-// The operands have to be lvalues. A lane is stored once per component, so an
-// operand that is a call or another effectful expression would run once per
-// component; only a name, an element or a member reads the same value every
-// time. An initializer shape this does not cover is left as it stands and
-// refused at the operator it was written with, which names the construct rather
-// than computing a different program.
+// The four arithmetic operators are lowered this way. An operand of a scalar
+// type is the value GNU C converts to the component type and applies in every
+// lane, so `a * 2` is c[i] = a[i] * (float)2; the cast is written once per lane
+// and the constant is shared.
+//
+// The operands have to be lvalues or constants. A lane is stored once per
+// component, so an operand that is a call or another effectful expression would
+// run once per component; only a name, an element, a member or a constant reads
+// the same value every time. An initializer shape this does not cover is left as
+// it stands and refused at the operator it was written with, which names the
+// construct rather than computing a different program.
 fn (mut p Parser) vector_initializer_stores(declared types.Type, name string, initializer ast.Expr, at tokenize.Token, mut stores []ast.Stmt) bool {
 	element := declared.element() or { return false }
 	count := declared.count
@@ -2955,18 +2974,18 @@ fn (mut p Parser) vector_initializer_stores(declared types.Type, name string, in
 	}
 	if initializer.kind == .binary {
 		binary := *p.arena.binary(initializer)
-		if !binary.typ.is_vector() || binary.op != '+' {
+		if !binary.typ.is_vector() || binary.op !in ['+', '-', '*', '/'] {
 			return false
 		}
-		if !p.vector_lvalue(binary.left) || !p.vector_lvalue(binary.right) {
-			p.error_at(at, 'unsupported: the element-wise sum assigned to the vector ${name} is lowered one component at a time, and an operand that is not a name, an element or a member would be read once per component')
+		if !p.vector_lane_operand(binary.left) || !p.vector_lane_operand(binary.right) {
+			p.error_at(at, 'unsupported: the element-wise ${binary.op} assigned to the vector ${name} is lowered one component at a time, and an operand that is not a name, an element, a member or a constant would be read once per component')
 			return false
 		}
 		for i in 0 .. count {
-			left := p.vector_lane(binary.left, element, i, at)
-			right := p.vector_lane(binary.right, element, i, at)
+			left := p.vector_lane_operand_at(binary.left, element, i, at)
+			right := p.vector_lane_operand_at(binary.right, element, i, at)
 			sum := p.arena.put_binary(ast.Binary{
-				op:    '+'
+				op:    binary.op
 				left:  left
 				right: right
 				typ:   element
@@ -2995,6 +3014,40 @@ fn (mut p Parser) vector_initializer_stores(declared types.Type, name string, in
 // other effectful expression do not.
 fn (mut p Parser) vector_lvalue(expr ast.Expr) bool {
 	return expr.kind == .ident || expr.kind == .index || expr.kind == .field
+}
+
+// vector_lane_operand says whether an operand of an element-wise operator is one
+// the lowering can read once per component: a vector that is a name, an element
+// or a member, or a scalar that is a constant or one of those. A scalar's value is
+// converted to the component type and the same node appears in every lane, so a
+// call or another effectful expression is refused rather than run once per
+// component.
+fn (mut p Parser) vector_lane_operand(expr ast.Expr) bool {
+	if p.arena.typ(expr).is_vector() {
+		return p.vector_lvalue(expr)
+	}
+	return expr.kind in [.int_lit, .float_lit] || p.vector_lvalue(expr)
+}
+
+// vector_lane_operand_at is one component of an operand: `base[i]` for a vector,
+// and the scalar converted to the component type for a scalar. The conversion is
+// what GNU C means by a vector beside a scalar, and writing it here keeps the
+// lane's own operator a scalar one of the component type.
+fn (mut p Parser) vector_lane_operand_at(expr ast.Expr, element types.Type, i int, at tokenize.Token) ast.Expr {
+	typ := p.arena.typ(expr)
+	if typ.is_vector() {
+		return p.vector_lane(expr, element, i, at)
+	}
+	if types.unqualified(typ).same(types.unqualified(element)) {
+		return expr
+	}
+	return p.arena.put_cast(ast.Cast{
+		spelling: element.describe()
+		expr:     expr
+		typ:      element
+		line:     at.line
+		col:      at.col
+	})
 }
 
 // vector_lane is `base[i]` for one component of a vector: the element type is
