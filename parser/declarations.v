@@ -6035,17 +6035,18 @@ fn (mut p Parser) declare_name(name string, typ types.Type, at tokenize.Token, d
 }
 
 // redeclaration_conflicts says whether two declarations of one name in one scope
-// describe two different things, which 6.2.7 refuses. Two types that are the same
-// type are one thing and not a conflict, and two declarations of an object are one
-// object. The one case the model's `same` cannot answer is 6.2.7p15: a function
-// type written with an empty parameter list says nothing about its parameters
-// rather than saying that there are none, so two function types one of which is
-// written that way are compared by what they return.
+// describe two different things, which 6.2.7 refuses. Two types that are
+// compatible are one thing and not a conflict, and 6.7.5.3p15's pair is included
+// in that: a function type written with an empty parameter list says nothing
+// about its parameters rather than saying that there are none, so `int f(void);
+// int f();` and `int f(int a); int f();` are one declaration and not two.
 //
-// Measured, gcc 16.2.1 accepts `int f(void); int f();` and `int f(int a); int f();`
-// under `-std=c99`, and refuses `int f(void); char f();`, which returns something
-// else, and `int f(int a); int f(char b);`, whose parameter lists are both written
-// and disagree.
+// Measured, gcc 16.2.1 under `-std=c99 -pedantic-errors` accepts those two and
+// refuses `int f(void); char f();`, which returns something else,
+// `int f(char b); int f();`, whose char is changed by the default argument
+// promotions, and `int f(int a, ...); int f();`, whose ellipsis the empty list
+// says nothing about. `compatible` answers every one of those, so there is no
+// second comparison of function types here.
 fn redeclaration_conflicts(earlier types.Type, later types.Type) bool {
 	if earlier.compatible(later) {
 		return false
@@ -6055,11 +6056,6 @@ fn redeclaration_conflicts(earlier types.Type, later types.Type) bool {
 	// is not the same type and is still one object, so it is not a conflict.
 	if _ := array_composite(earlier, later) {
 		return false
-	}
-	if earlier.is_function() && later.is_function() && !(earlier.prototyped && later.prototyped) {
-		earlier_returns := earlier.returns() or { return true }
-		later_returns := later.returns() or { return true }
-		return !earlier_returns.compatible(later_returns)
 	}
 	return true
 }

@@ -768,6 +768,11 @@ fn same_pointer(a &Type, b &Type) bool {
 // [-Wpointer-sign]` under `-std=c99 -Wpointer-sign`, and is an error under
 // `-std=c99 -pedantic-errors`. The relation asked here is the one the pedantic
 // reading asks.
+//
+// The one special case answered here is the pair 6.7.5.3p15 describes: a function
+// type written with a parameter type list and one written with an empty
+// identifier list. `function_compatible` answers it, and every other pair that
+// `same` has told apart is not compatible.
 pub fn (t Type) compatible(other Type) bool {
 	if t.kind == .unknown || other.kind == .unknown {
 		return false
@@ -775,7 +780,58 @@ pub fn (t Type) compatible(other Type) bool {
 	if t.same(other) {
 		return true
 	}
+	if t.kind == .function && other.kind == .function {
+		return function_compatible(t, other)
+	}
 	return false
+}
+
+// function_compatible is 6.7.5.3p15 for two function types that `same` has
+// already told apart: what is left to ask is whether one of them wrote a
+// parameter type list while the other wrote an empty identifier list, and
+// whether the list one of them did write is one the empty list can stand for.
+//
+// An empty identifier list says nothing about the arguments a call may pass, so
+// a prototype may be paired with it when every parameter it names is compatible
+// with its own default-promoted type: `int f(int)` and `int f()` describe one
+// function, and so do `int f(double)` and `int f()`, because an int and a double
+// are handed over unchanged. `int f(char)` and `int f(float)` are other
+// functions: a call through the empty list hands over an int where the first
+// names a char and a double where the second names a float, so neither
+// parameter type is what the call would pass. A list that ends in an ellipsis
+// names arguments the empty list says nothing about, and 6.7.5.3p15 refuses the
+// pair for that reason.
+//
+// Measured, gcc 16.2.1 under `-std=c99 -pedantic-errors`: `int (*p)() = f;` is
+// accepted for `int f(int)` and `int f(double)`, and is `error: initialization
+// of 'int (*)()' from incompatible pointer type` for `int f(char)`,
+// `int f(float)` and `int f(int, ...)`.
+//
+// The tree does not record whether an empty identifier list came from a
+// definition. Measured, gcc 16.2.1 accepts `int (*p)(int) = f;` for a definition
+// written `int f() { return 0; }` as well, so the definition and the declaration
+// are answered the same way here.
+fn function_compatible(a Type, b Type) bool {
+	a_returns := a.returns() or { return false }
+	b_returns := b.returns() or { return false }
+	if !a_returns.compatible(b_returns) {
+		return false
+	}
+	if a.prototyped && b.prototyped {
+		// Both lists are written, so the two types agree only when the lists do,
+		// which `same` has already refused.
+		return false
+	}
+	if a.variadic || b.variadic {
+		return false
+	}
+	prototype := if a.prototyped { a } else { b }
+	for parameter in prototype.params() {
+		if !default_promotes_to_a_compatible_type(parameter.typ) {
+			return false
+		}
+	}
+	return true
 }
 
 // describe spells the type the way a declaration writes it, qualifiers included.
