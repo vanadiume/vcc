@@ -836,6 +836,49 @@ fn test_the_bind_now_option_writes_the_dynamic_flags() {
 	assert se_dynamic_size(bound) == se_dynamic_size(plain) + 2 * elf_dynamic_entry_size
 }
 
+// se_string_at reads a null-terminated string out of the file, which is how the
+// table's name entries are read back.
+fn se_string_at(bytes []u8, at int) string {
+	mut out := []u8{}
+	mut i := at
+	for i < bytes.len && bytes[i] != 0 {
+		out << bytes[i]
+		i++
+	}
+	return out.bytestr()
+}
+
+// -Wl,-soname names the shared object, and the name is written into the string
+// table with a DT_SONAME entry pointing at it. That entry is what a program
+// linked against the object records as its DT_NEEDED, so it is what lets a
+// program name `libvcc.so` and run against `libvcc.so.0`. A link that names no
+// name records none, which is what ld writes: an object with no DT_SONAME is
+// known to its loader by the name of the file it opened.
+fn test_the_soname_option_names_the_shared_object() {
+	target := se_target()
+	mut program := image.Program{}
+	program.text = []u8{len: 8}
+	bytes := write_options(program, target, .shared, linux.LinkOptions{
+		soname: 'libt.so.0'
+	}) or { panic('the shared object was not written: ${err.msg()}') }
+	offset := se_dynamic_value(bytes, dt_soname) or { panic('no DT_SONAME entry') }
+	tables := se_tables(bytes, 0)
+	assert se_string_at(bytes, tables.strtab + int(offset)) == 'libt.so.0'
+	// The entry costs one record in the table the header reports the size of,
+	// so a table written without the extra slot would run past its own end.
+	plain := write_options(program, target, .shared, linux.LinkOptions{}) or {
+		panic('the shared object was not written: ${err.msg()}')
+	}
+	assert !se_dynamic_has(plain, dt_soname)
+	assert se_dynamic_size(bytes) == se_dynamic_size(plain) + elf_dynamic_entry_size
+	// A program is never looked up by name, so the option writes nothing into
+	// one even when it was given.
+	run := write_options(program, target, .program, linux.LinkOptions{
+		soname: 'libt.so.0'
+	}) or { panic('the program was not written: ${err.msg()}') }
+	assert !se_dynamic_has(run, dt_soname)
+}
+
 // -Wl,-z,relro writes a PT_GNU_RELRO segment over the table the loader fills in,
 // the relocations it applies and the dynamic table it reads. The start is page
 // aligned because the loader rounds it down before mprotect: a start inside a

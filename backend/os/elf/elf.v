@@ -94,6 +94,12 @@ const elf_ph_flags_read = u32(4)
 // the program it has been handed.
 pub const dt_null = u64(0)
 pub const dt_needed = u64(1)
+// DT_SONAME is the name a shared object records as its own. It is what a
+// program linked against the object puts in its DT_NEEDED entry, so the loader
+// searches for the name the library calls itself rather than the file a build
+// happened to name, which is what makes `libvcc.so.0` work through a
+// `libvcc.so` symlink. -Wl,-soname,NAME is what writes it.
+pub const dt_soname = u64(14)
 pub const dt_hash = u64(4)
 pub const dt_strtab = u64(5)
 pub const dt_symtab = u64(6)
@@ -127,8 +133,11 @@ pub const df_1_now = u64(0x1)
 // BIND_NOW promise when -Wl,-z,now asked for it, and the null that ends it. It
 // is a function rather than a constant because the library count and the table
 // counts are not known until the program has been read.
-fn dynamic_entry_count(library_count int, init_array_count int, fini_array_count int, bind_now bool) int {
+fn dynamic_entry_count(library_count int, init_array_count int, fini_array_count int, bind_now bool, has_soname bool) int {
 	mut count := 9 + library_count
+	if has_soname {
+		count += 1
+	}
 	if init_array_count > 0 {
 		count += 2
 	}
@@ -144,9 +153,9 @@ fn dynamic_entry_count(library_count int, init_array_count int, fini_array_count
 // dynamic_table_size is how many bytes the table takes, which is what the
 // layout places after the relocations and what a PT_GNU_RELRO segment has to
 // cover when one is written.
-fn dynamic_table_size(program image.Program, library_count int, bind_now bool) int {
+fn dynamic_table_size(program image.Program, library_count int, bind_now bool, has_soname bool) int {
 	return dynamic_entry_count(library_count, program.init_array.count,
-		program.fini_array.count, bind_now) * int(elf_dynamic_entry_size)
+		program.fini_array.count, bind_now, has_soname) * int(elf_dynamic_entry_size)
 }
 
 // A relocation that asks the loader to write a symbol's address into a slot.
@@ -344,6 +353,17 @@ pub fn write_options(program image.Program, target backend.Target, kind linux.Li
 		dynstr << name.bytes()
 		dynstr << u8(0)
 	}
+	// The name the shared object records as its own. Only a shared object has
+	// one, and only when -Wl,-soname named it: a program is never looked up by
+	// name, and an object with no name records none, which is what ld writes.
+	soname_at := if kind == .shared && options.soname != '' {
+		at := dynstr.len
+		dynstr << options.soname.bytes()
+		dynstr << u8(0)
+		at
+	} else {
+		-1
+	}
 	// How many of the imports a library has to answer for, and each import's
 	// index in the dynamic symbol table. Both skip a name whose definition is
 	// inside this image, and they are computed once here rather than a name at
@@ -398,7 +418,7 @@ pub fn write_options(program image.Program, target backend.Target, kind linux.Li
 	// The dynamic table's bytes, counted once: the layout places it, the header
 	// it turns into reports its size, and PT_GNU_RELRO covers it.
 	dynamic_size := if has_dynamic {
-		dynamic_table_size(program, libraries.len, options.bind_now)
+		dynamic_table_size(program, libraries.len, options.bind_now, soname_at >= 0)
 	} else {
 		0
 	}
@@ -423,8 +443,8 @@ pub fn write_options(program image.Program, target backend.Target, kind linux.Li
 		extra, shared, kind)!
 	// A static program writes no table here, and no header points at one.
 	if has_dynamic {
-		emit_dynamic(mut output, sections, program, dynstr.len, needed, base, relocation_total,
-			options.bind_now)
+		emit_dynamic(mut output, sections, program, dynstr.len, needed, soname_at, base,
+			relocation_total, options.bind_now)
 	}
 	// The unwind table and the header that indexes it are written here rather
 	// than by a relocation: the layout has settled where the code and the two
@@ -1284,8 +1304,12 @@ fn emit_relocations(mut output []u8, program image.Program, sections Sections, i
 // parts. The two constructor tables are named by address and size when the
 // image has them, and they lie in the writable data, so the address is the load
 // base plus the storage's own offset.
-fn emit_dynamic(mut output []u8, sections Sections, program image.Program, dynstr_len int, needed []int, base u64, relocation_total int, bind_now bool) {
+fn emit_dynamic(mut output []u8, sections Sections, program image.Program, dynstr_len int, needed []int, soname_at int, base u64, relocation_total int, bind_now bool) {
 	mut entries := [][]u64{}
+	// The object's own name goes first, which is where ld writes it.
+	if soname_at >= 0 {
+		entries << [dt_soname, u64(soname_at)]
+	}
 	for offset in needed {
 		entries << [dt_needed, u64(offset)]
 	}

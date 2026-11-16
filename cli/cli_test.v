@@ -905,6 +905,18 @@ fn test_the_linker_reads_the_z_options_the_image_can_express() {
 	assert !linker_options([])!.relro
 }
 
+// -Wl,-soname,NAME is the one -Wl, option here that takes a string rather than a
+// keyword, because the name it gives is the shared object's own. A payload that
+// names the option with no name after it is refused the way a -z with no keyword
+// is: a recorded option nobody could apply is worse than an error.
+fn test_the_linker_reads_the_soname_option() {
+	assert linker_options(['-soname,libt.so.0'])!.soname == 'libt.so.0'
+	assert linker_options(['-z,now,-soname,libvcc.so.0'])!.soname == 'libvcc.so.0'
+	assert linker_options(['-z,now'])!.soname == ''
+	assert link_option_refusal('-soname').contains('-soname needs a name')
+	assert link_option_refusal('-soname,').contains('-soname needs a name')
+}
+
 // link_option_refusal is the diagnostic a payload is refused with, or an empty
 // string when the linker reads it. The refusal tests read the message rather
 // than only the failure, because the message is what tells a build which option

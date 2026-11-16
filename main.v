@@ -1484,6 +1484,7 @@ fn in_house_link_options(opts cli.Options) !linux.LinkOptions {
 		noexecstack: flags.noexecstack
 		bind_now:    flags.bind_now
 		relro:       flags.relro
+		soname:      flags.soname
 	}
 }
 
