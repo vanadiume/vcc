@@ -1677,18 +1677,29 @@ fn (t &Target) resolve_start_files(files linux.StartFiles, given []string) !([]s
 	return before, after
 }
 
-// runtime_archive is the archive a link takes as its runtime, named by file: this
-// compiler's own libvcc unless the command line asked for libgcc. The name is a
-// parameter because which of the two a link takes is the command line's decision
-// and not a fact about the target.
+// runtime_archive is the runtime a link takes, named by file: this compiler's own
+// libvcc unless the command line asked for libgcc, and that one shared rather
+// than an archive when -shared-libvcc or -shared-libgcc asked for it. The name is
+// a parameter because which of the two a link takes is the command line's
+// decision and not a fact about the target.
 //
 // The file is resolved where a -l name is resolved and then beside the compiler,
 // so a checkout can point at the archive its sibling tree built with -L and an
-// installed compiler finds the file it carries. An archive nothing answers is
-// none: the runtime library is implicit, and a program that reached into it for
-// a helper is refused by the name of that helper.
+// installed compiler finds the file it carries. The answer says whether it is an
+// archive, because the two are inputs of different kinds: an archive is read for
+// its members, and a shared object is a name the loader is asked for.
+//
+// A name nothing answers is none: the runtime library is implicit, and a program
+// that reached into it for a helper is refused by the name of that helper.
 pub fn (t &Target) runtime_archive(name string, given []string, install string) ?Library {
 	path := linux.find_runtime_library(name, t.link_dirs(given), install) or { return none }
+	if !path.ends_with('.a') {
+		shared := linux.shared_library(path) or { return none }
+		return Library{
+			path:   shared.path
+			soname: shared.soname
+		}
+	}
 	return Library{
 		path:    path
 		soname:  os.base(path)

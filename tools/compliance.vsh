@@ -49,7 +49,7 @@
 import os
 import time
 
-const tests_floor = 1183
+const tests_floor = 1189
 const checks_floor = 906
 
 // Every suite compiles with the same head and tail, and the standard between
@@ -79,6 +79,7 @@ mut:
 	compiler string
 	defines  []string
 	only     []string
+	libvcc   string
 	jobs     int
 	list     bool
 	count    bool
@@ -164,12 +165,14 @@ fn main() {
 		println('compliance: ${suite.rel}: ${suite.tests.len} tests (-std=${suite.mode})')
 	}
 	println('compiler:   ${compiler}')
+	runtime := provision(root, compiler, opts.libvcc)
+	println('runtime:    ${runtime}')
 
 	started := time.ticks()
 	shared work := Work{}
 	mut threads := []thread{}
 	for _ in 0 .. worker_count(opts) {
-		threads << spawn test_all(tests, compiler, scratch, opts.defines, shared work)
+		threads << spawn test_all(tests, compiler, scratch, opts.defines, runtime, shared work)
 	}
 	threads.wait()
 	elapsed := f64(time.ticks() - started) / 1000.0
@@ -221,7 +224,7 @@ fn main() {
 
 	// the whole corpus in one translation unit, which is what step 3 of the
 	// bootstrap chain compiles and what the check count floor is about
-	whole := run_monolithic(corpus_path, compiler, scratch)
+	whole := run_monolithic(corpus_path, compiler, scratch, runtime)
 	if whole.stage != 'ok' {
 		problems << 'monolithic.c: ${whole.stage}: ${whole.detail}'
 	} else {
@@ -320,7 +323,7 @@ fn suite_slug(rel string) string {
 // test_all runs tests until the queue is empty. The queue is shared, so the
 // cursor moves under a lock and the thread count decides how many compilers run
 // at once.
-fn test_all(tests []Test, compiler string, scratch string, defines []string, shared work Work) {
+fn test_all(tests []Test, compiler string, scratch string, defines []string, runtime string, shared work Work) {
 	for {
 		mut index := -1
 		lock work {
@@ -332,7 +335,7 @@ fn test_all(tests []Test, compiler string, scratch string, defines []string, sha
 		if index < 0 {
 			return
 		}
-		outcome := run_one(tests[index], compiler, scratch, defines)
+		outcome := run_one(tests[index], compiler, scratch, defines, runtime)
 		lock work {
 			work.outcomes << outcome
 		}
@@ -343,7 +346,7 @@ fn test_all(tests []Test, compiler string, scratch string, defines []string, sha
 // it, and reports the first thing that went wrong. A test that passes prints
 // nothing and exits zero, so any output at all is a finding rather than noise
 // to filter.
-fn run_one(test Test, compiler string, scratch string, defines []string) Outcome {
+fn run_one(test Test, compiler string, scratch string, defines []string, runtime string) Outcome {
 	path := os.join_path(test.dir, test.name)
 	label := '${test.suite}/${test.name}'
 	if needs_define(required_define(path), defines) {
@@ -353,7 +356,7 @@ fn run_one(test Test, compiler string, scratch string, defines []string) Outcome
 	gap := unimplemented_construct(path)
 	stem := test.name.all_before_last('.')
 	slug := suite_slug(test.suite)
-	flags := suite_flags(test.mode, defines)
+	flags := suite_flags(test.mode, defines, runtime)
 	exe := os.join_path(scratch, 'bin', slug, stem)
 	build := os.execute('cd ${os.quoted_path(test.dir)} && ${os.quoted_path(compiler)} ${flags} ${os.quoted_path(test.name)} -o ${os.quoted_path(exe)} 2>&1')
 	if build.exit_code != 0 {
@@ -392,10 +395,13 @@ fn run_one(test Test, compiler string, scratch string, defines []string) Outcome
 
 // suite_flags is the compile line for one dialect: the standard is the
 // directory's own name, and the defines are the ones --define named.
-fn suite_flags(mode string, defines []string) string {
+fn suite_flags(mode string, defines []string, runtime string) string {
 	mut flags := '${compile_head}${mode}${compile_tail}'
 	for define in defines {
 		flags += ' -D${define}'
+	}
+	if runtime != '' {
+		flags += ' -L ${os.quoted_path(runtime)}'
 	}
 	return flags
 }
@@ -403,9 +409,12 @@ fn suite_flags(mode string, defines []string) string {
 // run_monolithic runs the corpus as one translation unit and reads its own
 // summary line. It prints as it goes, so its contract is the count rather than
 // silence.
-fn run_monolithic(dir string, compiler string, scratch string) Outcome {
+fn run_monolithic(dir string, compiler string, scratch string, runtime string) Outcome {
 	exe := os.join_path(scratch, 'monolithic')
-	flags := '${compile_head}${monolithic_mode}${compile_tail}'
+	mut flags := '${compile_head}${monolithic_mode}${compile_tail}'
+	if runtime != '' {
+		flags += ' -L ${os.quoted_path(runtime)}'
+	}
 	build := os.execute('cd ${os.quoted_path(dir)} && ${os.quoted_path(compiler)} ${flags} ${monolithic} -o ${os.quoted_path(exe)} 2>&1')
 	if build.exit_code != 0 {
 		return Outcome{monolithic, 'build', first_lines(build.output, 3)}
@@ -511,6 +520,27 @@ fn matches_only(entry string, only []string) bool {
 	return false
 }
 
+// provision answers the directory the runtime archive is in. tools/runtime.vsh
+// finds one on the machine, builds a libvcc checkout, or clones the pinned
+// commit; this reads its one line and turns a failure into a stopped run,
+// because a corpus compiled against no runtime reports every complex test as a
+// link error rather than as the missing library it is.
+fn provision(root string, compiler string, tree string) string {
+	mut command := 'v run ${os.quoted_path(os.join_path(root, 'tools', 'runtime.vsh'))} --compiler ${os.quoted_path(compiler)} --root ${os.quoted_path(root)}'
+	if tree != '' {
+		command += ' --libvcc ${os.quoted_path(tree)}'
+	}
+	result := os.execute(command)
+	lines := result.output.trim_space().split_into_lines()
+	answer := if lines.len > 0 { lines[lines.len - 1].trim_space() } else { '' }
+	if result.exit_code != 0 || !os.is_dir(answer) {
+		eprintln('compliance: no runtime library, so a program that multiplies a complex value cannot link')
+		eprintln('compliance: name a libvcc checkout with --libvcc DIR, or let the clone run')
+		exit(1)
+	}
+	return answer
+}
+
 // build_compiler builds the tree under test, so the tests describe the current
 // source rather than a binary from an earlier edit.
 fn build_compiler(root string) string {
@@ -582,6 +612,15 @@ fn parse_options(args []string) Options {
 					exit(1)
 				}
 			}
+			'--libvcc' {
+				if i + 1 < args.len {
+					opts.libvcc = args[i + 1]
+					i += 2
+				} else {
+					eprintln('compliance: --libvcc needs a directory')
+					exit(1)
+				}
+			}
 			'--only' {
 				i++
 				for i < args.len && !args[i].starts_with('-') {
@@ -622,7 +661,7 @@ fn parse_options(args []string) Options {
 
 fn usage() {
 	println('usage: v run tools/compliance.vsh [--compiler PATH] [--define NAME]...')
-	println('                                  [--only NNNN]... [-j N] [--list] [--count]')
+	println('                                  [--only NNNN]... [--libvcc DIR] [-j N] [--list] [--count]')
 }
 
 fn cleanup_paths(paths []string) {

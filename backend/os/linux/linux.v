@@ -41,6 +41,23 @@ pub const runtime_library = 'libvcc.a'
 // the toolchain's own helpers live in.
 pub const libgcc_library = 'libgcc.a'
 
+// runtime_shared_library is the same runtime as runtime_library, shared:
+// -shared-libvcc links the program against this file, the loader maps it, and
+// the image records the name the file carries rather than the path. It is
+// resolved by the same search the archive is, so a checkout can point at the
+// .so its sibling tree built with -L and an installed compiler finds the file it
+// was installed beside.
+pub const runtime_shared_library = 'libvcc.so'
+
+// libgcc_shared_library is libgcc's shared form, which -shared-libgcc with
+// --link-libgcc takes in place of libgcc.a. It is a -l name's answer rather than
+// a file in a directory this compiler knows: libgcc_s lives beside the toolchain
+// that built it, so it is resolved through the same search -lgcc_s goes through.
+pub const libgcc_shared_library = 'libgcc_s.so.1'
+
+// libgcc_shared_flag is the -l name that search is asked with.
+pub const libgcc_shared_flag = 'gcc_s'
+
 // LinkKind is which link a command line asked for. The three differ in the
 // arguments a linker is given and in nothing else, so they are one value with
 // three cases rather than three ways to build a command line.

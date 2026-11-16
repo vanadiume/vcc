@@ -61,6 +61,7 @@ mut:
 	root     string
 	defines  []string
 	only     []string
+	libvcc   string
 	jobs     int
 	list     bool
 	count    bool
@@ -160,12 +161,14 @@ fn main() {
 	}
 	println('cases:      ${regression_cases} regression, ${goldens_cases} golden')
 	println('compiler:   ${compiler}')
+	runtime := provision(root, compiler, opts.libvcc)
+	println('runtime:    ${runtime}')
 
 	started := time.ticks()
 	shared work := Work{}
 	mut threads := []thread{}
 	for _ in 0 .. worker_count(opts) {
-		threads << spawn run_all(cases, compiler, scratch, opts.defines, shared work)
+		threads << spawn run_all(cases, compiler, scratch, opts.defines, runtime, shared work)
 	}
 	threads.wait()
 	elapsed := f64(time.ticks() - started) / 1000.0
@@ -290,7 +293,7 @@ fn suite_slug(rel string) string {
 // run_all runs cases until the queue is empty. The queue is shared, so the
 // cursor moves under a lock and the thread count decides how many compilers run
 // at once.
-fn run_all(cases []Case, compiler string, scratch string, defines []string, shared work Work) {
+fn run_all(cases []Case, compiler string, scratch string, defines []string, runtime string, shared work Work) {
 	for {
 		mut index := -1
 		lock work {
@@ -302,7 +305,7 @@ fn run_all(cases []Case, compiler string, scratch string, defines []string, shar
 		if index < 0 {
 			return
 		}
-		outcome := run_one(cases[index], compiler, scratch, defines)
+		outcome := run_one(cases[index], compiler, scratch, defines, runtime)
 		lock work {
 			work.outcomes << outcome
 		}
@@ -311,7 +314,7 @@ fn run_all(cases []Case, compiler string, scratch string, defines []string, shar
 
 // run_one compiles a case under the standard of its directory and runs it under
 // the contract its corpus gives it, reporting the first thing that went wrong.
-fn run_one(one Case, compiler string, scratch string, defines []string) Outcome {
+fn run_one(one Case, compiler string, scratch string, defines []string, runtime string) Outcome {
 	path := os.join_path(one.dir, one.file)
 	label := '${one.kind}/${one.suite}/${one.file}'
 	gate := required_define(path)
@@ -320,7 +323,7 @@ fn run_one(one Case, compiler string, scratch string, defines []string) Outcome 
 	}
 	stem := one.file.all_before_last('.')
 	slug := suite_slug(one.suite)
-	flags := case_flags(one.mode, defines)
+	flags := case_flags(one.mode, defines, runtime)
 	// the corpus and the dialect are part of the binary's name: a golden and a
 	// regression case may share a number and a stem
 	exe := os.join_path(scratch, '${one.kind}-${slug}-${stem}')
@@ -349,10 +352,13 @@ fn run_one(one Case, compiler string, scratch string, defines []string) Outcome 
 
 // case_flags is the compile line for one dialect: the standard is the
 // directory's own name, and the defines are the ones --define named.
-fn case_flags(mode string, defines []string) string {
+fn case_flags(mode string, defines []string, runtime string) string {
 	mut flags := '${compile_head}${mode}${compile_tail}'
 	for define in defines {
 		flags += ' -D${define}'
+	}
+	if runtime != '' {
+		flags += ' -L ${os.quoted_path(runtime)}'
 	}
 	return flags
 }
@@ -481,6 +487,27 @@ fn matches_only(entry string, only []string) bool {
 
 // build_compiler builds the tree under test, so the cases describe the current
 // source rather than a binary from an earlier edit.
+// provision answers the directory the runtime archive is in. tools/runtime.vsh
+// finds one on the machine, builds a libvcc checkout, or clones the pinned
+// commit; this reads its one line and turns a failure into a stopped run,
+// because a case compiled against no runtime reports a complex product as a
+// link error rather than as the missing library it is.
+fn provision(root string, compiler string, tree string) string {
+	mut command := 'v run ${os.quoted_path(os.join_path(root, 'tools', 'runtime.vsh'))} --compiler ${os.quoted_path(compiler)} --root ${os.quoted_path(root)}'
+	if tree != '' {
+		command += ' --libvcc ${os.quoted_path(tree)}'
+	}
+	result := os.execute(command)
+	lines := result.output.trim_space().split_into_lines()
+	answer := if lines.len > 0 { lines[lines.len - 1].trim_space() } else { '' }
+	if result.exit_code != 0 || !os.is_dir(answer) {
+		eprintln('regress: no runtime library, so a case that multiplies a complex value cannot link')
+		eprintln('regress: name a libvcc checkout with --libvcc DIR, or let the clone run')
+		exit(1)
+	}
+	return answer
+}
+
 fn build_compiler(root string) string {
 	path := os.join_path(os.temp_dir(), 'vcc-regress-vcc-${os.getpid()}')
 	result := os.execute('cd ${os.quoted_path(root)} && v -o ${os.quoted_path(path)} . 2>&1')
@@ -526,6 +553,15 @@ fn parse_options(args []string) Options {
 					i += 2
 				} else {
 					eprintln('regress: --root needs a path')
+					exit(1)
+				}
+			}
+			'--libvcc' {
+				if i + 1 < args.len {
+					opts.libvcc = args[i + 1]
+					i += 2
+				} else {
+					eprintln('regress: --libvcc needs a directory')
 					exit(1)
 				}
 			}
@@ -578,7 +614,7 @@ fn parse_options(args []string) Options {
 
 fn usage() {
 	println('usage: v run tools/regress.vsh [--compiler PATH] [--root PATH] [--define NAME]...')
-	println('                               [--only NNN]... [-j N] [--list] [--count]')
+	println('                               [--only NNN]... [--libvcc DIR] [-j N] [--list] [--count]')
 }
 
 fn cleanup_paths(paths []string) {

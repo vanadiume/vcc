@@ -53,6 +53,10 @@ pub:
 	// relro is -Wl,-z,relro: the image carries a PT_GNU_RELRO segment over the
 	// tables the loader writes and nothing writes again.
 	relro bool
+	// soname is -Wl,-soname,NAME: the name the shared object records as its
+	// own, written as a DT_SONAME entry. Empty writes none, which is what a
+	// link that named no name gets.
+	soname string
 }
 
 // link_arguments is the ordered argument list for the linker.

@@ -33,6 +33,13 @@ pub mut:
 	// relro is -Wl,-z,relro: the image carries a PT_GNU_RELRO segment over the
 	// tables the loader writes and nothing writes again.
 	relro bool
+	// soname is -Wl,-soname,NAME: the name a shared object records inside
+	// itself as its own, which is the string a program linked against it puts
+	// in DT_NEEDED and the name the loader searches for. Empty means the image
+	// records none, which is what a link that asked for nothing gets; gcc and
+	// ld write no DT_SONAME for a shared object either unless this option is
+	// given.
+	soname string
 }
 
 // linker_options reads the payloads of the -Wl, flags for this compiler's own
@@ -52,6 +59,18 @@ pub fn linker_options(args []string) !LinkerOptions {
 		mut i := 0
 		for i < words.len {
 			word := words[i]
+			if word == '-soname' {
+				// The one option here that takes a string rather than a
+				// keyword: `-Wl,-soname,libvcc.so.0` names the image's own
+				// name, and the name is the whole rest of the payload because
+				// a comma would end it.
+				if i + 1 >= words.len || words[i + 1] == '' {
+					return error('-Wl,${payload}: -soname needs a name')
+				}
+				options.soname = words[i + 1]
+				i += 2
+				continue
+			}
 			if word != '-z' {
 				return error('-Wl,${payload}: the in-house linker does not implement ${word}')
 			}

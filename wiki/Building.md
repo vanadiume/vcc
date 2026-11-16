@@ -42,13 +42,13 @@ source with V's default collector and is not the compiler this tree ships.
 `v run tools/build.vsh` is the front door over the same commands when one run
 is wanted.
 
-An installed compiler is a pair: `/usr/local/bin/vcc` and
-`/usr/local/lib/libvcc.a` by default, or the same two files under `--prefix`.
-`v run tools/build.vsh install` builds the compiler and libvcc with it, copies
-both, and then compiles and runs a program that calls a helper from the archive,
-so the install is proved where it lands. A release ships the pair as
-`vcc-<version>-x86_64-linux.tar.gz`, laid out as `usr/bin/vcc` and
-`usr/lib/libvcc.a`.
+An installed compiler comes with its runtime: `/usr/local/bin/vcc` with
+`/usr/local/lib/libvcc.a` and the `libvcc.so` chain by default, or the same under
+`--prefix`. `v run tools/build.vsh install` builds the compiler and libvcc with
+it, copies the runtime, and then compiles and runs a program that calls a helper
+from the archive and a second one that links with `-shared-libvcc` against the
+library, so the install is proved where it lands. A release ships the same tree
+as `vcc-<version>-x86_64-linux.tar.gz`, laid out under `usr/bin` and `usr/lib`.
 
 ## A first program
 
@@ -78,8 +78,9 @@ covers the V side of that contract. It also has flags of its own:
 `-imacros`, the dependency flags `-M`/`-MM`/`-MD`/`-MMD`/`-MF`/`-MT`/`-MQ`,
 `-dM`, `-Wclass`/`-Wno-class`, `-femulation=NAME` (define the identity macros
 of gcc, clang or tcc instead of vcc's own), `-external-linker=NAME`,
-`-shared`, `-static`, `-nostdlib`, `-nodefaultlibs`, `--link-libgcc`, and the
-gcc `-print-` family. `./vcc -hh` prints the annotated surface.
+`-shared`, `-static`, `-nostdlib`, `-nodefaultlibs`, `--link-libgcc`,
+`-shared-libvcc`, `-shared-libgcc`, and the gcc `-print-` family.
+`./vcc -hh` prints the annotated surface.
 
 A program links the runtime archive `libvcc.a`, where the helpers the machine has
 no instruction for live under libgcc's symbol names. It is looked for where a
@@ -93,9 +94,17 @@ at compile time rather than left for the loader to report at start. That last
 flag needs a compiler built with `-d experimental_libgcc`, which
 `v run tools/build.vsh build` takes as `--experimental-libgcc`; every other
 build refuses the flag by name.
+`-shared-libvcc` is the same runtime as a shared library: the image names
+`libvcc.so.0` instead of pulling members out of the archive, so the library has
+to be there when the program starts. It is refused with `-static`, with
+`--link-libgcc`, and with `-shared-libgcc`. `-shared-libgcc` is the counterpart
+on the libgcc side and needs `--link-libgcc` beside it, so the runtime it makes
+shared is the one the command line named; both spellings only exist in a binary
+built with `-d experimental_libgcc`.
+
 `v run tools/build.vsh libvcc` builds the archive from its sibling tree with
 this compiler and links a program against it. `v run tools/build.vsh install`
-puts that archive and the compiler under a prefix.
+puts the runtime and the compiler under a prefix.
 
 `-O` today turns on one optimizer pass: a call whose value the compiler knows
 (`abs`, `labs`, `llabs`) with a literal argument folds to that value. `-O0`

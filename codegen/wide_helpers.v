@@ -81,12 +81,13 @@ fn (mut e Emitter) load_wide_helper_pair(slot Slot, position int, line int, col 
 	e.append(e.target.load_slot(frame, slot.offset + word, registers[1], word)!)
 }
 
-// write_wide_helper_call writes the call itself. A name the unit defines is a
-// direct call, which is what a runtime compiled by this compiler and a test
-// that supplies its own helper get; otherwise the name is an import, and an
-// object leaves it for a linker while a program reaches it through the slot the
-// loader fills in.
-fn (mut e Emitter) write_wide_helper_call(name string) {
+// write_runtime_helper_call writes the call itself. A name the unit defines is a
+// direct call, which is what a runtime compiled by this compiler and a test that
+// supplies its own helper get; otherwise the name is an import, and an object
+// leaves it for a linker while a program reaches it through the slot the loader
+// fills in. Both widths use it: a 128-bit operation and a complex product or
+// quotient become calls of the same shape.
+fn (mut e Emitter) write_runtime_helper_call(name string) {
 	if name in e.program.defined {
 		e.reference(e.target.call_near(0), .call_local, name, '')
 		return
@@ -106,7 +107,7 @@ fn (mut e Emitter) write_wide_helper_call(name string) {
 fn (mut e Emitter) emit_wide_binary_helper(step ast.Binary, left Slot, right Slot, name string) !void {
 	e.load_wide_helper_pair(left, 0, step.line, step.col)!
 	e.load_wide_helper_pair(right, 2, step.line, step.col)!
-	e.write_wide_helper_call(name)
+	e.write_runtime_helper_call(name)
 }
 
 // emit_wide_shift_helper writes a 128-bit shift by a constant count as the
@@ -116,7 +117,7 @@ fn (mut e Emitter) emit_wide_shift_helper_constant(step ast.Binary, left Slot, b
 	count := e.shift_helper_count_register(step.line, step.col)!
 	e.append(e.target.move_immediate32(count, u32(bits))!)
 	e.load_wide_helper_pair(left, 0, step.line, step.col)!
-	e.write_wide_helper_call(name)
+	e.write_runtime_helper_call(name)
 }
 
 // emit_wide_shift_helper_register is the same call with a count the program
@@ -128,7 +129,7 @@ fn (mut e Emitter) emit_wide_shift_helper_register(step ast.Binary, left Slot, c
 	argument := e.shift_helper_count_register(step.line, step.col)!
 	e.append(e.target.move_register32(argument, count)!)
 	e.load_wide_helper_pair(left, 0, step.line, step.col)!
-	e.write_wide_helper_call(name)
+	e.write_runtime_helper_call(name)
 }
 
 // shift_helper_count_register is where the third integer argument travels,

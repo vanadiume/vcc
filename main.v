@@ -302,7 +302,7 @@ fn main() {
 	mut archive_names := map[string]bool{}
 	if !opts.compile_only && link_kind(opts) == .program {
 		if opts.default_libraries() {
-			archive_names = runtime_archive_names(opts, run_target)
+			archive_names = runtime_names(opts, run_target)
 		}
 		for name, _ in library_archive_names(opts, run_target) {
 			archive_names[name] = true
@@ -784,14 +784,26 @@ fn link_inputs(opts cli.Options) {
 				support << library.path
 			}
 		}
-		// The runtime archive is a program's. A shared object does not take it:
-		// its helper references are what the loader resolves from whatever maps
-		// it, and this compiler writes the archive for a program. A static link
+		// The runtime is a program's. A shared object does not take one: its
+		// helper references are what the loader resolves from whatever maps it,
+		// and this compiler writes the runtime for a program. A static link
 		// takes it through static_support_libraries, which is where the list of
 		// archives it resolves against is written down.
+		//
+		// Which kind of input it is decides where it goes: an archive is read
+		// for its members and its member answers the helper, and a shared
+		// object is a name the loader is asked for, which is the list the
+		// command line's own .so inputs are on.
 		if output_kind == .program {
 			if runtime := runtime_archive(opts, target) {
-				support << runtime.path
+				if runtime.archive {
+					support << runtime.path
+				} else {
+					shared << linux.shared_library(runtime.path) or {
+						abort('${runtime.path}: ${err.msg()}')
+						return
+					}
+				}
 			}
 		}
 	}
@@ -1314,13 +1326,22 @@ fn abort(message string) {
 	exit(1)
 }
 
-// runtime_library_name is the archive a link takes for the helpers the machine
-// has no instruction for: this compiler's own libvcc, or the toolchain's libgcc
-// when --link-libgcc asked for it. The two define the same helper names, so a
-// link takes one of them and never both.
+// runtime_library_name is the file a link takes for the helpers the machine has
+// no instruction for: this compiler's own libvcc, or the toolchain's libgcc when
+// --link-libgcc asked for it, and that one's shared form when -shared-libvcc or
+// -shared-libgcc asked for a library the loader maps. The two runtimes define the
+// same helper names, so a link takes one of them and never both, and the command
+// line is not allowed to name both: runtime_conflict_refusal is where the pairs
+// that would mean nothing are refused.
 fn runtime_library_name(opts cli.Options) string {
 	if opts.link_libgcc {
+		if opts.shared_libgcc {
+			return linux.libgcc_shared_library
+		}
 		return linux.libgcc_library
+	}
+	if opts.shared_libvcc {
+		return linux.runtime_shared_library
 	}
 	return linux.runtime_library
 }
@@ -1333,8 +1354,19 @@ fn runtime_library_name(opts cli.Options) string {
 // refused by the name of the helper it called.
 fn runtime_archive(opts cli.Options, target backend.Target) ?backend.Library {
 	name := runtime_library_name(opts)
-	if archive := target.runtime_archive(name, opts.library_dirs, install_dir()) {
-		return archive
+	// libgcc_s is not a file this compiler keeps or a name it knows a directory
+	// for: it lives beside the toolchain that built it, which is the answer the
+	// search a -l name goes through gives. So it is resolved as that name rather
+	// than searched for as a file, and the answer carries the name the loader is
+	// asked for.
+	if opts.link_libgcc && opts.shared_libgcc {
+		libraries := target.resolve_libraries([linux.libgcc_shared_flag], opts.library_dirs,
+			false) or { []backend.Library{} }
+		if libraries.len > 0 {
+			return libraries[0]
+		}
+	} else if library := target.runtime_archive(name, opts.library_dirs, install_dir()) {
+		return library
 	}
 	if opts.link_libgcc {
 		abort('--link-libgcc needs ${name}, and no directory this system searches has it: name the directory that holds it with -L')
@@ -1342,17 +1374,26 @@ fn runtime_archive(opts cli.Options, target backend.Target) ?backend.Library {
 	return none
 }
 
-// runtime_archive_names are the names the runtime archive answers, which is the
-// set the single-input path hands its import check and the set it asks the
-// emitted unit against. The archive is read rather than guessed at, and a run
-// with no archive answers nothing: a link with no libvcc is a program refused by
-// the name of the helper it called.
-fn runtime_archive_names(opts cli.Options, target backend.Target) map[string]bool {
+// runtime_names are the names the runtime answers, which is the set the
+// single-input path hands its import check and the set it asks the emitted unit
+// against. The file is read rather than guessed at: an archive answers through
+// its symbol index, and a shared object through the dynamic symbol table it is
+// loaded by, which is the same reader a -l name that resolved to a shared object
+// is checked with. A run with no runtime answers nothing, and a link with no
+// libvcc is a program refused by the name of the helper it called.
+fn runtime_names(opts cli.Options, target backend.Target) map[string]bool {
 	mut out := map[string]bool{}
 	runtime := runtime_archive(opts, target) or { return out }
-	bytes := read_source(runtime.path) or { return out }
-	parts := archive.read(bytes.bytes()) or { return out }
-	for name, _ in parts.index {
+	if runtime.archive {
+		bytes := read_source(runtime.path) or { return out }
+		parts := archive.read(bytes.bytes()) or { return out }
+		for name, _ in parts.index {
+			out[name] = true
+		}
+		return out
+	}
+	symbols := linux.library_symbols(runtime.path) or { return out }
+	for name, _ in symbols {
 		out[name] = true
 	}
 	return out
@@ -1484,6 +1525,7 @@ fn in_house_link_options(opts cli.Options) !linux.LinkOptions {
 		noexecstack: flags.noexecstack
 		bind_now:    flags.bind_now
 		relro:       flags.relro
+		soname:      flags.soname
 	}
 }
 
@@ -1747,8 +1789,22 @@ fn query_answer(opts cli.Options, target backend.Target) string {
 		// The file the linker's search finds, or the name back unchanged when it
 		// finds none. An empty name is not a file and comes back empty, which is
 		// the same rule and not gcc's special answer of its install directory.
+		// It is answered here rather than left to the search, because the search
+		// appends the name to the install directory and an empty name would come
+		// back as that directory.
+		if opts.print_file_name == '' {
+			return ''
+		}
+		//
+		// The runtime is the one file searched for a second way: libvcc.a and
+		// libvcc.so are kept beside the compiler rather than in a directory the
+		// linker's search has, so a name the -L directories do not answer is
+		// asked of the install directory too. That is the search
+		// runtime_archive makes, and the two answers agreeing is what makes
+		// `-print-file-name=libvcc.a` name the file a link would take.
 		return target.library_file(opts.print_file_name, opts.library_dirs) or {
-			opts.print_file_name
+			linux.find_runtime_library(opts.print_file_name, target.library_dirs_for(opts.library_dirs),
+				install_dir()) or { opts.print_file_name }
 		}
 	}
 	if opts.print_prog_name_given {
