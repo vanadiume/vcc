@@ -61,6 +61,33 @@ fn test_an_import_no_unit_defines_stays_unbound() {
 	assert 'exit' !in merged.bound
 }
 
+// A definition anywhere in the link answers a weak import, so the name is not
+// one the image leaves undefined: it is dropped from `weak_imports` and binds
+// to the definition, which is the defining unit's own code rather than a stub
+// for a library. The binding is checked by its offset and its byte, because a
+// name bound to the wrong unit's text is a plausible-looking answer and a wrong
+// one. The reference here is a direct one, the shape a call takes, and it is
+// still answered by the definition rather than by a stub: `symbols.collect`
+// dropped the name, so the stub loop never sees it.
+fn test_a_definition_answers_a_weak_import_from_another_unit() {
+	mut stub := defining('main', []u8{len: 4, init: u8(0x90)})
+	stub.imports << 'hook'
+	stub.weak_imports['hook'] = true
+	stub.relocations << image.Relocation{
+		offset: 0
+		kind:   .direct
+		name:   'hook'
+		addend: -4
+	}
+	helper := defining('hook', [u8(0xcc)])
+	merged := link([stub, helper], options('main')) or { panic('the link failed: ${err.msg()}') }
+	assert 'hook' !in merged.weak_imports
+	assert 'hook' in merged.bound
+	assert merged.bound['hook'].offset == 4
+	assert merged.text[merged.bound['hook'].offset] == u8(0xcc)
+	assert 'hook' !in merged.plts
+}
+
 // Two strong definitions of one name are what a link refuses, and the message
 // names the name so a reader knows which one.
 fn test_two_units_defining_one_name_are_refused() {

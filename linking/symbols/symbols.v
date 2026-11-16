@@ -215,6 +215,24 @@ pub fn collect(units []image.Program) !Names {
 			names.weak[name] = true
 		}
 	}
+	// A weak import is a name a unit named weakly and no unit defines, which is
+	// what the field means in one unit and what the readers of a merged program
+	// take it to mean when they read an import as standing for zero. A
+	// definition anywhere in the link answers the import, so the name is not
+	// one the link has to answer and it is dropped here: left in, the image
+	// would write the definition as an undefined weak symbol and write every
+	// reference to it as zero. A unit's own `weak_imports` cannot say this,
+	// because it records what that unit saw and the definition may be in any of
+	// the others.
+	mut answered := []string{}
+	for name, _ in names.weak_imports {
+		if name in names.definitions {
+			answered << name
+		}
+	}
+	for name in answered {
+		names.weak_imports.delete(name)
+	}
 	return names
 }
 
