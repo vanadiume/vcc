@@ -74,7 +74,9 @@ covers the V side of that contract. It also has flags of its own:
 
 `--version`, `-v`, `-vv`, `-h`, `-hh`, `-E`, `-c`, `-o`, `-run`, `-bench`,
 `-print-ast`, the `-O0` through `-O3` and `-Os` levels, `-fno-builtin` and
-`-fno-builtin-NAME`, `-fPIC`/`-fpic`, `-nostdinc`, `-undef`, `-include`,
+`-fno-builtin-NAME`, `-fbracket-depth=N` (how deep a parenthesis, brace or
+statement may nest, 256 by default; 0 lifts the limit), `-fPIC`/`-fpic`,
+`-nostdinc`, `-undef`, `-include`,
 `-imacros`, the dependency flags `-M`/`-MM`/`-MD`/`-MMD`/`-MF`/`-MT`/`-MQ`,
 `-dM`, `-Wclass`/`-Wno-class`, `-femulation=NAME` (define the identity macros
 of gcc, clang or tcc instead of vcc's own), `-external-linker=NAME`,
