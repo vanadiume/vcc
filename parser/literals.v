@@ -10,6 +10,18 @@ import decimal
 // does not fit, or a digit that is not valid for the base it was written in, is
 // exactly the kind of thing a compiler must not quietly turn into a number.
 
+// strip_digit_separators takes the C23 digit separator out of a numeric token's
+// spelling. 6.4.4.1 and 6.4.4.2 make the separator part of how the constant is
+// written and not of its value: it may sit between two digits, and the value is
+// read from what is left. The token keeps the separator, so `-E` and a
+// diagnostic show the number the file wrote; this is where it goes away.
+fn strip_digit_separators(text string) string {
+	if !text.contains("'") {
+		return text
+	}
+	return text.replace("'", '')
+}
+
 // parse_integer_literal reads an integer constant in any of the bases C allows.
 // Suffixes are accepted and dropped here, since which type the suffix names is
 // the type model's question and not this reader's.
@@ -22,7 +34,7 @@ import decimal
 // reads it as the unsigned value it was written as. Measured on gcc 16.2.1:
 // `18446744073709551615ULL` is accepted and is `unsigned long long`.
 fn parse_integer_literal(text string) !i64 {
-	mut body := text
+	mut body := strip_digit_separators(text)
 	for body.len > 0 && body[body.len - 1] in [`u`, `U`, `l`, `L`] {
 		body = body[..body.len - 1]
 	}
@@ -168,7 +180,8 @@ fn parse_float128_literal(text string) !types.LongDouble {
 	if !is_float128_constant(text) {
 		return error('${text}: not a _Float128 constant')
 	}
-	body := text[..text.len - 4]
+	stripped := strip_digit_separators(text)
+	body := stripped[..stripped.len - 4]
 	if body.len > 1 && body[0] == `0` && (body[1] == `x` || body[1] == `X`) {
 		return parse_hex_long_double(text, body)
 	}
@@ -189,7 +202,8 @@ fn parse_long_double_literal(text string) !types.LongDouble {
 	if text.len < 2 {
 		return error('${text}: not a floating constant')
 	}
-	body := text[..text.len - 1]
+	stripped := strip_digit_separators(text)
+	body := stripped[..stripped.len - 1]
 	if body.len > 1 && body[0] == `0` && (body[1] == `x` || body[1] == `X`) {
 		return parse_hex_long_double(text, body)
 	}
@@ -358,7 +372,8 @@ fn parse_decimal_literal(text string) !types.Decimal {
 	format := decimal.from_suffix(text) or {
 		return error('${text}: not a decimal floating constant')
 	}
-	body := decimal.from_text(text[..text.len - 2], format)
+	stripped := strip_digit_separators(text)
+	body := decimal.from_text(stripped[..stripped.len - 2], format)
 	value := body.clamp(format)
 	// A value the format truncated to zero keeps the power of ten the source wrote,
 	// which is the same rule a zero the source wrote follows, and the encoding is
@@ -674,10 +689,11 @@ fn bit_len_u128(x u128) int {
 // below, because a constant this reader does not take is reported rather than
 // read as the part it recognises.
 fn parse_floating_literal(text string) !f64 {
-	if text.len > 1 && text[0] == `0` && (text[1] == `x` || text[1] == `X`) {
-		return parse_hex_floating_literal(text)
+	stripped := strip_digit_separators(text)
+	if stripped.len > 1 && stripped[0] == `0` && (stripped[1] == `x` || stripped[1] == `X`) {
+		return parse_hex_floating_literal(stripped)
 	}
-	mut body := text
+	mut body := stripped
 	mut single := false
 	if body.len > 0 {
 		last := body[body.len - 1]

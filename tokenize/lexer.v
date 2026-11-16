@@ -589,6 +589,24 @@ fn (mut l Lexer) lex_number(start_line int, start_col int) ?Token {
 	mut seen_dot := false
 	for l.pos < l.src.len {
 		ch := l.at()
+		if ch == `'` && text.len > 0 {
+			// C23 6.4.4.1 and 6.4.4.2 make a `'` between two digits of a
+			// constant a digit separator: part of the spelling and not of the
+			// value. The token keeps it, so `-E` prints the number the file
+			// wrote and a diagnostic can quote it back; parser/literals.v takes
+			// the separators out when it reads the value.
+			if digit_in_base(text[text.len - 1], text) && digit_in_base(l.peek(1), text) {
+				text << ch
+				l.advance()
+				continue
+			}
+			l.diagnostics << Diagnostic{
+				line: start_line
+				col:  start_col
+				msg:  'a digit separator must sit between two digits of the number'
+			}
+			return none
+		}
 		if is_digit(ch) || is_ident_char(ch) {
 			text << ch
 			l.advance()
@@ -865,6 +883,21 @@ fn (l Lexer) ahead_bytes(mut buf [4]u8) int {
 
 fn is_digit(c u8) bool {
 	return c >= `0` && c <= `9`
+}
+
+fn is_hex_digit(c u8) bool {
+	return is_digit(c) || (c >= `a` && c <= `f`) || (c >= `A` && c <= `F`)
+}
+
+// digit_in_base says whether `c` is a digit of the constant whose spelling so
+// far is `text`: a hexadecimal digit of a `0x` constant, a decimal digit of
+// every other one. C23 6.4.4.1 and 6.4.4.2 let the separator sit between two of
+// these and nowhere else.
+fn digit_in_base(c u8, text []u8) bool {
+	if text.len > 1 && text[0] == `0` && (text[1] == `x` || text[1] == `X`) {
+		return is_hex_digit(c)
+	}
+	return is_digit(c)
 }
 
 // is_ident_start is what may begin an identifier. `$` is a GNU extension and

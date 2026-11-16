@@ -679,6 +679,43 @@ fn test_a_letter_after_digits_is_the_same_preprocessing_number() {
 	assert texts('1+2') == ['1', '+', '2', '']
 }
 
+fn test_a_digit_separator_between_digits_stays_in_the_number() {
+	// C23 6.4.4.1 and 6.4.4.2: a `'` between two digits of a constant is a
+	// digit separator, and the number is still one token. The spelling is kept
+	// as the file wrote it; the reader that makes the value takes the
+	// separators out, so `-E` shows the number and not a rewritten one.
+	assert texts("1'000'000 0x1'FF 0b1010'1010 0o1'2 1'000.5 1'000.5f 0x1'8p3 1'000ULL 1e1'0 0x1p1'0") == [
+		"1'000'000",
+		"0x1'FF",
+		"0b1010'1010",
+		"0o1'2",
+		"1'000.5",
+		"1'000.5f",
+		"0x1'8p3",
+		"1'000ULL",
+		"1e1'0",
+		"0x1p1'0",
+		'',
+	]
+	assert kinds("1'000'000") == [.number, .eof]
+	// A character constant is not a number, whatever sits beside it.
+	assert kinds("'a' '\\'' '\\0' L'x' u'x' u8'c'") == [.character, .character, .character, .character,
+		.character, .character, .eof]
+}
+
+fn test_a_digit_separator_that_is_not_between_two_digits_is_refused() {
+	// Anywhere else the quote is not a separator, and reading the rest of the
+	// number as a character constant would be a wrong value or a diagnostic
+	// about something the file did not write. gcc 16.2.1 refuses these too:
+	// adjacent separators, a separator after the base prefix, a separator at
+	// the end of the number and one after the point.
+	for source in ["1''2", "1'", "0x'FF", "1.'0"] {
+		result := lex(source)
+		assert result.diagnostics.len == 1, source
+		assert result.diagnostics[0].msg.contains('digit separator'), source
+	}
+}
+
 fn test_hexadecimal_and_octal_escapes_stay_as_written() {
 	// The escapes belong to phase 5 and not to the lexer, so a hexadecimal and
 	// an octal escape are handed on with their backslash in place, in a
