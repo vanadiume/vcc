@@ -84,9 +84,12 @@ pub:
 // An archive is left out: a static archive is not a file the loader maps, so
 // naming it would put a DT_NEEDED entry in the image for a file the loader
 // cannot open. archive_libraries is where those names go instead.
-pub fn resolve_libraries(names []string, dirs []string) ![]string {
+//
+// `static_link` is the search a static link takes, where the archive is the only
+// answer to a name. See find_library for the order either search goes in.
+pub fn resolve_libraries(names []string, dirs []string, static_link bool) ![]string {
 	mut out := []string{}
-	for library in resolve_library_files(names, dirs)! {
+	for library in resolve_library_files(names, dirs, static_link)! {
 		if library.archive {
 			continue
 		}
@@ -101,11 +104,13 @@ pub fn resolve_libraries(names []string, dirs []string) ![]string {
 // files a link reads members from and pulls the ones that answer the names the
 // link still needs. The names come back in the order they were given, a path is
 // not repeated, and a name that resolves to nothing is the same error the
-// search answers elsewhere.
-pub fn archive_libraries(names []string, dirs []string) ![]Library {
+// search answers elsewhere. `static_link` is the search the link itself took, so
+// a static link reports the archive it will read and a dynamic one reports the
+// archive a name falls back to.
+pub fn archive_libraries(names []string, dirs []string, static_link bool) ![]Library {
 	mut out := []Library{}
 	for given in names {
-		library := resolve_library(given, dirs)!
+		library := resolve_library(given, dirs, static_link)!
 		// A library that is a GNU ld script can name archives beside itself, and those
 		// are files a link reads members from in the same way: /usr/lib/libc.so is
 		// `GROUP ( libc.so.6  libc_nonshared.a  AS_NEEDED ( ld-linux-x86-64.so.2 ) )`,
@@ -134,7 +139,7 @@ pub fn archive_libraries(names []string, dirs []string) ![]Library {
 // point: the C library's ld script names libc_nonshared.a beside libc.so.6, and that
 // archive is where glibc keeps the functions the shared object does not export.
 pub fn library_archives_of(given string, dirs []string) []Library {
-	library := resolve_library(given, dirs) or { return []Library{} }
+	library := resolve_library(given, dirs, false) or { return []Library{} }
 	return library_archives(library)
 }
 
@@ -198,11 +203,11 @@ fn script_archives(text string, path string) []Library {
 // resolve_library_files is the same search with the files kept. A caller that
 // only needs the name the image carries asks resolve_libraries; one that has to
 // read the library asks this, and the two answer the same libraries in the same
-// order.
-pub fn resolve_library_files(names []string, dirs []string) ![]Library {
+// order, from the same `static_link` search.
+pub fn resolve_library_files(names []string, dirs []string, static_link bool) ![]Library {
 	mut out := []Library{}
 	for given in names {
-		library := resolve_library(given, dirs)!
+		library := resolve_library(given, dirs, static_link)!
 		mut seen := false
 		for existing in out {
 			if existing.soname == library.soname {
@@ -260,13 +265,21 @@ pub fn find_runtime_library(given string, dirs []string, install string) ?string
 }
 
 // resolve_library finds the file one `-l` name stands for and the name it should
-// be recorded under.
+// be recorded under. The search is find_library's: the -L directories in order,
+// the first that holds the library answering, and the archive alone when the
+// link is static.
+//
+// `-l:filename` names the file itself, with no `lib` prefix and no `.so`/`.a`
+// suffix searched for: the name is stat'ed in each -L directory in order, which
+// is what lets a link ask for one version of a library without the unversioned
+// name to reach it by. A static link refuses such a name when the file it found
+// is not an archive, because a static link has nowhere to put a shared object.
 //
 // The parameter is `given` rather than `name` because this module declares a
 // const `name` for the system it describes, and V will not let a function in the
 // module have a local of the same name. The name a caller passed is the one the
 // flag wrote; the name that comes back is the library's own.
-pub fn resolve_library(given string, dirs []string) !Library {
+pub fn resolve_library(given string, dirs []string, static_link bool) !Library {
 	if given == '' {
 		return error('-l with no library name')
 	}
@@ -277,6 +290,9 @@ pub fn resolve_library(given string, dirs []string) !Library {
 		path := find_file(wanted, dirs) or {
 			return error('cannot find ${wanted}: searched ${describe_dirs(dirs)}')
 		}
+		if static_link && !path.ends_with('.a') {
+			return error('${path} is not an archive: a static link resolves its libraries into the file, and -l${given} names a shared object it cannot map')
+		}
 		if path.ends_with('.a') {
 			return archive_library(path)
 		}
@@ -285,7 +301,7 @@ pub fn resolve_library(given string, dirs []string) !Library {
 			soname: library_name_of(path)!
 		}
 	}
-	path := find_library(given, dirs) or {
+	path := find_library(given, dirs, static_link) or {
 		return error('cannot find -l${given}: searched ${describe_dirs(dirs)}')
 	}
 	if path.ends_with('.a') {
@@ -333,34 +349,75 @@ fn describe_dirs(dirs []string) string {
 	return dirs.join(', ')
 }
 
-// find_library looks for `lib<name>.so`, then for a versioned `lib<name>.so.N`
-// when there is no unversioned name, then for the archive `lib<name>.a`. The
-// middle step is the one a plain linker does not take, and it is here because
-// the C library on this machine ships libraries that have no unversioned name:
-// `-ldl` and `-lpthread` are written on V's own command line and a compiler
-// that refused them could not build its host.
-fn find_library(given string, dirs []string) ?string {
+// find_library looks for a `-l` name the way ld does: the directories are asked
+// in the order they were given, and the first one that holds the library in any
+// form answers. Within that directory a shared object is preferred to an archive,
+// and an archive is what a static link takes.
+//
+// The rule was per file name and not per directory, and the two differ where it
+// matters: with `d1/libx.a` and `d2/libx.so` on `-L d1 -L d2`, a search that
+// looked for every `libx.so` before any `libx.a` linked the shared object out of
+// the second directory, where gcc and ld link the archive out of the first.
+//
+// The three file names for one stem are `lib<name>.so`, a versioned
+// `lib<name>.so.N` when the directory has no unversioned name, and the archive
+// `lib<name>.a`. The versioned step is the one a plain linker does not take, and
+// it is here because the C library on this machine ships libraries that have no
+// unversioned name: `-ldl` and `-lpthread` are written on V's own command line
+// and a compiler that refused them could not build its host.
+//
+// A static link asks for the archive and for nothing else. ld with -static never
+// opens a shared object, so a directory holding one and no archive is passed
+// over and the next directory is asked; when no directory holds an archive the
+// name is not found, which is the answer `ld -static` gives a name only a shared
+// object answers.
+fn find_library(given string, dirs []string, static_link bool) ?string {
 	stem := 'lib${given}.so'
-	if path := find_file(stem, dirs) {
-		return path
-	}
-	mut versioned := []string{}
+	archive := 'lib${given}.a'
 	for dir in dirs {
-		for entry in os.ls(dir) or { []string{} } {
-			if !entry.starts_with('${stem}.') {
-				continue
-			}
-			path := os.join_path(dir, entry)
+		if static_link {
+			path := os.join_path(dir, archive)
 			if os.is_file(path) {
-				versioned << path
+				return path
 			}
+			continue
+		}
+		shared := os.join_path(dir, stem)
+		if os.is_file(shared) {
+			return shared
+		}
+		if versioned := newest_versioned_in(dir, stem) {
+			return versioned
+		}
+		path := os.join_path(dir, archive)
+		if os.is_file(path) {
+			return path
 		}
 	}
-	if versioned.len > 0 {
-		versioned.sort_with_compare(newest_first)
-		return versioned[0]
+	return none
+}
+
+// newest_versioned_in answers the newest `lib<name>.so.N` one directory holds, or
+// none when the directory holds no versioned name for it. It is asked of a
+// directory at a time so that a versioned library in a later -L directory cannot
+// win over a file the earlier directory holds: the newest version only competes
+// with the versions beside it.
+fn newest_versioned_in(dir string, stem string) ?string {
+	mut versioned := []string{}
+	for entry in os.ls(dir) or { []string{} } {
+		if !entry.starts_with('${stem}.') {
+			continue
+		}
+		path := os.join_path(dir, entry)
+		if os.is_file(path) {
+			versioned << path
+		}
 	}
-	return find_file('lib${given}.a', dirs)
+	if versioned.len == 0 {
+		return none
+	}
+	versioned.sort_with_compare(newest_first)
+	return versioned[0]
 }
 
 // find_file looks for one file name in the search directories, in order. It is
@@ -933,7 +990,7 @@ pub fn unresolved_imports_including_files(imports []string, names []string, file
 			return []string{}
 		}
 	}
-	for library in resolve_library_files(names, dirs) or { []Library{} } {
+	for library in resolve_library_files(names, dirs, false) or { []Library{} } {
 		if table := open_library_symbols(library.path) {
 			tables << table
 		}

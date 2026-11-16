@@ -38,7 +38,7 @@ fn test_a_library_script_names_the_library_behind_it() {
 		'/* GNU ld script\nOUTPUT_FORMAT(elf64-x86-64)\nGROUP ( ${target} ) */\n') or {
 		panic(err)
 	}
-	resolved := resolve_libraries(['probe'], [dir]) or { panic(err) }
+	resolved := resolve_libraries(['probe'], [dir], false) or { panic(err) }
 	assert resolved == ['libm.so.6']
 }
 
@@ -53,20 +53,20 @@ fn test_an_archive_resolves_and_is_left_out_of_the_loader_names() {
 	}
 	path := os.join_path(dir, 'libprobe.a')
 	os.write_file(path, '!<arch>\n') or { panic(err) }
-	resolved := resolve_library('probe', [dir]) or { panic(err) }
+	resolved := resolve_library('probe', [dir], false) or { panic(err) }
 	assert resolved.archive
 	assert resolved.path == path
 	assert resolved.soname == 'libprobe.a'
 	// A static archive is not a file the loader maps, so the image carries no
 	// name for it.
-	assert resolve_libraries(['probe'], [dir]) or { panic(err) } == []string{}
-	archives := archive_libraries(['probe'], [dir]) or { panic(err) }
+	assert resolve_libraries(['probe'], [dir], false) or { panic(err) } == []string{}
+	archives := archive_libraries(['probe'], [dir], false) or { panic(err) }
 	assert archives.len == 1
 	assert archives[0].path == path
 	assert archives[0].soname == 'libprobe.a'
 	assert archives[0].archive
 	// A path is not repeated when a name resolves to the same archive twice.
-	assert archive_libraries(['probe', 'probe'], [dir]) or { panic(err) }.len == 1
+	assert archive_libraries(['probe', 'probe'], [dir], false) or { panic(err) }.len == 1
 }
 
 // A shared library and an archive under the same stem: find_library prefers the
@@ -82,17 +82,152 @@ fn test_a_shared_library_beside_an_archive_is_the_one_the_search_finds() {
 	shared := find_system_library(system_dirs, 'libm.so.6') or { return }
 	copy_bytes(shared, os.join_path(dir, 'libprobe.so'))
 	os.write_file(os.join_path(dir, 'libprobe.a'), '!<arch>\n') or { panic(err) }
-	found := resolve_library('probe', [dir]) or { panic(err) }
+	found := resolve_library('probe', [dir], false) or { panic(err) }
 	assert !found.archive
 	assert found.soname == 'libm.so.6'
-	assert resolve_libraries(['probe'], [dir]) or { panic(err) } == ['libm.so.6']
+	assert resolve_libraries(['probe'], [dir], false) or { panic(err) } == ['libm.so.6']
 	// The name resolved to the shared library, so no archive is reported for it.
-	assert archive_libraries(['probe'], [dir]) or { panic(err) }.len == 0
+	assert archive_libraries(['probe'], [dir], false) or { panic(err) }.len == 0
 	// The archive is reachable by the `-l:` form, which names the file itself.
-	named := resolve_library(':libprobe.a', [dir]) or { panic(err) }
+	named := resolve_library(':libprobe.a', [dir], false) or { panic(err) }
 	assert named.archive
 	assert named.path == os.join_path(dir, 'libprobe.a')
 	assert named.soname == 'libprobe.a'
+}
+
+// The rule ld uses, and the one this search got wrong: the -L directories are
+// asked in order, and the first one that holds the library in any form answers.
+// A directory holding only the archive is therefore what `-L first -L second`
+// links, even though the second holds a shared object, where a search that
+// looked for every shared object before any archive took the second directory's
+// file. The other order has the shared object first and names it in the image.
+fn test_the_first_directory_that_holds_the_library_answers() {
+	first := library_dir('order_archive_first')
+	second := library_dir('order_shared_second')
+	defer {
+		os.rmdir_all(first) or {}
+		os.rmdir_all(second) or {}
+	}
+	archive := os.join_path(first, 'libprobe.a')
+	os.write_file(archive, '!<arch>\n') or { panic(err) }
+	system_dirs := backend.host() or { panic('this test needs the host target') }.library_dirs
+	shared := find_system_library(system_dirs, 'libm.so.6') or { return }
+	copy_bytes(shared, os.join_path(second, 'libprobe.so'))
+	assert resolve_libraries(['probe'], [first, second], false) or { panic(err) } == []string{}
+	archives := archive_libraries(['probe'], [first, second], false) or { panic(err) }
+	assert archives.len == 1
+	assert archives[0].path == archive
+	assert resolve_libraries(['probe'], [second, first], false) or { panic(err) } == ['libm.so.6']
+	assert archive_libraries(['probe'], [second, first], false) or { panic(err) }.len == 0
+}
+
+// A static link resolves every library into the file it writes, so it takes the
+// archive and never the shared object: the directory holding only the shared
+// object is passed over and the next one is asked. This is the pair that made a
+// static link report the program's own call unresolved, because the shared
+// object it picked was left to a loader the image does not name.
+fn test_a_static_link_takes_the_archive_from_a_later_directory() {
+	shared_dir := library_dir('static_shared_first')
+	archive_dir := library_dir('static_archive_second')
+	defer {
+		os.rmdir_all(shared_dir) or {}
+		os.rmdir_all(archive_dir) or {}
+	}
+	system_dirs := backend.host() or { panic('this test needs the host target') }.library_dirs
+	shared := find_system_library(system_dirs, 'libm.so.6') or { return }
+	copy_bytes(shared, os.join_path(shared_dir, 'libprobe.so'))
+	archive := os.join_path(archive_dir, 'libprobe.a')
+	os.write_file(archive, '!<arch>\n') or { panic(err) }
+	assert resolve_libraries(['probe'], [shared_dir, archive_dir], true) or { panic(err) } == []string{}
+	archives := archive_libraries(['probe'], [shared_dir, archive_dir], true) or { panic(err) }
+	assert archives.len == 1
+	assert archives[0].path == archive
+}
+
+// Within one directory the preference is still the shared object's, except for a
+// static link, where the archive beside it is the one that answers.
+fn test_a_static_link_prefers_the_archive_beside_the_shared_object() {
+	dir := library_dir('static_prefer_archive')
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	system_dirs := backend.host() or { panic('this test needs the host target') }.library_dirs
+	shared := find_system_library(system_dirs, 'libm.so.6') or { return }
+	copy_bytes(shared, os.join_path(dir, 'libprobe.so'))
+	archive := os.join_path(dir, 'libprobe.a')
+	os.write_file(archive, '!<arch>\n') or { panic(err) }
+	found := resolve_library('probe', [dir], true) or { panic(err) }
+	assert found.archive
+	assert found.path == archive
+	assert found.soname == 'libprobe.a'
+}
+
+// A static link that finds no archive anywhere does not fall back to the shared
+// object: ld with -static never opens one, and the name is what cannot be found
+// rather than a symbol the image cannot resolve.
+fn test_a_static_link_does_not_take_a_shared_object() {
+	dir := library_dir('static_shared_only')
+	defer {
+		os.rmdir_all(dir) or {}
+	}
+	system_dirs := backend.host() or { panic('this test needs the host target') }.library_dirs
+	shared := find_system_library(system_dirs, 'libm.so.6') or { return }
+	copy_bytes(shared, os.join_path(dir, 'libprobe.so'))
+	if resolved := resolve_library('probe', [dir], true) {
+		assert false, 'a static link has nowhere to put ${resolved.path}'
+	} else {
+		assert err.msg().contains('-lprobe')
+		assert err.msg().contains(dir)
+	}
+}
+
+// `-l:filename` names the file itself, with no `lib` prefix and no `.so`/`.a`
+// suffix searched for, and the name is looked for in the -L directories in
+// order. A static link reads a literal archive the same way and refuses a
+// literal shared object by the name that asked for it.
+fn test_a_literal_file_name_is_searched_as_written() {
+	first := library_dir('literal_first')
+	second := library_dir('literal_second')
+	defer {
+		os.rmdir_all(first) or {}
+		os.rmdir_all(second) or {}
+	}
+	system_dirs := backend.host() or { panic('this test needs the host target') }.library_dirs
+	shared := find_system_library(system_dirs, 'libm.so.6') or { return }
+	copy_bytes(shared, os.join_path(first, 'libprobe.so'))
+	archive := os.join_path(second, 'libprobe.a')
+	os.write_file(archive, '!<arch>\n') or { panic(err) }
+	named := resolve_library(':libprobe.a', [first, second], false) or { panic(err) }
+	assert named.archive
+	assert named.path == archive
+	assert (resolve_library(':libprobe.a', [first, second], true) or { panic(err) }).path == archive
+	if _ := resolve_library(':libprobe.so', [first, second], true) {
+		assert false, 'a static link has nowhere to put a shared object'
+	} else {
+		assert err.msg().contains('-l:libprobe.so')
+		assert err.msg().contains('not an archive')
+	}
+}
+
+// The per-directory rule holds for a name with no unversioned file too: the
+// first directory holding any version answers, and the versions are compared
+// with the ones beside them rather than with every version on the search. The
+// first directory's `.2` is what the first order takes even though the second
+// holds a `.10`.
+fn test_the_first_directory_answers_for_a_versioned_library_too() {
+	first := library_dir('versioned_order_first')
+	second := library_dir('versioned_order_second')
+	defer {
+		os.rmdir_all(first) or {}
+		os.rmdir_all(second) or {}
+	}
+	system_dirs := backend.host() or { panic('this test needs the host target') }.library_dirs
+	older := find_system_library(system_dirs, 'libm.so.6') or { return }
+	newer := find_system_library(system_dirs, 'libdl.so.2') or { return }
+	copy_bytes(older, os.join_path(first, 'libprobe.so.2'))
+	copy_bytes(newer, os.join_path(second, 'libprobe.so.10'))
+	assert resolve_libraries(['probe'], [first, second], false) or { panic(err) } == ['libm.so.6']
+	assert resolve_libraries(['probe'], [second, first], false) or { panic(err) } == ['libdl.so.2']
 }
 
 // A GNU ld script that names an archive beside its shared object brings that archive
@@ -111,10 +246,10 @@ fn test_a_script_that_names_an_archive_brings_it_to_the_link() {
 	os.write_file(os.join_path(dir, 'libprobe.so'), '/* GNU ld script\nGROUP ( libprobe.so.6  libprobe_nonshared.a  AS_NEEDED ( libprobe.so.6 ) ) */\n') or {
 		panic(err)
 	}
-	found := resolve_library('probe', [dir]) or { panic(err) }
+	found := resolve_library('probe', [dir], false) or { panic(err) }
 	assert !found.archive
 	assert found.soname == 'libm.so.6'
-	archives := archive_libraries(['probe'], [dir]) or { panic(err) }
+	archives := archive_libraries(['probe'], [dir], false) or { panic(err) }
 	assert archives.len == 1
 	assert archives[0].path == os.join_path(dir, 'libprobe_nonshared.a')
 	assert archives[0].soname == 'libprobe_nonshared.a'
@@ -128,7 +263,7 @@ fn test_archive_libraries_propagates_a_name_the_search_does_not_have() {
 	defer {
 		os.rmdir_all(dir) or {}
 	}
-	if _ := archive_libraries(['nosuch'], [dir]) {
+	if _ := archive_libraries(['nosuch'], [dir], false) {
 		assert false, 'a name the search does not have has to be an error'
 	} else {
 		assert err.msg().contains('nosuch')
@@ -166,7 +301,7 @@ fn test_a_versioned_library_is_found_and_the_newest_version_wins() {
 	newer := find_system_library(system_dirs, 'libdl.so.2') or { return }
 	copy_bytes(older, os.join_path(dir, 'libprobe.so.2'))
 	copy_bytes(newer, os.join_path(dir, 'libprobe.so.10'))
-	resolved := resolve_libraries(['probe'], [dir]) or { panic(err) }
+	resolved := resolve_libraries(['probe'], [dir], false) or { panic(err) }
 	assert resolved == ['libdl.so.2']
 }
 
