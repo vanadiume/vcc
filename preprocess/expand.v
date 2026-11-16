@@ -66,6 +66,62 @@ fn produced_from(piece Piece, site Piece) Piece {
 	}
 }
 
+// shared_names is the names both lists hold.
+fn shared_names(left []string, right []string) []string {
+	mut shared := []string{}
+	for name in left {
+		if name in right {
+			shared << name
+		}
+	}
+	return shared
+}
+
+// use_hide is the names every token of a use is hidden from: the name, the (
+// after it, the arguments between the commas, and the ). A token that came out
+// of a replacement carries that replacement's hiding and a token that came from
+// the file carries none, so the answer says which macros were still being
+// expanded where the use stands. A use whose argument list the file finished is
+// hidden from nothing there, because the macro that produced the name had
+// finished by the time the ( was read. A use written whole inside a replacement
+// is hidden from everything the replacement is hidden from.
+//
+// C99 6.10.3.4 rescans a replacement with the text after the use as one scan,
+// and the rule that stops a macro naming itself applies to that scan. The names
+// in force when the name was written are still in force when the parentheses
+// after it came from the same replacement, and they are done when the
+// parentheses came from the file. That is a question about the use, so it is
+// answered from the use's tokens and not from the name's alone.
+//
+// `tokens` is the list the use starts in, and `to` is one past the token the
+// use ends at, which can be past the end of that list: a use a replacement
+// starts has its closing ) in the text the scan reads after the replacement, so
+// the tokens in between come from the frames. The question is asked of the
+// tokens the scan actually read, which is what scan_at answers.
+fn (p Processor) use_hide(tokens []Piece, from int, to int) []string {
+	if from >= to {
+		return []string{}
+	}
+	first := p.scan_at(tokens, from)
+	if first.tok.text == '' {
+		return []string{}
+	}
+	mut shared := []string{}
+	for name in first.hide {
+		mut everywhere := true
+		for index in from + 1 .. to {
+			if name !in p.scan_at(tokens, index).hide {
+				everywhere = false
+				break
+			}
+		}
+		if everywhere {
+			shared << name
+		}
+	}
+	return shared
+}
+
 // shared_hide is the names the two tokens around a ## have in common. The token
 // they make is hidden from those and from no other: a name that hid only one of
 // the two suppressed a token that is no longer there on its own, and holding it
@@ -97,6 +153,11 @@ struct Arguments {
 	// next is the index of the first token after the call's closing ), or
 	// where the reader already was when there was no call.
 	next int
+	// hide is what every token of the argument list is hidden from: the (
+	// after the name, the commas and the arguments between them, and the ).
+	// It is empty when there was no call. What the result of the call is
+	// hidden from is this set met with the name's own; see expand_call.
+	hide []string
 }
 
 // ScanFrame is one list being rescanned and where the scan had reached in it
@@ -182,6 +243,7 @@ fn (mut p Processor) collect_arguments(tokens []Piece, from int, tok tokenize.To
 						lists:  lists
 						seps:   seps
 						next:   i + 1
+						hide:   p.use_hide(tokens, from, i + 1)
 					}
 				}
 			} else if t.tok.text == ',' && depth == 1 {
@@ -451,11 +513,27 @@ fn (mut p Processor) finish_use(mut out []Piece, produced int, tokens []Piece, f
 // left standing from becoming live again when the replacement is read, and it is
 // also what keeps a name the replacement produces from being handed to the
 // outer macro as if it were written here.
+// What the result is hidden from is the name's hiding met with the argument
+// list's, not the two joined. A name the replacement of the macro being
+// replaced produces is not replaced again, and that holds while that
+// replacement is being read: the parentheses of a use that came from the same
+// replacement are tokens of it and carry its hiding, and the parentheses of a
+// use the file finished are tokens of the file and carry none. Joining the two
+// sets hides the name for as long as the file's text is read, which is longer
+// than the macro is expanded: `#define F(x) G` beside `#define G F` is a use of
+// G that becomes F, and that F is a use again once G's own replacement is no
+// longer the text being read. C99 6.10.3.4 and the standard's `f(2)(9)` example
+// are the same question.
 fn (mut p Processor) expand_call(macro Macro, use_args Arguments, site Piece, at int) ([]Piece, int) {
-	replacement := p.substitute(macro, use_args, site)
+	// The call's own tokens decide, and the name is one of them.
+	call_site := Piece{
+		tok:  site.tok
+		hide: shared_names(site.hide, use_args.hide)
+	}
+	replacement := p.substitute(macro, use_args, call_site)
 	mut hidden := []Piece{cap: replacement.len}
 	for piece in replacement {
-		hidden << produced_from(piece, site)
+		hidden << produced_from(piece, call_site)
 	}
 	unsafe { replacement.free() }
 	// The replacement the call produces is rescanned with the text after the
