@@ -471,6 +471,187 @@ fn test_the_bitint_row_reports_before_c23_only() {
 	assert pedantic_messages(unsigned_run, asking(.c99)).len == 1
 }
 
+// `long long` is C99's type and is written as two `long` tokens, so the row's
+// spelling is the pair and the check compares it against two token texts.
+// Measured on gcc 16.2.1 over `long long x;`: error under
+// `-std=c89 -pedantic-errors`, clean from c99 on, and gnu89 reports it too
+// because -pedantic asks about the ISO standard.
+fn test_the_long_long_row_finds_the_pair_and_reports_before_c99() {
+	rows := features.filter(it.spellings.contains('long long'))
+	assert rows.len == 1
+	assert rows[0].status == .implemented
+	assert rows[0].since == .c99
+	assert !rows[0].gnu
+	assert rows[0].detection == .token
+	assert rows[0].pedantic == 'the long long type'
+	tokens := [token('long'), token('long'), token('x'), punct(';')]
+	old := pedantic_messages(tokens, asking(.c89))
+	assert old.len == 1
+	assert old[0].msg == 'ISO C90 forbids the long long type'
+	assert old[0].warning
+	assert old[0].class == .pedantic
+	assert pedantic_messages(tokens, asking(.gnu89)).len == 1
+	for mode in [Mode.c99, .c11, .c17, .c23, .c29, .gnu99, .gnu11, .gnu23, .gnu29] {
+		assert pedantic_messages(tokens, asking(mode)).len == 0, mode.spelling()
+	}
+	// A single `long` is C89's long int, and `long double` is C89's too, so
+	// neither is the pair the row is found by.
+	assert pedantic_messages([token('long'), token('x'), punct(';')], asking(.c89)).len == 0
+	assert pedantic_messages([token('long'), token('double'), token('x')], asking(.c89)).len == 0
+	// `unsigned long long` is found at its two `long` tokens.
+	assert pedantic_messages([token('unsigned'), token('long'), token('long'), token('x')],
+		asking(.c89)).len == 1
+}
+
+// `inline` is C99's function specifier and also a GNU extension, which is what
+// separates this row from `restrict` below. Measured on gcc 16.2.1 over
+// `inline int f(void) { return 1; }`: c89 reports it with -pedantic-errors,
+// gnu89 takes it, and every mode from c99 on takes it.
+fn test_the_inline_row_is_c99_and_a_gnu_extension() {
+	rows := features.filter(it.spellings.contains('inline'))
+	assert rows.len == 1
+	assert rows[0].status == .implemented
+	assert rows[0].since == .c99
+	assert rows[0].gnu
+	assert rows[0].pedantic == 'the inline specifier'
+	tokens := [token('inline'), token('int'), token('f')]
+	old := pedantic_messages(tokens, asking(.c89))
+	assert old.len == 1
+	assert old[0].msg == 'ISO C90 forbids the inline specifier'
+	assert old[0].warning
+	// A GNU dialect of C90 has it as an extension of its own.
+	assert pedantic_messages(tokens, asking(.gnu89)).len == 0
+	for mode in [Mode.c99, .c11, .c17, .c23, .c29, .gnu99, .gnu11, .gnu23, .gnu29] {
+		assert pedantic_messages(tokens, asking(mode)).len == 0, mode.spelling()
+	}
+}
+
+// `restrict` is C99's pointer qualifier with no GNU extension before it:
+// measured on gcc 16.2.1 over `int *restrict p;`, c89 and gnu89 both report it
+// under -pedantic-errors and both take it without the flag, and every mode from
+// c99 on takes it. So the row carries no GNU exemption.
+fn test_the_restrict_row_is_c99_and_not_a_gnu_extension() {
+	rows := features.filter(it.spellings.contains('restrict'))
+	assert rows.len == 1
+	assert rows[0].status == .implemented
+	assert rows[0].since == .c99
+	assert !rows[0].gnu
+	assert rows[0].pedantic == 'the restrict qualifier'
+	tokens := [token('int'), punct('*'), token('restrict'), token('p'), punct(';')]
+	old := pedantic_messages(tokens, asking(.c89))
+	assert old.len == 1
+	assert old[0].msg == 'ISO C90 forbids the restrict qualifier'
+	assert old[0].warning
+	assert pedantic_messages(tokens, asking(.gnu89)).len == 1
+	for mode in [Mode.c99, .c11, .c17, .c23, .c29, .gnu99, .gnu11, .gnu23, .gnu29] {
+		assert pedantic_messages(tokens, asking(mode)).len == 0, mode.spelling()
+	}
+}
+
+// C11's anonymous struct and union member has no token of its own: `struct` and
+// `union` mark a type specifier, and what makes the member C11's is that the
+// specifier has no tag and its body closes on a `;` with no declarator after
+// it. The row carries `detection: .anonymous_member` and the check asks
+// `anonymous_member_at` only once the mode has said it does not allow the
+// construct.
+fn test_the_anonymous_member_row_asks_what_follows_the_body() {
+	rows := features.filter(it.detection == .anonymous_member)
+	assert rows.len == 1
+	assert rows[0].status == .implemented
+	assert rows[0].since == .c11
+	assert !rows[0].gnu
+	assert rows[0].spellings == ['struct', 'union']
+	assert rows[0].pedantic == 'an anonymous struct or union member'
+	member := [
+		token('struct'),
+		token('S'),
+		punct('{'),
+		token('int'),
+		token('a'),
+		punct(';'),
+		token('union'),
+		punct('{'),
+		token('int'),
+		token('b'),
+		punct(';'),
+		punct('}'),
+		punct(';'),
+		punct('}'),
+		punct(';'),
+	]
+	old := pedantic_messages(member, asking(.c99))
+	assert old.len == 1
+	assert old[0].msg == 'ISO C99 forbids an anonymous struct or union member'
+	assert old[0].warning
+	assert old[0].class == .pedantic
+	// No mode before C11 has it, the GNU dialects before C11 included.
+	assert pedantic_messages(member, asking(.c89)).len == 1
+	assert pedantic_messages(member, asking(.gnu89)).len == 1
+	assert pedantic_messages(member, asking(.gnu99)).len == 1
+	for mode in [Mode.c11, .c17, .c23, .c29, .gnu11, .gnu17, .gnu23, .gnu29] {
+		assert pedantic_messages(member, asking(mode)).len == 0, mode.spelling()
+	}
+	// The other uses of the two words are not the construct: a specifier with
+	// no tag and a declarator is C89's object of an unnamed type, a typedef is
+	// that shape, and a tag declaration has its tag before the body.
+	declared := [
+		token('struct'),
+		punct('{'),
+		token('int'),
+		token('a'),
+		punct(';'),
+		punct('}'),
+		token('x'),
+		punct(';'),
+	]
+	assert pedantic_messages(declared, asking(.c99)).len == 0
+	typedefed := [
+		token('typedef'),
+		token('struct'),
+		punct('{'),
+		token('int'),
+		token('a'),
+		punct(';'),
+		punct('}'),
+		token('T'),
+		punct(';'),
+	]
+	assert pedantic_messages(typedefed, asking(.c99)).len == 0
+	tagged := [
+		token('struct'),
+		token('T'),
+		punct('{'),
+		token('int'),
+		token('b'),
+		punct(';'),
+		punct('}'),
+		punct(';'),
+	]
+	assert pedantic_messages(tagged, asking(.c99)).len == 0
+	// A member body inside the member is walked over rather than taken for the
+	// end of the specifier, so the outer union is the one the answer is about.
+	nested := [
+		token('struct'),
+		token('S'),
+		punct('{'),
+		token('union'),
+		punct('{'),
+		token('struct'),
+		punct('{'),
+		token('int'),
+		token('b'),
+		punct(';'),
+		punct('}'),
+		token('c'),
+		punct(';'),
+		punct('}'),
+		punct(';'),
+		punct('}'),
+		punct(';'),
+	]
+	assert pedantic_messages(nested, asking(.c99)).len == 1
+}
+
 fn test_a_system_header_is_not_the_program() {
 	tokens := [tokenize.Token{
 		kind: .identifier
