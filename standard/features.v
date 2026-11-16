@@ -16,6 +16,22 @@ pub enum Status {
 	unimplemented
 }
 
+// Detection says how the check finds a row's construct in the token stream.
+//
+// A spelling is the ordinary way, and for most rows it is the whole answer:
+// the token texts in `spellings` name the construct on their own. Some words
+// are shared with something that is not the construct, and the row that owns
+// such a word carries the second half of the answer with it rather than leaving
+// the check to know the row by name.
+pub enum Detection {
+	// token: the spelling is the whole of the detection.
+	token
+	// anonymous_member: the `struct` or `union` spelling marks a type
+	// specifier, and the construct is the specifier with no tag whose body
+	// closes on a `;` inside another aggregate. See `anonymous_member_at`.
+	anonymous_member
+}
+
 // Feature is one row of the dialect table: a construct, the standard it is part
 // of, and what this compiler does with it.
 //
@@ -29,6 +45,11 @@ pub:
 	// A construct no single token marks has none, and the lane that implements
 	// it brings the detection with it.
 	spellings []string
+	// detection is how the check tells the construct from the other things
+	// its spellings mark. The default, `.token`, says the spelling is enough.
+	// A row that sets it carries its own check, the way the auto row carries
+	// the question its `auto` spelling cannot answer alone.
+	detection Detection
 	// since is the mode the construct first became standard in. `.none` says
 	// no ISO mode has it: the spelling is a GNU extension, which a GNU dialect
 	// takes and a strict one does not.
@@ -361,6 +382,28 @@ pub const features = [
 		extension: 'static-assert'
 		pedantic:  'the _Static_assert declaration'
 		status:    .implemented
+	}
+	// C11's anonymous struct and union member, `struct S { int a; union
+	// { int b; }; };`, shares every token with something older: `struct` and
+	// `union` mark a type specifier wherever one is written, and
+	// `struct { int a; } x;` declares an object of a type with no tag in C89.
+	// So the row carries `detection: .anonymous_member` and the check asks
+	// `anonymous_member_at` what comes after the body: the member form closes
+	// on a `;`, and the C89 forms have a declarator there. Measured on gcc
+	// 16.2.1 over `struct S { int a; union { int b; }; };`, the row is a
+	// pedantic message: `-std=c89 -pedantic-errors` reports `ISO C90 doesn't
+	// support unnamed structs/unions`, `-std=c99 -pedantic-errors` reports the
+	// ISO C99 one, a plain run of either mode takes the program, and c11,
+	// gnu11, c17 and c23 take it silently. gnu89 and gnu99 report it too, so
+	// the row carries no GNU exemption.
+	Feature{
+		spellings: ['struct', 'union']
+		detection: .anonymous_member
+		since:     .c11
+		gnu:       false
+		extension: ''
+		pedantic:  'an anonymous struct or union member'
+		status:    .implemented
 	},
 	// The C99 types. `_Bool` and the three floats are read and emitted at their
 	// own widths, and so is `_Complex`, so their rows are the standard's answer
@@ -404,9 +447,11 @@ pub const features = [
 	// long` and `unsigned double d;` reports `unsupported type unsigned`. A
 	// definition's parameter list names what the parameter was declared with.
 	//
-	// `long long` and `long double` have no row, and cannot have one: a row is
-	// found by the text of a single token, and both are written as two tokens
-	// whose first is `long`.
+	// `long long` takes a row of its own below and is found by the pair: the
+	// check compares a row's spelling against two token texts written with
+	// nothing between them, which is how the braced group's `({` is found as
+	// well. `long double` is C89's type, so no mode reports it and no row is
+	// needed.
 	Feature{
 		spellings: ['_Bool']
 		since:     .c99
@@ -415,6 +460,58 @@ pub const features = [
 		pedantic:  'the _Bool type'
 		status:    .implemented
 	},
+	// `long long` is C99's type, and it is written as two `long` tokens rather
+	// than one word, so its spelling is the pair and the check compares a row's
+	// spelling against two token texts the way it finds the braced group's
+	// `({`. Measured on gcc 16.2.1 over `long long x;`: `-std=c89
+	// -pedantic-errors` exits 1 with `ISO C90 does not support 'long long'`, a
+	// plain `-std=c89` run takes it, and `-std=gnu89 -pedantic-errors` reports
+	// the same error because -pedantic asks about the ISO standard, so the row
+	// carries no GNU exemption. Every mode from c99 on takes it.
+	Feature{
+		spellings: ['long long']
+		since:     .c99
+		gnu:       false
+		extension: ''
+		pedantic:  'the long long type'
+		status:    .implemented
+	}
+	// `inline` is C99's function specifier and also a GNU extension, which is
+	// where it differs from `restrict` below: measured on gcc 16.2.1 over
+	// `inline int f(void) { return 1; }`, `-std=c89 -pedantic-errors` exits 1
+	// (the word is not a keyword there, so the line reads as a broken
+	// declaration), `-std=gnu89 -pedantic-errors` and a plain `-std=c89` run
+	// take it, and every mode from c99 on takes it. So `since: .c99` with
+	// `gnu: true`. The check matches the token text, and `inline` is an
+	// identifier in C90 rather than a keyword, so `int inline;` would be
+	// reported where gcc takes it; that program does not reach a report here,
+	// because the parser reads the word as the function specifier and refuses
+	// the declaration with `expected a declarator, found ';'`, measured on this
+	// tree with `-std=c89`.
+	Feature{
+		spellings: ['inline']
+		since:     .c99
+		gnu:       true
+		extension: ''
+		pedantic:  'the inline specifier'
+		status:    .implemented
+	}
+	// `restrict` is C99's pointer qualifier, and no GNU dialect grants it
+	// before C99: measured on gcc 16.2.1 over `int *restrict p;`,
+	// `-std=c89 -pedantic-errors` and `-std=gnu89 -pedantic-errors` both exit
+	// 1, a plain run of either takes it, and every mode from c99 on takes it
+	// without a word. As with `inline` above, `int restrict;` is a valid C89
+	// declaration gcc takes and this row would report, and the parser refuses
+	// that declaration by name here (`expected a declarator, found ';'`,
+	// measured on this tree with `-std=c89`), so the report is not reached.
+	Feature{
+		spellings: ['restrict']
+		since:     .c99
+		gnu:       false
+		extension: ''
+		pedantic:  'the restrict qualifier'
+		status:    .implemented
+	}
 	Feature{
 		spellings: ['float']
 		since:     .c89
@@ -736,13 +833,48 @@ fn auto_is_a_type_specifier(tokens []tokenize.Token, at int) bool {
 	return ended.kind == .punct && ended.text in ['=', ';', ',', '[']
 }
 
+// anonymous_member_at says whether the `struct` or `union` token at `at` writes
+// C11's anonymous struct or union member rather than some other use of the word.
+// The word alone cannot say: a type specifier with no tag is written in C89 as
+// `struct { int a; } x;` and in C11 as `struct S { int a; union { int b; }; };`,
+// and only the tokens after the body tell them apart. The member form closes on
+// a `;` and names no object; the C89 forms have a declarator, `} x;`, `} T;` or
+// `} *p;`, and a named specifier `struct T { int b; };` has a tag before its
+// body, so this asks for a `{` right after the word and a `;` right after the
+// matching `}`. Braces are counted rather than the first `}` taken, so a
+// member's own body, `union { struct { int b; } c; };`, is walked over.
+fn anonymous_member_at(tokens []tokenize.Token, at int) bool {
+	if at + 1 >= tokens.len || tokens[at + 1].text != '{' {
+		return false
+	}
+	mut depth := 0
+	for i in at + 1 .. tokens.len {
+		match tokens[i].text {
+			'{' { depth++ }
+			'}' { depth-- }
+			else {}
+		}
+		if depth == 0 {
+			return i + 1 < tokens.len && tokens[i + 1].text == ';'
+		}
+	}
+	return false
+}
+
 // spelling_is_the_pair says whether `spelling` is the two tokens `first` and
 // `second` written with nothing between them. It compares the bytes rather than
 // joining the two texts first: the join was a heap string per row per token, and
 // the answer does not need the string. A two-token spelling is how a construct
-// whose spelling is more than one token is found, `({` for a braced group.
+// whose spelling is more than one token is found, `({` for a braced group and
+// `long long` for the type. One space between the halves is allowed so that the
+// second of those reads as the two words it is; the space is skipped and the
+// halves are compared as bytes like any other.
 fn spelling_is_the_pair(spelling string, first string, second string) bool {
-	if spelling.len != first.len + second.len {
+	mut at := first.len
+	if spelling.len == at + second.len + 1 && spelling[at] == 32 {
+		at++
+	}
+	if spelling.len != at + second.len {
 		return false
 	}
 	for k in 0 .. first.len {
@@ -751,7 +883,7 @@ fn spelling_is_the_pair(spelling string, first string, second string) bool {
 		}
 	}
 	for k in 0 .. second.len {
-		if spelling[first.len + k] != second[k] {
+		if spelling[at + k] != second[k] {
 			return false
 		}
 	}
@@ -804,8 +936,12 @@ fn uses(tokens []tokenize.Token, table []Feature, question Question) []tokenize.
 	mut out := []tokenize.Diagnostic{}
 	// A construct no single spelling marks brings its own detection, because the
 	// spelling is shared with something else: `auto` is C23's type specifier and
-	// the C89 storage class, and only the tokens after the word say which. See
-	// auto_is_a_type_specifier.
+	// the C89 storage class, and only the tokens after the word say which (see
+	// auto_is_a_type_specifier); `struct` and `union` mark a type specifier
+	// wherever one is written, and only the token after the body says whether
+	// the specifier is C11's anonymous member (see anonymous_member_at). The
+	// detection is asked after the mode has said the construct is not allowed,
+	// so a mode that has it pays nothing for the question.
 	for i, token in tokens {
 		// The two-token spelling is looked for by comparing a row's spelling
 		// against the two texts rather than by joining them. The join was a
@@ -825,6 +961,9 @@ fn uses(tokens []tokenize.Token, table []Feature, question Question) []tokenize.
 				continue
 			}
 			if allowed(feature, question) {
+				continue
+			}
+			if feature.detection == .anonymous_member && !anonymous_member_at(tokens, i) {
 				continue
 			}
 			if question.system_files[token.file] {
