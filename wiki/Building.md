@@ -92,17 +92,16 @@ program reaches are pulled, so an ordinary program carries none of it.
 `-nostdlib` takes the start files too, and `--link-libgcc` names the toolchain's
 `libgcc.a` instead. With either of the first two the image names only the
 libraries the command line names, and an import none of them defines is refused
-at compile time rather than left for the loader to report at start. That last
-flag needs a compiler built with `-d experimental_libgcc`, which
-`v run tools/build.vsh build` takes as `--experimental-libgcc`; every other
-build refuses the flag by name.
+at compile time rather than left for the loader to report at start. The libgcc
+archive is looked for in the search a link makes, which ends with the toolchain's
+own directory, so a machine with gcc installed needs no `-L`; a machine without
+it refuses the flag by name.
 `-shared-libvcc` is the same runtime as a shared library: the image names
 `libvcc.so.0` instead of pulling members out of the archive, so the library has
 to be there when the program starts. It is refused with `-static`, with
 `--link-libgcc`, and with `-shared-libgcc`. `-shared-libgcc` is the counterpart
 on the libgcc side and needs `--link-libgcc` beside it, so the runtime it makes
-shared is the one the command line named; both spellings only exist in a binary
-built with `-d experimental_libgcc`.
+shared is the one the command line named.
 
 `v run tools/build.vsh libvcc` builds the archive from its sibling tree with
 this compiler and links a program against it. `v run tools/build.vsh install`

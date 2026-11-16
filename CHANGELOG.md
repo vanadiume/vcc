@@ -1090,3 +1090,8 @@ it owns the change, which is the same vocabulary the commits use.
 * cli: read -fbracket-depth and refuse a negative depth (888b072)
 * codegen: follow the nesting limit the parser was given (10d765f)
 * docs: -fbracket-depth in the README, the wiki and the changelog (5e16a61)
+
+## 2026-11-16
+
+* cli: the -print- file answers name the search the link makes (ce5fca8)
+* cli: --link-libgcc and -shared-libgcc are main flags (3b7ac76)
