@@ -984,9 +984,19 @@ fn read_source(path string) !string {
 	return os.read_file(path)
 }
 
+// write_image writes an image, and gives it the execute bit only when the output
+// is a regular file. A path naming a device node or a fifo is written to and left
+// alone: /dev/null is how a build asks whether a source compiles, and chmod there
+// fails for an unprivileged user and changes a device node for root.
+//
+// The stat follows a symlink, because the write does: an image written through a
+// link lands in the file the link names, and that file is the one to run.
 fn write_image(path string, bytes []u8) ! {
 	os.write_file_array(path, bytes)!
-	os.chmod(path, 0o755)!
+	info := os.stat(path)!
+	if (info.mode & os.s_ifmt) == os.s_ifreg && (info.mode & os.s_ixusr) == 0 {
+		os.chmod(path, 0o755)!
+	}
 }
 
 // write_object writes a relocatable file. It is the same bytes as an image and
