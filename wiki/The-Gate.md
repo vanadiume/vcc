@@ -209,9 +209,17 @@ now. [[Roadmap]] M3 says what the chain needs next.
 ## tools/build.vsh, the front door
 
 `v run tools/build.vsh` is the front door over the same commands: build the
-compiler and its runtime archive, run the gate, run both corpora, benchmark,
-build the image, and report the version. Every step calls the runner that
-already owns the check, so no count or floor is kept twice.
+compiler and its runtime, run the gate, run both corpora, benchmark, build the
+image, and report the version. Every step calls the runner that already owns the
+check, so no count or floor is kept twice.
+
+The corpora need a runtime that answers the complex helpers, so
+`tools/compliance.vsh` and `tools/regress.vsh` provision one through
+`tools/runtime.vsh` before the first program is compiled: the machine's own when
+a probe links and runs against it, then a libvcc checkout beside the tree or one
+named with `--libvcc`, then a clone of the pinned commit in the cache, built
+with the compiler under test. A run that cannot provision stops and says which
+of the three failed, rather than reporting every complex case as a link error.
 
 ```sh
 v run tools/build.vsh                 # the compiler, libvcc, the gate, then both corpora

@@ -66,6 +66,9 @@ install tree:
 ```
 usr/bin/vcc
 usr/lib/libvcc.a
+usr/lib/libvcc.so.0.1
+usr/lib/libvcc.so.0 -> libvcc.so.0.1
+usr/lib/libvcc.so -> libvcc.so.0
 ```
 
 Untar it at the root, or build both files from this tree and let the build
@@ -73,17 +76,19 @@ script place them:
 
 ```sh
 sudo tar --extract --gzip --file vcc-<version>-x86_64-linux.tar.gz --directory /
-v run tools/build.vsh install                 # /usr/local/bin/vcc, /usr/local/lib/libvcc.a
-v run tools/build.vsh install --prefix /usr   # /usr/bin/vcc, /usr/lib/libvcc.a
+v run tools/build.vsh install                 # the compiler and both runtimes under /usr/local
+v run tools/build.vsh install --prefix /usr   # the same under /usr
 ```
 
-The install is both files. vcc writes the machine code itself but links a
-program against `libvcc.a` for the helpers the machine has no instruction for,
-looking for the archive in the system library directories and then beside
-itself. A compiler installed without the archive still builds programs that call
+The install is the compiler and its runtime, which is an archive and a shared
+library with the soname `libvcc.so.0`. vcc writes the machine code itself but
+links a program against the runtime for the helpers the machine has no
+instruction for, looking for it in the system library directories and then
+beside itself. A compiler installed without one still builds programs that call
 no helper, and refuses one that calls a helper by the name of the helper. The
-install step finishes by compiling and running a program that calls one, so an
-install that cannot find its own archive fails there.
+install step finishes by compiling and running a program that calls one from the
+archive, and a second that links with `-shared-libvcc` and calls one from the
+library, so an install that cannot find its own runtime fails there.
 
 ## What it supports
 
@@ -182,7 +187,16 @@ libgcc's symbol names, and only the members a program reaches are pulled in. A
 division or a remainder of two `__int128` values is a call into it (`__divti3`,
 `__udivti3`, `__modti3`, `__umodti3`); a multiplication and a shift of that width
 are instructions, emitted inline unless `-fignore-natives` asks for the archive's
-version.
+version. A product or a quotient of two complex values is a call into it as
+well: `__muldc3` and `__divdc3`, `__mulsc3` and `__divsc3` for `float _Complex`,
+and `__mulxc3` and `__divxc3` for the extended type, which is what gcc emits and
+where the scaling a boundary value needs lives. A sum or a difference of two
+complex values is one instruction per component and stays inline.
+
+`libvcc.so` is the same helpers as a shared library, with the soname
+`libvcc.so.0`, and `-shared-libvcc` makes the image name it instead of pulling
+the archive's members in. It is refused with `-static`, with `--link-libgcc` and
+with `-shared-libgcc`, because each of those names a different runtime.
 
 `-nodefaultlibs` keeps the start files and takes the C library and libvcc away;
 `-nostdlib` takes the start files too, and the program leaves through the
