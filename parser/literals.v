@@ -1076,10 +1076,19 @@ fn hex_infinity(single bool) f64 {
 // is an int in C, so that is what it becomes here. The #if reader calls this too,
 // because C99 6.10.1p4 evaluates a character constant in a condition the way
 // 6.4.4.4 does, and two readers of the same constant must not disagree.
+//
+// A `u8` constant is the one prefix whose value is not an int: C23 gives it the
+// type char8_t, an unsigned byte, so u8'\377' is 255 where '\377' is -1. The
+// value is read here and the type is the caller's, which is parser.v.
 pub fn parse_character_literal(text string) !i64 {
 	mut body := text
 	mut narrow := true
-	if body.len > 0 && (body[0] == `L` || body[0] == `u` || body[0] == `U`) {
+	mut utf8 := false
+	if body.starts_with('u8') {
+		body = body[2..]
+		narrow = false
+		utf8 = true
+	} else if body.len > 0 && (body[0] == `L` || body[0] == `u` || body[0] == `U`) {
 		body = body[1..]
 		narrow = false
 	}
@@ -1092,6 +1101,12 @@ pub fn parse_character_literal(text string) !i64 {
 	}
 	if inner[0] != `\\` {
 		if inner.len > 1 {
+			if utf8 {
+				// A char8_t is one UTF-8 code unit, so a source character
+				// outside ASCII is several: gcc 16.2.1 refuses `u8'é'` as
+				// `character not encodable in a single code unit`.
+				return error('${text}: the character is not encodable in a single code unit')
+			}
 			return error('${text}: multi-character constants are not implemented')
 		}
 		return if narrow { narrow_character_value(i64(inner[0])) } else { i64(inner[0]) }
@@ -1104,16 +1119,36 @@ pub fn parse_character_literal(text string) !i64 {
 		// is 0xF09F9880 and '\U00020000' is 0xF0A08080. A wide one takes the
 		// code point itself: L'\u00E9' is 233 and L'\U0001F600' is 128512.
 		name, _ := parse_ucn(inner, 1) or { return error('${text}: ${err.msg()}') }
+		if utf8 {
+			// A universal character name is a code point rather than a byte,
+			// so only one that fits in ASCII is one UTF-8 code unit: gcc
+			// 16.2.1 refuses `u8'\u00e9'` and accepts `u8'\xe9'`, whose
+			// escape names the byte directly.
+			if name > 0x7f {
+				return error('${text}: the character ${name} is not encodable in a single code unit')
+			}
+			return i64(name)
+		}
 		if narrow {
 			return ucn_value(name)
 		}
 		return i64(name)
 	}
 	value := parse_escape(inner[1..]) or { error('${text}: ${err.msg()}') }
+	if utf8 {
+		return value & 0xff
+	}
 	if narrow {
 		return narrow_character_value(value)
 	}
 	return value
+}
+
+// is_utf8_character_constant says whether a character constant's spelling is the
+// C23 `u8` one, whose type is char8_t rather than the int every other character
+// constant has.
+pub fn is_utf8_character_constant(text string) bool {
+	return text.starts_with("u8'")
 }
 
 // narrow_character_value is the value an integer character constant holding one
@@ -1277,10 +1312,16 @@ fn ucn_value(cp u32) i64 {
 // bytes, and how many characters the literal holds before the terminator it does
 // not write. A narrow literal's characters are bytes one wide; a wide one's are
 // the wchar_t this target gives, four bytes each, held little-endian.
+//
+// `u` names char16_t, so its characters are UTF-16 code units two bytes wide,
+// and `U` names char32_t, which is an unsigned int rather than the signed
+// wchar_t an L-prefixed literal names. unsigned_units is what tells those two
+// four-byte literals apart.
 struct StringLiteral {
-	value string
-	unit  int
-	count int
+	value          string
+	unit           int
+	count          int
+	unsigned_units bool
 }
 
 // parse_string_literal reads a string literal into the bytes it names, with the
@@ -1289,12 +1330,13 @@ struct StringLiteral {
 fn parse_string_literal(text string) !StringLiteral {
 	mut body := text
 	mut unit := 1
+	mut unsigned_units := false
 	if body.len > 0 && body[0] != `"` {
 		// A prefixed literal: u8"x", L"x", u"x", U"x". The narrow prefix names
 		// the same bytes, `L` names a wide literal whose characters are the
-		// wchar_t this target gives, and `u` and `U` name char16_t and char32_t,
-		// which are header types this compiler does not have and are refused by
-		// name rather than guessed at.
+		// wchar_t this target gives, `u` names char16_t (UTF-16 code units, two
+		// bytes each) and `U` names char32_t (UTF-32 code points in an unsigned
+		// int, four bytes each).
 		mut quote := 0
 		for quote < body.len && body[quote] != `"` {
 			quote++
@@ -1302,6 +1344,11 @@ fn parse_string_literal(text string) !StringLiteral {
 		prefix := body[..quote]
 		if prefix == 'L' {
 			unit = 4
+		} else if prefix == 'u' {
+			unit = 2
+		} else if prefix == 'U' {
+			unit = 4
+			unsigned_units = true
 		} else if prefix != 'u8' {
 			return error('${text}: a ${prefix}-prefixed string literal names a type this compiler does not have')
 		}
@@ -1311,8 +1358,8 @@ fn parse_string_literal(text string) !StringLiteral {
 		return error('${text}: not a string constant')
 	}
 	inner := body[1..body.len - 1]
-	if unit == 4 {
-		return parse_wide_string(text, inner)
+	if unit != 1 {
+		return parse_units_string(text, inner, unit, unsigned_units)
 	}
 	mut bytes := []u8{}
 	mut i := 0
@@ -1357,16 +1404,20 @@ fn parse_string_literal(text string) !StringLiteral {
 	}
 }
 
-// parse_wide_string reads the characters of a wide literal into the wchar_t
-// values they name, each written as the four little-endian bytes the target
-// reads. An escape names a character by its value directly, and a source
-// character is decoded from UTF-8, which is the encoding gcc reads a wide
-// literal's plain characters in: measured on gcc 16.2.1, the two source bytes
-// of an e-acute are one wchar_t of 233, and so is the hex escape `\xe9`.
+// parse_units_string reads the characters of a wide or UTF literal into the
+// values they name, each written as the little-endian bytes of one code unit of
+// the literal's own width. An escape names a character by its value directly,
+// and a source character is decoded from UTF-8, which is the encoding gcc reads
+// a prefixed literal's plain characters in: measured on gcc 16.2.1, the two
+// source bytes of an e-acute are one wchar_t of 233, and so is the hex escape
+// `\xe9`.
 //
-// A value that does not fit the signed 32-bit wchar_t this target gives is
-// reported here rather than truncated into some other character.
-fn parse_wide_string(text string, inner string) !StringLiteral {
+// A `u` literal's characters are UTF-16 code units, so a code point past the
+// BMP is the surrogate pair 6.4.5p5 writes and counts as two of them: measured,
+// u"\U0001F600" is 3d d8 00 de. A value that does not fit the unit is reported
+// here rather than truncated into some other character, and so is a lone
+// surrogate, which UTF-16 has no spelling for.
+fn parse_units_string(text string, inner string, unit int, unsigned bool) !StringLiteral {
 	mut bytes := []u8{}
 	mut count := 0
 	mut i := 0
@@ -1379,10 +1430,10 @@ fn parse_wide_string(text string, inner string) !StringLiteral {
 				continue
 			}
 			if i + 1 < inner.len && (inner[i + 1] == `u` || inner[i + 1] == `U`) {
-				// A universal character name in a wide literal is the code
-				// point itself, written into one wchar_t, not its UTF-8
-				// bytes. Measured on gcc 16.2.1: L"\u00E9\U0001F600" is two
-				// wchar_t, 0xE9 and 0x1F600.
+				// A universal character name in a wide or UTF literal is the
+				// code point itself, written into one wchar_t or as the UTF-16
+				// pair it needs, not its UTF-8 bytes. Measured on gcc 16.2.1:
+				// L"\u00E9\U0001F600" is two wchar_t, 0xE9 and 0x1F600.
 				name, after := parse_ucn(inner, i + 1) or {
 					return error('${text}: ${err.msg()}')
 				}
@@ -1402,8 +1453,30 @@ fn parse_wide_string(text string, inner string) !StringLiteral {
 			value = decoded
 			i = next
 		}
-		if value < 0 || value > max_wchar {
-			return error('${text}: the character ${value} does not fit in the wchar_t this target gives, a signed 32-bit int')
+		if unit == 2 {
+			if value > max_code_point || (value >= 0xd800 && value <= 0xdfff) {
+				return error('${text}: the character ${value} is not one UTF-16 code unit')
+			}
+			if value < 0x10000 {
+				bytes << [u8(value & 0xff), u8((value >> 8) & 0xff)]
+				count++
+				continue
+			}
+			pair := value - 0x10000
+			high := 0xd800 + (pair >> 10)
+			low := 0xdc00 + (pair & 0x3ff)
+			bytes << [u8(high & 0xff), u8((high >> 8) & 0xff)]
+			bytes << [u8(low & 0xff), u8((low >> 8) & 0xff)]
+			count += 2
+			continue
+		}
+		limit := if unsigned { max_code_point } else { max_wchar }
+		if value < 0 || value > limit {
+			return error('${text}: the character ${value} does not fit in ${if unsigned {
+				'the char32_t an unsigned 32-bit int gives'
+			} else {
+				'the wchar_t this target gives, a signed 32-bit int'
+			}}')
 		}
 		for shift in 0 .. 4 {
 			bytes << u8((u64(value) >> (8 * shift)) & 0xff)
@@ -1411,15 +1484,22 @@ fn parse_wide_string(text string, inner string) !StringLiteral {
 		count++
 	}
 	return StringLiteral{
-		value: bytes.bytestr()
-		unit:  4
-		count: count
+		value:          bytes.bytestr()
+		unit:           unit
+		count:          count
+		unsigned_units: unsigned
 	}
 }
 
 // max_wchar is the largest value the signed 32-bit wchar_t this target gives
 // holds, which is the largest a wide character may be.
 const max_wchar = i64(0x7fffffff)
+
+// max_code_point is the largest code point a u or U literal may name, since both
+// encode ISO 10646 and not a wider integer. gcc 16.2.1 refuses a name past it in
+// either: `u"\U00110000"` is `character not allowed in a char16_t string`, and the
+// same value in a U literal is the same refusal for char32_t.
+const max_code_point = i64(0x10ffff)
 
 // decode_utf8 reads one character of the source, which is UTF-8, and answers the
 // code point it names and where the next character starts. A byte that cannot

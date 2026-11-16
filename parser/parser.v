@@ -3089,11 +3089,18 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 			return error('bad character literal')
 		}
 		// A character constant has the type int, whatever it was written as:
-		// 6.4.4.4 says so, and it is why `'a' + 'b'` is an int in C.
+		// 6.4.4.4 says so, and it is why `'a' + 'b'` is an int in C. C23 makes
+		// the `u8` form the exception: its type is char8_t, the unsigned char
+		// <uchar.h> typedefs, so `sizeof(u8'c')` is 1 where `sizeof('c')` is 4.
+		typ := if is_utf8_character_constant(t.text) {
+			types.unsigned_char_type()
+		} else {
+			types.int_type()
+		}
 		return p.arena.put_int_lit(ast.IntLit{
 			value: value
 			text:  t.text
-			typ:   types.int_type()
+			typ:   typ
 			line:  t.line
 			col:   t.col
 		})
@@ -3442,11 +3449,19 @@ fn (mut p Parser) floating_type(at tokenize.Token, value f64) types.Type {
 // string_literal_type is the type of a string literal: an array of char holding
 // the bytes and the terminator the literal does not write. An L-prefixed literal
 // names an array of wchar_t instead, which this target gives as an int, holding
-// one per character and the terminator. A literal with any other prefix names a
-// type laid out in a header this compiler has not read, so its clause is left
-// unresolved.
+// one per character and the terminator. A `u` literal is an array of char16_t,
+// two bytes an element, and a `U` literal an array of char32_t, four bytes an
+// element in an unsigned int. A literal with a prefix this file does not know
+// names a type laid out in a header this compiler has not read, so its clause is
+// left unresolved.
 fn string_literal_type(text string, literal StringLiteral) types.Type {
+	if literal.unit == 2 {
+		return types.array_of(types.unsigned_short_type(), literal.count + 1)
+	}
 	if literal.unit == 4 {
+		if literal.unsigned_units {
+			return types.array_of(types.unsigned_int_type(), literal.count + 1)
+		}
 		return types.array_of(types.int_type(), literal.count + 1)
 	}
 	if text.len > 0 && text[0] != `"` {

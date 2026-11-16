@@ -7410,10 +7410,13 @@ fn (mut e Emitter) emit_expr_at(expr ast.Expr, depth int) !void {
 		.str_lit {
 			node := e.unit.arena.str_lit(expr)
 			// A string is the address of its bytes: the image holds the bytes
-			// and the instruction says where they landed. A wide literal's
-			// bytes are picked out of their own table, because the same run of
-			// bytes can be a narrow literal's as well.
-			if node.unit == 4 {
+			// and the instruction says where they landed. A wide or UTF
+			// literal's bytes are picked out of their own table, because the
+			// same run of bytes can be a narrow literal's as well: the entry is
+			// aligned for a four-byte character, which is also aligned for the
+			// two-byte one a `u` literal holds, and it ends with four zero bytes,
+			// which holds the terminator of either.
+			if node.unit != 1 {
 				e.intern_wide(node.value)
 				register := e.accumulator(node.line, node.col)!
 				e.reference(e.target.address_of(register, 0), .take_wide_address, node.value,
