@@ -3719,33 +3719,86 @@ fn test_a_returned_complex_expression_is_built_once() {
 	assert run_image(emitted.bytes) == 0
 }
 
-// A quotient of two complex values is emitted inline with the arithmetic gcc
-// 16.2.1 carries, so it is right where the naive formula is not. The program
-// pins the boundary the old refusal named, z/z for z = 1e308 + 1e308i, which is
-// 1 + 0i, and it steps through each branch the divisor's size selects: the
-// halving above RBIG (the 1e308 divisor), the RMINSCAL upscale below RMIN2 (the
-// 1e-308 divisor), the composite upscale for an underflowing numerator (the
-// 1e-308 + 1e-308i over 3 + 0i), and the subnormal-ratio alternate order (the
-// 1e-308 + 3i divisor). Every expected component is what gcc 16.2.1 prints with
-// %.17g for the same expression, and the float case is the promoted-to-double
-// path gcc's __divsc3 takes. Measured on gcc 16.2.1, this program exits 0.
-fn test_a_complex_quotient_is_the_scaled_division() {
-	source := 'int main(void) {' +
+// The runtime archive's complex names, as the driver hands them to the emitter.
+// They are what the import check lets a program reach, and what a call binds to
+// when the link merges the archive's member.
+const complex_runtime = ['__muldc3', '__divdc3', '__mulsc3', '__divsc3', '__mulxc3', '__divxc3']
+
+// ComplexHelperCase is one complex program beside the helper its operator is a
+// call to.
+struct ComplexHelperCase {
+	source string
+	helper string
+}
+
+fn complex_options() Options {
+	return Options{
+		archive_names: complex_runtime
+	}
+}
+
+// A product and a quotient of two complex values are calls to the runtime, which
+// is what gcc 16.2.1 emits at -O0 and at -O2 for all three complex types:
+// __muldc3 and __divdc3 for `double _Complex`, __mulsc3 and __divsc3 for `float
+// _Complex`, and __mulxc3 and __divxc3 for `long double _Complex`. The name the
+// call leaves in the image's imports says which helper was reached, and the
+// fixup says the name is called rather than only mentioned. A sum and a
+// difference are one instruction per component and stay inline, so neither name
+// appears for them.
+fn test_a_complex_product_and_a_complex_quotient_are_calls_to_the_runtime_helper() {
+	rows := [
+		ComplexHelperCase{'double _Complex z = 3.0 + 4.0i; double _Complex w = 1.0 - 2.0i; z = z * w; return 0;', '__muldc3'},
+		ComplexHelperCase{'double _Complex z = 3.0 + 4.0i; double _Complex w = 1.0 - 2.0i; z = z / w; return 0;', '__divdc3'},
+		ComplexHelperCase{'float _Complex z = 3.0f + 4.0fi; float _Complex w = 1.0f - 2.0fi; z = z * w; return 0;', '__mulsc3'},
+		ComplexHelperCase{'float _Complex z = 3.0f + 4.0fi; float _Complex w = 1.0f - 2.0fi; z = z / w; return 0;', '__divsc3'},
+		ComplexHelperCase{'long double _Complex z = 3.0L + 4.0i; long double _Complex w = 1.0L - 2.0i; z = z * w; return 0;', '__mulxc3'},
+		ComplexHelperCase{'long double _Complex z = 3.0L + 4.0i; long double _Complex w = 1.0L - 2.0i; z = z / w; return 0;', '__divxc3'},
+	]
+	for row in rows {
+		emitted := emit(translation_unit('int main(void) { ${row.source} }'), complex_options())
+		assert emitted.diagnostics.len == 0
+		assert row.helper in emitted.program.imports, '${row.helper} is not imported'
+		assert emitted.program.fixups.any(it.kind == .call_import && it.name == row.helper), '${row.helper} is not called'
+	}
+	sum := emit(translation_unit('int main(void) { double _Complex z = 3.0 + 4.0i; double _Complex w = 1.0 - 2.0i; z = z + w; z = z - w; return (int)__real__ z; }'),
+		complex_options())
+	assert sum.diagnostics.len == 0
+	assert '__muldc3' !in sum.program.imports
+	assert '__divdc3' !in sum.program.imports
+}
+
+// A quotient of two complex values is the runtime's call, and this program
+// supplies the two helpers itself so the call is resolved and the program runs:
+// a unit that defines the name gets a direct call, which is the shape a runtime
+// built beside the program has. Each helper builds its answer through the address
+// of the object's first component, which is the one way this compiler writes a
+// complex value from two real ones: it has no store that writes one part. The
+// values are ordinary ones, where the plain formula and the helper's scaled
+// arithmetic agree. Measured on gcc 16.2.1 with `gcc -O0 -fno-builtin` over the
+// same program printed with %.17g, this program exits 0.
+//
+// The boundary cases the inline formula used to be checked against are not here,
+// because what answers them is the helper's scaling and not anything this back
+// end writes. z/z for z = 1e308 + 1e308i, the 1e-308 cases, the underflowing
+// numerator and the subnormal-ratio divisor are in pipeline_test.v, which links a
+// stub that implements the scaling and runs the program.
+fn test_a_complex_quotient_is_the_runtime_helper_call() {
+	source := 'double _Complex __divdc3(double a, double b, double c, double d) {' +
+		' double _Complex z; double *w = (double *)&z;' +
+		' double den = c * c + d * d;' +
+		' w[0] = (a * c + b * d) / den; w[1] = (b * c - a * d) / den; return z; }' +
+		'float _Complex __divsc3(float a, float b, float c, float d) {' +
+		' float _Complex z; float *w = (float *)&z;' +
+		' float den = c * c + d * d;' +
+		' w[0] = (a * c + b * d) / den; w[1] = (b * c - a * d) / den; return z; }' +
+		' int main(void) {' +
 		' double _Complex q;' +
 		' q = (1.0 + 2.0i) / (3.0 + 4.0i);' +
 		' if (__real__ q != 0.44 || __imag__ q != 0.080000000000000002) { return 1; }' +
-		' q = (1e308 + 1e308i) / (1e308 + 1e308i);' +
-		' if (__real__ q != 1.0 || __imag__ q != 0.0) { return 2; }' +
-		' q = (1e-308 + 1e-308i) / (1e-308 + 1e-308i);' +
-		' if (__real__ q != 1.0 || __imag__ q != 0.0) { return 3; }' +
-		' q = (1.0 + 1.0i) / (1e-308 + 3.0i);' +
-		' if (__real__ q != 0.33333333333333331 || __imag__ q != -0.33333333333333331) { return 4; }' +
-		' q = (1e-308 + 1e-308i) / (3.0 + 0.0i);' +
-		' if (__real__ q != 3.3333333333333314e-309 || __imag__ q != 3.3333333333333314e-309) { return 5; }' +
 		' q = (3.0 + 4.0i) / (0.0 + 1.0i);' +
-		' if (__real__ q != 4.0 || __imag__ q != -3.0) { return 6; }' +
+		' if (__real__ q != 4.0 || __imag__ q != -3.0) { return 2; }' +
 		' float _Complex f = (1.0f + 2.0fi) / (3.0f + 4.0fi);' +
-		' if (__real__ f != 0.43999999761581421f || __imag__ f != 0.079999998211860657f) { return 7; }' +
+		' if (__real__ f != 0.43999999761581421f || __imag__ f != 0.079999998211860657f) { return 3; }' +
 		' return 0; }'
 	emitted := emit(translation_unit(source), Options{})
 	assert emitted.diagnostics.len == 0
@@ -3757,10 +3810,15 @@ fn test_a_complex_quotient_is_the_scaled_division() {
 // and what the operator is worth is not the operand. A program that compares the
 // part with the component, uses it as one, passes it onward and writes it through
 // an assignment runs only if the read is the component; the parenthesised
-// spelling glibc's <tgmath.h> wraps its arguments in is the same value. Measured
-// on gcc 16.2.1, the program below exits 0.
+// spelling glibc's <tgmath.h> wraps its arguments in is the same value. The
+// product in the program below is a call to the runtime, so the program defines
+// the helper it calls: that is one direct call and the read of the component is
+// still the subject. Measured on gcc 16.2.1, the program below exits 0.
 fn test_the_part_of_a_complex_value_is_the_component_it_names() {
-	source := 'int main() {' +
+	source := 'double _Complex __muldc3(double a, double b, double c, double d) {' +
+		' double _Complex z; double *w = (double *)&z;' +
+		' w[0] = a * c - b * d; w[1] = a * d + b * c; return z; }' +
+		' int main() {' +
 		' double _Complex z = 3.0 + 4.0i;' +
 		' double _Complex w = 1.0 - 2.0i;' +
 		' if (__real__ z != 3.0) { return 1; }' +
@@ -3855,7 +3913,10 @@ fn test_a_conditional_of_two_complex_arms_is_used_as_a_value() {
 // a part is the value the call wrote. Measured on gcc 16.2.1, this program
 // exits 0.
 fn test_the_extended_complex_type_is_two_extended_components() {
-	source := 'long double _Complex mk(long double a, long double b) { return a + b * 1.0i; }' +
+	source := 'long double _Complex __mulxc3(long double a, long double b, long double c, long double d) {' +
+		' long double _Complex z; long double *w = (long double *)&z;' +
+		' w[0] = a * c - b * d; w[1] = a * d + b * c; return z; }' +
+		' long double _Complex mk(long double a, long double b) { return a + b * 1.0i; }' +
 		' int main(void) {' +
 		' long double _Complex z = mk(3.0L, 4.0L);' +
 		' if (sizeof z != 32) { return 1; }' +

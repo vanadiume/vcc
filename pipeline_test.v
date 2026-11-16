@@ -1531,6 +1531,142 @@ fn test_the_extended_complex_type_crosses_a_library_call() {
 	os.rm(binary) or {}
 }
 
+// complex_runtime_names are the six helpers a complex product and a complex
+// quotient are calls to.
+fn complex_runtime_names() []string {
+	return ['__muldc3', '__divdc3', '__mulsc3', '__divsc3', '__mulxc3', '__divxc3']
+}
+
+// complex_runtime_source is a stand-in for the runtime's six complex helpers, so
+// that a program here links and runs where libvcc has not been built beside the
+// tree. Each helper takes the four scalar components and answers the complex
+// value, which is gcc's own signature and argument order and therefore the one
+// the emitter writes.
+//
+// The division is the scaled form C99's Annex G.5.1 describes: the four operands
+// are halved when the large component of the divisor is at or above RBIG and
+// multiplied by 1/DBL_EPSILON when it is below the machine epsilon, and then the
+// ratio is formed. Without that step `c*c + d*d` overflows as soon as a component
+// of the divisor is large, and `1e308 + 1e308i` over itself comes out as 0 rather
+// than 1. The recovery at the end for a divisor that is exactly zero is not
+// written here: libvcc's helper carries it, and the run against the real one is
+// where that answer (`inf inf`) is checked.
+//
+// Each helper builds its answer through the address of the object's first
+// component, because this compiler has no store that writes one part of a complex
+// value from a real expression.
+fn complex_runtime_source() string {
+	return [
+		'static double complex_abs_double(double x) { return x < 0.0 ? -x : x; }',
+		'static float complex_abs_float(float x) { return x < 0.0f ? -x : x; }',
+		'static long double complex_abs_extended(long double x) { return x < 0.0L ? -x : x; }',
+		'double _Complex __muldc3(double a, double b, double c, double d) {',
+		'    double _Complex z; double *w = (double *)&z;',
+		'    w[0] = a * c - b * d; w[1] = a * d + b * c;',
+		'    return z;',
+		'}',
+		'double _Complex __divdc3(double a, double b, double c, double d) {',
+		'    double _Complex z; double *w = (double *)&z;',
+		'    double ratio, den;',
+		'    if (complex_abs_double(c) >= complex_abs_double(d)) {',
+		'        if (complex_abs_double(c) >= 8.988465674311579e307) { a = a * 0.5; b = b * 0.5; c = c * 0.5; d = d * 0.5; }',
+		'        else if (complex_abs_double(c) < 2.220446049250313e-16) { a = a * 4.503599627370496e15; b = b * 4.503599627370496e15; c = c * 4.503599627370496e15; d = d * 4.503599627370496e15; }',
+		'        ratio = d / c; den = c + d * ratio;',
+		'        w[0] = (a + b * ratio) / den; w[1] = (b - a * ratio) / den;',
+		'    } else {',
+		'        if (complex_abs_double(d) >= 8.988465674311579e307) { a = a * 0.5; b = b * 0.5; c = c * 0.5; d = d * 0.5; }',
+		'        else if (complex_abs_double(d) < 2.220446049250313e-16) { a = a * 4.503599627370496e15; b = b * 4.503599627370496e15; c = c * 4.503599627370496e15; d = d * 4.503599627370496e15; }',
+		'        ratio = c / d; den = c * ratio + d;',
+		'        w[0] = (a * ratio + b) / den; w[1] = (b * ratio - a) / den;',
+		'    }',
+		'    return z;',
+		'}',
+		'float _Complex __mulsc3(float a, float b, float c, float d) {',
+		'    float _Complex z; float *w = (float *)&z;',
+		'    w[0] = a * c - b * d; w[1] = a * d + b * c;',
+		'    return z;',
+		'}',
+		'float _Complex __divsc3(float a, float b, float c, float d) {',
+		'    float _Complex z; float *w = (float *)&z;',
+		'    float ratio, den;',
+		'    if (complex_abs_float(c) >= complex_abs_float(d)) {',
+		'        ratio = d / c; den = c + d * ratio;',
+		'        w[0] = (a + b * ratio) / den; w[1] = (b - a * ratio) / den;',
+		'    } else {',
+		'        ratio = c / d; den = c * ratio + d;',
+		'        w[0] = (a * ratio + b) / den; w[1] = (b * ratio - a) / den;',
+		'    }',
+		'    return z;',
+		'}',
+		'long double _Complex __mulxc3(long double a, long double b, long double c, long double d) {',
+		'    long double _Complex z; long double *w = (long double *)&z;',
+		'    w[0] = a * c - b * d; w[1] = a * d + b * c;',
+		'    return z;',
+		'}',
+		'long double _Complex __divxc3(long double a, long double b, long double c, long double d) {',
+		'    long double _Complex z; long double *w = (long double *)&z;',
+		'    long double ratio, den;',
+		'    if (complex_abs_extended(c) >= complex_abs_extended(d)) {',
+		'        ratio = d / c; den = c + d * ratio;',
+		'        w[0] = (a + b * ratio) / den; w[1] = (b - a * ratio) / den;',
+		'    } else {',
+		'        ratio = c / d; den = c * ratio + d;',
+		'        w[0] = (a * ratio + b) / den; w[1] = (b * ratio - a) / den;',
+		'    }',
+		'    return z;',
+		'}',
+	].join('\n')
+}
+
+// complex_runtime_archive writes a libvcc.a whose members answer the six complex
+// helpers, and answers the directory a -L has to name.
+fn complex_runtime_archive(directory string) string {
+	helper := object_of('complex_helper.c', complex_runtime_source())
+	os.write_file_array(os.join_path(directory, 'libvcc.a'), archive_of('complex_helper.o', helper,
+		complex_runtime_names())) or {
+		panic(err)
+	}
+	return directory
+}
+
+// A product and a quotient of two complex values are calls to the runtime
+// archive, so each program here links a stand-in for libvcc.a built above and
+// runs against it. The values are gcc 16.2.1's: the same expressions compiled
+// with `gcc -O0 -fno-builtin` and printed with %.17g answer what the checks
+// compare against. The two scaled rows are the ones an inline formula gets
+// wrong: z/z for z = 1e308 + 1e308i answers 0 there, because `c*c + d*d`
+// overflows, and the real libgcc helper answers 1.
+fn test_a_complex_product_and_quotient_link_the_runtime_archive_and_run() {
+	directory := scratch('complex_runtime_dir')
+	os.mkdir(directory) or { panic(err) }
+	complex_runtime_archive(directory)
+	source := scratch('complex_arith.c')
+	binary := scratch('complex_arith')
+	programs := [
+		'double _Complex z = 3.0 + 4.0i; double _Complex w = 1.0 - 2.0i;\n	double _Complex q = z * w;\n	return !(__real__ q == 11.0 && __imag__ q == -2.0);',
+		'double _Complex z = 3.0 + 4.0i; double _Complex w = 1.0 - 2.0i;\n	double _Complex q = z / w;\n	return !(__real__ q == -1.0 && __imag__ q == 2.0);',
+		'double _Complex z = 1e308 + 1e308i;\n	double _Complex q = z / z;\n	return !(__real__ q == 1.0 && __imag__ q == 0.0);',
+		'double _Complex z = 1e-308 + 1e-308i;\n	double _Complex q = z / z;\n	return !(__real__ q == 1.0 && __imag__ q == 0.0);',
+		'double _Complex q = (1.0 + 1.0i) / (1e-308 + 3.0i);\n	return !(__real__ q == 0.33333333333333331 && __imag__ q == -0.33333333333333331);',
+		'double _Complex q = (1e-308 + 1e-308i) / (3.0 + 0.0i);\n	return !(__real__ q == 3.3333333333333314e-309 && __imag__ q == 3.3333333333333314e-309);',
+		'float _Complex q = (1.0f + 2.0fi) * (3.0f + 4.0fi);\n	return !(__real__ q == -5.0f && __imag__ q == 10.0f);',
+		'float _Complex q = (1.0f + 2.0fi) / (3.0f + 4.0fi);\n	return !(__real__ q == 0.43999999761581421f && __imag__ q == 0.079999998211860657f);',
+		'long double _Complex q = (3.0L + 4.0Li) * (1.0L - 2.0Li);\n	return !(__real__ q == 11.0L && __imag__ q == -2.0L);',
+		'long double _Complex q = (3.0L + 4.0Li) / (1.0L - 2.0Li);\n	return !(__real__ q == -1.0L && __imag__ q == 2.0L);',
+	]
+	for i, body in programs {
+		os.write_file(source, 'int main(void) {\n	${body}\n}\n') or { panic(err) }
+		opts := cli.parse([source, '-L', directory, '-o', binary]) or { panic(err) }
+		link_inputs(opts)
+		assert os.exists(binary)
+		result := os.execute(os.quoted_path(binary))
+		assert result.exit_code == 0, 'program ${i} answered ${result.exit_code}'
+	}
+	os.rm(source) or {}
+	os.rm(binary) or {}
+	os.rmdir_all(directory) or {}
+}
+
 // A constant conditional whose arms are a complex type, handed to a parameter of
 // that type. `<tgmath.h>` is where the shape comes from rather than a program:
 // with a `__GNUC__` this compiler predefines, glibc's type-generic macros expand
@@ -1546,7 +1682,7 @@ fn test_a_constant_conditional_of_a_complex_type_is_converted_to_it() {
 		'int main(void) {\n' +
 		'    double _Complex z = csqrt(-9.0);\n' +
 		'    if (creal(1 ? z : z) != 0.0) { return 1; }\n' +
-		'    double _Complex w = 1.0 + 2.0 * 1.0iF;\n' +
+		'    double _Complex w = 1.0 + 2.0iF;\n' +
 		'    if (creal(0 ? z : w) != 1.0) { return 2; }\n' +
 		'    if (creal(1 ? w : z) != 1.0) { return 3; }\n' +
 		'    return 0;\n' +
