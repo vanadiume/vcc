@@ -4801,6 +4801,38 @@ fn test_a_two_dimensional_object_in_a_body_is_initialized_a_row_at_a_time() {
 	assert run_image(three.bytes) == 10
 }
 
+// A block-scope `static` object of an array-of-arrays type is storage in the
+// image, so its nested initializer is folded where the declaration is read and
+// placed at the byte each element starts at: one member initializer per element
+// the list reached, at the element's own width, and the elements it did not
+// reach are the zeros the storage starts as. A run written from the front of
+// the object would put a partially initialized list in the wrong rows. Measured
+// on gcc 16.2.1, the four programs below exit 62, 43, 70 and 24.
+fn test_a_block_scope_static_array_of_arrays_places_each_element_at_its_byte() {
+	rows := emit(translation_unit('int main(void) { static int g[2][3] = {{1,2,3},{4,5,6}}; return g[1][2] * 10 + g[0][1]; }'),
+		Options{})
+	assert rows.diagnostics.len == 0
+	assert run_image(rows.bytes) == 62
+	partial := emit(translation_unit('int main(void) { static int g[2][3] = {{1,2,3},{4}}; return g[1][0] * 10 + g[1][1] + g[0][2]; }'),
+		Options{})
+	assert partial.diagnostics.len == 0
+	assert run_image(partial.bytes) == 43
+	designated := emit(translation_unit('int main(void) { static int g[2][3] = {[1][1] = 7}; return g[1][1] * 10 + g[0][0]; }'),
+		Options{})
+	assert designated.diagnostics.len == 0
+	assert run_image(designated.bytes) == 70
+	size := emit(translation_unit('int main(void) { static int g[2][3] = {{1},{4,5}}; return (int) sizeof g; }'),
+		Options{})
+	assert size.diagnostics.len == 0
+	assert run_image(size.bytes) == 24
+	// A member initializer carries an integer or a double, so a long double
+	// element is refused by name rather than left the zero the storage starts
+	// as, which would be a value the source never wrote.
+	refused := translation_unit_refused('int main(void) { static long double g[2][2] = {{1.5, 2.5}, {3.5, 4.5}}; return 0; }')
+	assert refused.diagnostics.len == 1
+	assert refused.diagnostics[0].msg.contains('long double')
+}
+
 // A parameter written with brackets is a pointer to its element, so a row of a
 // two-dimensional object and a variable-length bound both travel as one
 // address. Measured on gcc 16.2.1, the two programs below exit 6 and 10.

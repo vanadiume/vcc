@@ -61,8 +61,9 @@ fn (e Emitter) long_double_of(expr ast.Expr) bool {
 // of them answers no: its name is the address of its first element, and an
 // element is read one at a time through that address.
 fn (e Emitter) global_is_long_double(name string) bool {
+	storage := e.object_storage_name(name)
 	for global in e.unit.globals {
-		if global.name == name {
+		if global.name == storage {
 			return global.count == 0 && e.writes_a_long_double(global.typ)
 		}
 	}
@@ -74,8 +75,9 @@ fn (e Emitter) global_is_long_double(name string) bool {
 // sixteen bytes written through that address, so the size of one element is what
 // makes the write the extended type's.
 fn (e Emitter) global_array_is_long_double(name string) bool {
+	storage := e.object_storage_name(name)
 	for global in e.unit.globals {
-		if global.name == name {
+		if global.name == storage {
 			return global.count > 0 && e.writes_a_long_double(global.typ)
 		}
 	}
