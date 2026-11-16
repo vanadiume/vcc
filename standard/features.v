@@ -499,6 +499,26 @@ pub const features = [
 		pedantic:  'the __VA_OPT__ operator'
 		status:    .implemented
 	},
+	// `#embed` is C23's directive for the bytes of a file as an initializer.
+	// Measured on gcc 16.2.1 over a four-byte payload: every mode before C23,
+	// the GNU dialects included, compiles the directive with empty stderr and
+	// exit 0, and with -pedantic-errors each of them refuses it as `'#embed'
+	// before C23 is a GCC extension`, while c23 and gnu23 say nothing even
+	// then. So this is a pedantic message rather than `invalid`: a mode
+	// without the construct still takes the directive when nothing asks it to
+	// be strict, which is what a row the mode truly does not have would not
+	// do, and `gnu` is false because gnu17 reports it too. A directive is
+	// gone before the token stream `uses` walks exists, so the reader in
+	// `preprocess/` asks this row through `dialect_message` the way the
+	// `__VA_OPT__` reader does.
+	Feature{
+		spellings: ['#embed']
+		since:     .c23
+		gnu:       false
+		extension: ''
+		pedantic:  'the #embed directive'
+		status:    .implemented
+	},
 	Feature{
 		spellings: ['_Complex']
 		since:     .c99
