@@ -1,10 +1,27 @@
 module parser
 
+import backend
 import tokenize
 import types
 
 fn parsed(source string) Result {
 	return parse(tokenize.lex(source).tokens)
+}
+
+// parsed_with_limit reads a source at a chosen nesting limit, which is what
+// -fbracket-depth sets on the command line. Zero is no limit.
+fn parsed_with_limit(source string, limit int) Result {
+	return parse_with(tokenize.lex(source).tokens, backend.host(), limit)
+}
+
+// reported_nesting says the read refused a construct for being nested too deep.
+fn reported_nesting(result Result) bool {
+	for diagnostic in result.diagnostics {
+		if diagnostic.msg.contains('nested more than') {
+			return true
+		}
+	}
+	return false
 }
 
 // The tokens of a source as if a header had been read: the file a token came from
@@ -135,7 +152,7 @@ fn test_a_function_that_returns_a_constant() {
 // to run the stack out. It is reported now, which is what a compiler owes a file
 // it cannot compile.
 fn test_deeply_nested_parentheses_are_reported() {
-	depth := max_expression_depth + 100
+	depth := default_bracket_depth + 100
 	result := parsed('int main() { return ${'('.repeat(depth)}1${')'.repeat(depth)}; }')
 	mut reported := false
 	for diagnostic in result.diagnostics {
@@ -144,6 +161,47 @@ fn test_deeply_nested_parentheses_are_reported() {
 		}
 	}
 	assert reported
+}
+
+// A statement is read through a body and an initializer through a brace list,
+// and neither reader was counted: measured before this, five thousand nested
+// `if (1) {` took the V stack out with exit 139, and so did ten thousand nested
+// braces. Both are a diagnostic at the construct that crosses the limit now,
+// with the limit the command line set.
+fn test_a_deeply_nested_statement_is_reported() {
+	depth := default_bracket_depth + 100
+	result := parsed('int main() { ${'if (1) '.repeat(depth)}; }')
+	mut reported := false
+	for diagnostic in result.diagnostics {
+		if diagnostic.msg.contains('statement is nested more than ${default_bracket_depth} levels deep') {
+			reported = true
+		}
+	}
+	assert reported
+}
+
+fn test_a_deeply_nested_initializer_is_reported() {
+	depth := default_bracket_depth + 100
+	result := parsed('int a = ${'{'.repeat(depth)}1${'}'.repeat(depth)};')
+	mut reported := false
+	for diagnostic in result.diagnostics {
+		if diagnostic.msg.contains('initializer is nested more than ${default_bracket_depth} levels deep') {
+			reported = true
+		}
+	}
+	assert reported
+}
+
+// -fbracket-depth=N raises the number and 0 takes it away, which leaves the
+// stack as the only bound. The depth here is past the default and well inside
+// what the stack survives.
+fn test_the_nesting_limit_can_be_raised_and_lifted() {
+	depth := default_bracket_depth + 500
+	source := 'int main() { ${'if (1) '.repeat(depth)}; }'
+	raised := parsed_with_limit(source, depth + 10)
+	assert !reported_nesting(raised)
+	unlimited := parsed_with_limit(source, 0)
+	assert !reported_nesting(unlimited)
 }
 
 fn test_operators_bind_by_precedence() {

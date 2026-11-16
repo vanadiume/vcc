@@ -90,13 +90,17 @@ mut:
 	// the specifiers resolved to is held here for the declarator to use.
 	pending_base    ?types.Type
 	pending_storage types.Storage
-	// depth counts how deep the expression being read is nested. The expression
-	// grammar comes back on itself through more than one spelling - a
+	// depth counts how deep the construct being read is nested. Every reader
+	// that comes back on itself through its own grammar raises this count: a
 	// parenthesis, a prefix operator, a cast, a `?:`, a `[` index, a call's
-	// argument list and a `sizeof` operand - and every one of them raises this
-	// count, so it is the one number that keeps a hostile file from running the
-	// stack out.
+	// argument list, a `sizeof` operand, a statement, a brace initializer. It
+	// is the one number that keeps a hostile file from running the stack out.
 	depth int
+	// bracket_depth is the number that count is compared against, which is what
+	// the command line's -fbracket-depth sets. Zero is no limit: the run asked
+	// for the stack to be the only bound, which is what a generated file past
+	// the default needs.
+	bracket_depth int
 	// globals is every object this file defined at the top level, in the order
 	// the definitions were read. A declaration returns functions, because only
 	// functions are code; the objects are collected here and travel with the
@@ -270,21 +274,28 @@ const emitted_kinds = [types.Kind.void_, .int_, .unsigned_int, .bool_, .char_, .
 	.unsigned_long_long, .long_double, .float128, .complex_float, .complex_double,
 	.complex_long_double]
 
-// max_expression_depth bounds how deep one expression nests: a parenthesis, a
-// prefix operator, a cast, a `?:`, a `[` index, a call's argument list and a
-// `sizeof` operand each write one expression inside another. The C standard
-// asks a compiler for 63 levels; past this the parser reports instead of
-// following the recursion until the stack runs out.
-const max_expression_depth = 200
+// default_bracket_depth is the nesting a read allows when the command line did
+// not say: 256, the number clang documents for the flag of this name. The C
+// standard asks a compiler for 63 levels, so a file past this one is a file
+// written by a generator, and the number is the depth at which the deepest
+// reader this tree has still leaves the stack alone.
+pub const default_bracket_depth = 256
 
 // parse reads a token stream into a translation unit, for the machine this binary
 // was built to run on. A caller that has chosen a target uses parse_for, because
 // the two are not the same machine once a second target exists.
 pub fn parse(tokens []tokenize.Token) Result {
-	return parse_for(tokens, backend.host())
+	return parse_with(tokens, backend.host(), default_bracket_depth)
 }
 
-// parse_for reads a token stream into a translation unit for a chosen target.
+// parse_for reads a token stream into a translation unit for a chosen target,
+// with the default nesting limit.
+pub fn parse_for(tokens []tokenize.Token, target ?backend.Target) Result {
+	return parse_with(tokens, target, default_bracket_depth)
+}
+
+// parse_with reads a token stream into a translation unit for a chosen target,
+// refusing a construct nested deeper than `bracket_depth`.
 //
 // The target is a parameter rather than something this file looks up, because
 // nearly every width it resolves is the target's: the width of a pointer and of an
@@ -293,7 +304,13 @@ pub fn parse(tokens []tokenize.Token) Result {
 // so the caller that selected the machine has to say which one. An absent target
 // leaves every width unanswered, which turns a question about one into a refusal
 // that names what could not be answered instead of a number this file invented.
-pub fn parse_for(tokens []tokenize.Token, target ?backend.Target) Result {
+//
+// bracket_depth is the command line's -fbracket-depth: every reader that comes
+// back on itself through its own grammar counts a level against it, so one
+// number bounds parentheses, prefix operators, statements, brace initializers
+// and declarators alike. Zero is no limit at all, which leaves the stack as the
+// only bound.
+pub fn parse_with(tokens []tokenize.Token, target ?backend.Target, bracket_depth int) Result {
 	mut p := Parser{
 		tokens:          tokens
 		arena:           ast.new_arena()
@@ -304,6 +321,7 @@ pub fn parse_for(tokens []tokenize.Token, target ?backend.Target) Result {
 		nested_names:    map[string]string{}
 		nested_declared: map[string]tokenize.Token{}
 		nested_used:     map[string]bool{}
+		bracket_depth:   bracket_depth
 	}
 	p.declare_argument_list()
 	p.index_identifiers()
@@ -321,6 +339,14 @@ pub fn parse_for(tokens []tokenize.Token, target ?backend.Target) Result {
 		unit:        unit
 		diagnostics: p.diagnostics
 	}
+}
+
+// past_limit says a construct nested `depth` deep is one this run refuses to
+// follow. Every reader that comes back on itself raises the same count, so the
+// answer is the same for a parenthesis, a statement and a brace initializer, and
+// a limit of zero is the run having asked for no answer at all.
+fn (p &Parser) past_limit(depth int) bool {
+	return p.bracket_depth > 0 && depth > p.bracket_depth
 }
 
 // declare_argument_list puts the type a header's `__builtin_va_list` names into
@@ -1017,9 +1043,9 @@ fn (mut p Parser) parse_conditional(condition ast.Expr) !ast.Expr {
 		// after it.
 		p.next() // :
 		p.depth++
-		if p.depth > max_expression_depth {
+		if p.past_limit(p.depth) {
 			p.depth--
-			p.error_at(question, 'expression is nested more than ${max_expression_depth} levels deep')
+			p.error_at(question, 'expression is nested more than ${p.bracket_depth} levels deep')
 			return error('expression nested too deeply')
 		}
 		p.compound_unstable++
@@ -1046,9 +1072,9 @@ fn (mut p Parser) parse_conditional(condition ast.Expr) !ast.Expr {
 	// The count that bounds parenthesised nesting bounds this one, so a chain
 	// thousands of links long is refused rather than run out of stack.
 	p.depth++
-	if p.depth > max_expression_depth {
+	if p.past_limit(p.depth) {
 		p.depth--
-		p.error_at(question, 'expression is nested more than ${max_expression_depth} levels deep')
+		p.error_at(question, 'expression is nested more than ${p.bracket_depth} levels deep')
 		return error('expression nested too deeply')
 	}
 	p.compound_unstable++
@@ -1985,12 +2011,12 @@ fn (mut p Parser) parse_unary() !ast.Expr {
 // hypothetical - measured on an 8 MB stack, a chain of six thousand `!` takes
 // signal 11, and so does a chain of six thousand casts, because both come back
 // through parse_unary. The standard asks a compiler for sixty-three levels, so
-// refusing past two hundred costs a program nothing it is owed.
+// refusing at the default limit costs a program nothing it is owed.
 fn (mut p Parser) parse_prefix_operand(op tokenize.Token) !ast.Expr {
 	p.depth++
-	if p.depth > max_expression_depth {
+	if p.past_limit(p.depth) {
 		p.depth--
-		p.error_at(op, 'expression is nested more than ${max_expression_depth} levels deep')
+		p.error_at(op, 'expression is nested more than ${p.bracket_depth} levels deep')
 		return error('expression nested too deeply')
 	}
 	operand := p.parse_unary() or {
@@ -2169,8 +2195,8 @@ fn (mut p Parser) parse_nested(at tokenize.Token) !ast.Expr {
 	defer {
 		p.depth--
 	}
-	if p.depth > max_expression_depth {
-		p.error_at(at, 'expression is nested more than ${max_expression_depth} levels deep')
+	if p.past_limit(p.depth) {
+		p.error_at(at, 'expression is nested more than ${p.bracket_depth} levels deep')
 		return error('expression nested too deeply')
 	}
 	return p.parse_assignment_expression()
@@ -2856,8 +2882,8 @@ fn (mut p Parser) parse_generic_selection(at tokenize.Token) !ast.Expr {
 	defer {
 		p.depth--
 	}
-	if p.depth > max_expression_depth {
-		p.error_at(at, 'expression is nested more than ${max_expression_depth} levels deep')
+	if p.past_limit(p.depth) {
+		p.error_at(at, 'expression is nested more than ${p.bracket_depth} levels deep')
 		return error('expression nested too deeply')
 	}
 	controlling := p.parse_assignment_expression()!
@@ -3161,8 +3187,8 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 		}
 		p.next()
 		p.depth++
-		if p.depth > max_expression_depth {
-			p.error_at(t, 'expression is nested more than ${max_expression_depth} levels deep')
+		if p.past_limit(p.depth) {
+			p.error_at(t, 'expression is nested more than ${p.bracket_depth} levels deep')
 			p.depth--
 			return error('expression nested too deeply')
 		}
@@ -3201,8 +3227,8 @@ fn (mut p Parser) parse_primary() !ast.Expr {
 fn (mut p Parser) parse_statement_expression(open tokenize.Token) !ast.Expr {
 	p.next() // (
 	p.depth++
-	if p.depth > max_expression_depth {
-		p.error_at(open, 'expression is nested more than ${max_expression_depth} levels deep')
+	if p.past_limit(p.depth) {
+		p.error_at(open, 'expression is nested more than ${p.bracket_depth} levels deep')
 		p.depth--
 		return error('statement expression nested too deeply')
 	}
