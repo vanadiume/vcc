@@ -5,6 +5,8 @@ import tokenize
 // This file is the GNU attribute grammar. An attribute is written
 // `__attribute__((name))` or `__attribute__((name(argument)))`, and a
 // declaration may carry several of them, in one list or in several specifiers.
+// GNU C reads the single-underscore `__attribute` as the same keyword, which is
+// the spelling libgc's `gc.h` writes.
 //
 // Reading and keeping are different answers here, the same as everywhere else in
 // this file's neighbours. Three of the attributes this compiler reads say
@@ -61,6 +63,15 @@ fn merge_attributes(a AttributeSet, b AttributeSet) AttributeSet {
 	}
 }
 
+// is_attribute_spelling says whether a spelling names a GNU attribute specifier.
+// GNU C accepts `__attribute` as well as `__attribute__`, and gcc 16.2.1, clang
+// and tcc read the two as one keyword: the single-underscore form is what
+// libgc's `gc.h` writes at line 21. The spelling is recognized here so the two
+// places that ask the question answer it the same way.
+fn is_attribute_spelling(text string) bool {
+	return text == '__attribute__' || text == '__attribute'
+}
+
 // parse_attribute_specifiers reads a run of `__attribute__((...))` specifiers
 // and answers what they say about the declaration they sit on. It reads nothing
 // when the cursor is not at one, so a caller may ask at every place an attribute
@@ -79,7 +90,7 @@ fn (mut p Parser) parse_attribute_specifiers(report bool) AttributeSet {
 	mut set := AttributeSet{}
 	for {
 		t := p.peek()
-		if t.kind != .identifier || t.text != '__attribute__' {
+		if t.kind != .identifier || !is_attribute_spelling(t.text) {
 			return set
 		}
 		p.next()
