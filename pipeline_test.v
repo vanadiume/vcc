@@ -30,14 +30,15 @@ fn compile(args []string, source string) codegen.Result {
 	os.write_file(opts.inputs[0], source) or { panic(err) }
 	lexed := tokenize.lex(source)
 	assert lexed.diagnostics.len == 0
-	parsed := parser.parse(lexed.tokens)
+	parsed := parser.parse_with(lexed.tokens, backend.host(), opts.bracket_depth)
 	assert parsed.diagnostics.len == 0
 	optimized := optimizer.optimize(parsed.unit, opts.optimization)
 	return codegen.emit(optimized, codegen.Options{
-		target:       opts.target
-		entry:        'main'
-		libraries:    opts.libraries
-		library_dirs: opts.library_dirs
+		target:        opts.target
+		entry:         'main'
+		bracket_depth: opts.bracket_depth
+		libraries:     opts.libraries
+		library_dirs:  opts.library_dirs
 	})
 }
 
@@ -123,6 +124,31 @@ fn test_a_source_file_becomes_a_runnable_binary() {
 	binary := scratch('seven')
 	exit_status := compile_and_run([source, '-o', binary], 'int main() { return 7; }\n')
 	assert exit_status == 7
+	os.rm(source) or {}
+	os.rm(binary) or {}
+}
+
+// The nesting limit is one number for both stages. A body the reader accepts
+// with a raised -fbracket-depth has to be one the emitter walks and the program
+// runs; at the default the same file is a diagnostic at the statement that
+// crosses the limit, not a stack the compiler takes out. Before this, five
+// thousand nested `if (1) {` killed the compiler with a V stack overflow.
+fn test_a_raised_bracket_depth_compiles_a_deep_statement() {
+	source := scratch('bracket_depth.c')
+	binary := scratch('bracket_depth')
+	body := 'if (1) { '.repeat(400) + 'return 0;' + ' }'.repeat(400)
+	program := 'int main(void) { ${body} }\n'
+	exit_status := compile_and_run(['-fbracket-depth=1024', source, '-o', binary], program)
+	assert exit_status == 0
+	// At the default the same file is refused where it passes 256 levels.
+	default_read := parser.parse(tokenize.lex(program).tokens)
+	mut reported := false
+	for diagnostic in default_read.diagnostics {
+		if diagnostic.msg.contains('statement is nested more than 256 levels deep') {
+			reported = true
+		}
+	}
+	assert reported
 	os.rm(source) or {}
 	os.rm(binary) or {}
 }
