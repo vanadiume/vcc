@@ -358,6 +358,15 @@ pub mut:
 	// binding, which `__attribute__((weak))` asks for. The object's symbol
 	// table says WEAK rather than GLOBAL for a name in it.
 	weak map[string]bool
+	// hidden is every function and object this unit defines with
+	// `__attribute__((visibility("hidden")))`: the name is global, and nothing
+	// outside the image may bind to it. A shared object leaves such a name out
+	// of what it exports, so a name here is absent from its dynamic symbol
+	// table; a relocatable object marks the symbol hidden, which is what tells
+	// a linker not to export it either. A call to one inside the image is
+	// unchanged: the reference names the definition this unit wrote, so hiding
+	// a name never hides it from its own image.
+	hidden map[string]bool
 	// weak_imports is every name in `imports` the units named with a weak
 	// symbol binding and none of them defines, which is what a reference to
 	// `__gmon_start__` in the runtime's own startup files is. A weak import is

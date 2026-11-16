@@ -270,6 +270,32 @@ fn test_a_shared_object_is_dynamic_and_exports_what_it_defines() {
 	assert se64(bytes, int(relative.offset)) == u64(relative.addend)
 }
 
+// A name the program asked to hide with `visibility("hidden")` is one this image
+// defines and its own references reach, and not one a loader finds: it is absent
+// from the dynamic symbol table while the plain definition beside it is there.
+// The image still calls it, which is a reference the emitter settles inside the
+// image and none of this table's business.
+fn test_a_hidden_definition_is_not_exported_by_a_shared_object() {
+	target := se_target()
+	mut program := image.Program{}
+	program.text = []u8{len: 16, init: u8(0)}
+	program.defined['pub_fn'] = true
+	program.labels['pub_fn'] = 0
+	program.defined['hidden_fn'] = true
+	program.labels['hidden_fn'] = 4
+	program.hidden['hidden_fn'] = true
+	bytes := write(program, target, .shared) or {
+		panic('the shared object was not written: ${err.msg()}')
+	}
+	tables := se_tables(bytes, 0)
+	exported := se_symbol_of(bytes, tables, 'pub_fn')
+	assert exported.name == 'pub_fn'
+	assert bytes[int(exported.value)] == u8(0)
+	// The hidden name is nowhere in the table, so the reader finds no entry for
+	// it rather than an entry with the wrong binding.
+	assert se_symbol_of(bytes, tables, 'hidden_fn').name == ''
+}
+
 // A copy relocation asks a loader to copy a library's object into this image's
 // storage, which is a non-position-independent executable's shape and not a
 // shared object's. The refusal names the object.

@@ -50,6 +50,11 @@ pub mut:
 	// internal is the union of the names any unit gives internal linkage, which
 	// a file-scope `static` asks for (6.2.2p3).
 	internal map[string]bool
+	// hidden is the union of the names any unit asked to keep out of what the
+	// image exports, which `visibility("hidden")` asks for. A merged image is
+	// one image, so a name hidden in any unit of it is hidden from whatever
+	// loads the result: the merge is the union and not the last unit's answer.
+	hidden map[string]bool
 	// imports is the union of the units' imports in first-seen order, the order
 	// the -l names and the references were first written in. It keeps a bound
 	// name, because a call to one still reaches it through a slot.
@@ -101,11 +106,15 @@ pub fn collect(units []image.Program) !Names {
 		defined:        map[string]bool{}
 		weak:           map[string]bool{}
 		internal:       map[string]bool{}
+		hidden:         map[string]bool{}
 		object_imports: map[string]bool{}
 		weak_imports:   map[string]bool{}
 		tls_slots:      map[string]bool{}
 	}
 	for i, unit in units {
+		for name, _ in unit.hidden {
+			names.hidden[name] = true
+		}
 		for name, _ in unit.defined {
 			names.defined[name] = true
 			// A function with internal linkage belongs to its unit and to no

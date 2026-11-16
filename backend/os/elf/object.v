@@ -57,6 +57,12 @@ const symbol_global_object = u8(0x11) // binding global (1), type object (1)
 // what `__attribute__((weak))` on a definition asks for.
 const symbol_weak_object = u8(0x21) // binding weak (2), type object (1)
 
+// st_other carries the symbol's visibility in its low two bits. STV_HIDDEN is
+// what `__attribute__((visibility("hidden")))` asks for: the symbol is still
+// global, and a linker reading it does not export the name from the image it
+// builds. The default is zero, so a name without the attribute writes none.
+const symbol_hidden = u8(2)
+
 // shn_undef is the section a symbol has when this object does not define it: its
 // definition is somewhere the linker still has to look.
 const shn_undef = u16(0)
@@ -735,6 +741,15 @@ fn emit_object_symbols(mut output []u8, parts PartOffsets, program image.Program
 		object_binding := if program.weak[name] { symbol_weak_object } else { symbol_global_object }
 		put_defined_symbol(mut output, parts, program, name, symbol_index, name_offset,
 			function_binding, object_binding)
+	}
+	for name in global_names {
+		// The visibility is a separate byte from the binding and not a second
+		// binding: a hidden name is still global, and what it is not is a name
+		// another image may bind to. A linker that reads this object reads the
+		// byte and leaves the name out of what it exports.
+		if name in program.hidden {
+			output[parts.symtab + symbol_index[name] * elf_symbol_size + 5] = symbol_hidden
+		}
 	}
 	for name in program.imports {
 		at := parts.symtab + symbol_index[name] * elf_symbol_size

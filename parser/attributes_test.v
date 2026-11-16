@@ -119,14 +119,88 @@ fn test_an_unimplemented_attribute_is_refused_by_name_with_its_location() {
 	assert result.diagnostics[0].col == 16
 }
 
-// `section` names a part of the object this compiler does not place objects in,
-// and it is refused the same way rather than silently dropped.
+// `section` names a part of the object this compiler has no place for: the image
+// carries code, read-only data and writable data and no named section, and the
+// container that wraps an image writes no section header table. It is refused by
+// name, with its location and the name it asked for, rather than dropped.
 fn test_an_attribute_that_asks_for_a_section_is_refused_by_name() {
 	result := attributes_of('__attribute__((section("x"))) int sec = 1;')
 	assert result.diagnostics.len == 1
-	assert result.diagnostics[0].msg == "unsupported: the attribute 'section' is not implemented"
+	assert result.diagnostics[0].msg.contains("the attribute 'section'")
+	assert result.diagnostics[0].msg.contains("'x'")
 	assert result.diagnostics[0].line == 1
 	assert result.diagnostics[0].col == 16
+}
+
+// The position after the declarator is the one `int g __attribute__((section(".mysec")))
+// = 7;` writes, and the refusal belongs there too. Reading past the attribute in
+// that position is what dropped the section without a word: the object compiled
+// and the section was nowhere in it.
+fn test_a_section_attribute_after_the_declarator_is_refused_too() {
+	result := attributes_of('int g __attribute__((section(".mysec"))) = 7;')
+	assert result.diagnostics.len == 1
+	assert result.diagnostics[0].msg.contains("the attribute 'section'")
+	assert result.diagnostics[0].msg.contains('.mysec')
+	assert result.diagnostics[0].line == 1
+}
+
+// `visibility("hidden")` says the name is one this image defines and does not
+// offer: the declaration records it so the container can leave it out of what a
+// shared object exports, and it is read in front of the declaration and after the
+// declarator alike.
+fn test_a_hidden_visibility_in_front_of_a_definition_is_recorded() {
+	result := attributes_of('__attribute__((visibility("hidden"))) int hf(void) { return 5; }')
+	assert result.diagnostics.len == 0
+	assert result.unit.decls.len == 1
+	assert result.unit.decls[0].hidden
+	assert result.unit.decls[0].weak == false
+}
+
+// The same attribute written after the declarator says the same thing about the
+// same name.
+fn test_a_hidden_visibility_after_the_declarator_is_recorded() {
+	result := attributes_of('int hf(void) __attribute__((visibility("hidden"))) { return 5; }')
+	assert result.diagnostics.len == 0
+	assert result.unit.decls[0].hidden
+}
+
+// A declaration carrying it names a function this file may define later, which
+// is what a prototype is for: the attribute belongs to the name.
+fn test_a_hidden_visibility_on_a_prototype_is_recorded() {
+	result := attributes_of('__attribute__((visibility("hidden"))) int hf(void);')
+	assert result.diagnostics.len == 0
+	assert result.unit.decls[0].hidden
+	assert !result.unit.decls[0].defined
+}
+
+// An object definition carries it the same way, which is `int g
+// __attribute__((visibility("hidden"))) = 7;`.
+fn test_a_hidden_visibility_on_an_object_is_recorded() {
+	result := attributes_of('__attribute__((visibility("hidden"))) int g = 7;')
+	assert result.diagnostics.len == 0
+	assert result.unit.globals.len == 1
+	assert result.unit.globals[0].hidden
+}
+
+// `visibility("default")` is what a name with no attribute already is, so it is
+// accepted and records nothing. gcc 16.2.1 reads it as the same answer.
+fn test_a_default_visibility_is_accepted_and_changes_nothing() {
+	result := attributes_of('__attribute__((visibility("default"))) int g = 7;')
+	assert result.diagnostics.len == 0
+	assert !result.unit.globals[0].hidden
+}
+
+// The two middle answers are refused by name, because neither is a binding this
+// object can write: a `protected` name is exported and not preempted, and an
+// `internal` one is not even reachable through the table.
+fn test_the_visibilities_this_compiler_cannot_write_are_refused_by_name() {
+	protected_attr := attributes_of('__attribute__((visibility("protected"))) int g = 7;')
+	assert protected_attr.diagnostics.len == 1
+	assert protected_attr.diagnostics[0].msg.contains("the attribute 'visibility'")
+	assert protected_attr.diagnostics[0].msg.contains('protected')
+	internal_attr := attributes_of('__attribute__((visibility("internal"))) int g = 7;')
+	assert internal_attr.diagnostics.len == 1
+	assert internal_attr.diagnostics[0].msg.contains('internal')
 }
 
 // `aligned` with no argument asks for the strictest alignment the target has,

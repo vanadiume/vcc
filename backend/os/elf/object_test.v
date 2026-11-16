@@ -496,6 +496,26 @@ fn test_a_weak_definition_is_weak_in_the_symbol_table() {
 	assert u64_at(bytes, callee + 8) == 5
 }
 
+// `visibility("hidden")` is not a binding, so the entry keeps the global one and
+// carries the answer in the byte beside it: st_other's low two bits say a linker
+// reading this object must not export the name from the image it builds. The
+// default is zero, which is what a definition that asked for nothing writes.
+fn test_a_hidden_definition_carries_the_hidden_visibility() {
+	mut program := one_call()
+	program.hidden['callee'] = true
+	bytes := object(program, x86_64()) or {
+		panic('the object was not written: ${err.msg()}')
+	}
+	callee := symbol_entry_at(bytes, first_global_symbol)
+	assert bytes[callee + 4] == symbol_global_function
+	assert bytes[callee + 5] == symbol_hidden
+	assert u16_at(bytes, callee + 6) == section_text
+	plain := object(one_call(), x86_64()) or {
+		panic('the object was not written: ${err.msg()}')
+	}
+	assert plain[symbol_entry_at(plain, first_global_symbol) + 5] == u8(0)
+}
+
 // A declaration the object has no definition for is an import, and one marked
 // weak says that in the table: the binding is WEAK where a plain import says
 // GLOBAL. It is the object's half of what makes an undefined weak symbol stand

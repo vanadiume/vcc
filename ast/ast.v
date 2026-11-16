@@ -76,6 +76,11 @@ pub:
 	// rather than one that collides with a second definition, and the object
 	// says so in the symbol table.
 	weak bool
+	// hidden says the declaration asked for `visibility("hidden")`: the name
+	// is defined here and called here, and nothing outside this image may bind
+	// to it. A shared object leaves such a name out of what it exports, and a
+	// relocatable object marks the symbol hidden.
+	hidden bool
 	// static_ says the declaration gave the name internal linkage, which a
 	// file-scope `static` does (6.2.2p3). A definition of such a name is written
 	// into the object as a local symbol, so two translation units may each
@@ -178,6 +183,11 @@ pub:
 	// weak says the declaration asked for the weak symbol binding, with
 	// `__attribute__((weak))`. The object says so in its symbol table.
 	weak bool
+	// hidden says the declaration asked for `visibility("hidden")`, which a
+	// shared object answers by leaving the name out of what it exports. The
+	// symbol is still global: a `static` asks for internal linkage, which is a
+	// different answer to a different question.
+	hidden bool
 	// static_ says the declaration gave the object internal linkage, which a
 	// file-scope `static` does (6.2.2p3). Its definition is written into the
 	// object as a local symbol, so two translation units may each define one of
