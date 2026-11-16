@@ -372,6 +372,28 @@ fn test_a_macro_name_with_no_parenthesis_is_not_a_call() {
 	assert processed('#define F(x) x\nF\n') == ['F']
 }
 
+fn test_an_object_like_alias_of_a_function_like_macro_is_a_call() {
+	// C99 6.10.3p4 reads a replacement together with the text after the use,
+	// so the name G stands for is read with the ( that follows it.
+	assert processed('#define F(x) ((x) + 1)\n#define G F\nG(1)\n') == ['(', '(', '1', ')', '+',
+		'1', ')']
+	assert processed('#define N 7\n#define F(x) x + 1\n#define G F\nG(N)\n') == ['7', '+', '1']
+	assert processed('#define F(x) x + 1\n#define A B\n#define B C\n#define C F\nA(2)\n') == [
+		'2',
+		'+',
+		'1',
+	]
+}
+
+fn test_an_object_like_alias_with_no_call_is_a_name() {
+	// The other side of the same rule: with no ( after the use, the name the
+	// alias produces is not a call and stays where it is. A self-referential
+	// alias leaves its own name standing the same way.
+	assert processed('#define F(x) x\n#define G F\nG\n') == ['F']
+	assert processed('#define F F\nF\n') == ['F']
+	assert processed('#define G G(x)\nG\n') == ['G', '(', 'x', ')']
+}
+
 fn test_a_macro_that_calls_itself_stops() {
 	assert processed('#define F(x) F(x)\nF(1)\n') == ['F', '(', '1', ')']
 	assert processed('#define F(x) G(x)\n#define G(x) F(x)\nF(1)\n') == ['F', '(', '1', ')']

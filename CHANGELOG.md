@@ -1080,3 +1080,6 @@ it owns the change, which is the same vocabulary the commits use.
 * codegen: a block-scope static shadows an outer local of its name (ba3fa66)
 * regression: a block-scope static shadows a parameter (e5dc46e)
 * parser: name the address constant a static object cannot hold (266d70d)
+* preprocess: rescan an object-like replacement with the text after it (9bdde26)
+* regression: an object-like alias of a function-like macro (f4f2e56)
+* docs: the changelog records the alias rescan (bf3c0a2)
