@@ -219,6 +219,23 @@ fn (p Processor) file_name(tok tokenize.Token) string {
 	return ''
 }
 
+// in_system_file says whether the file being read came from the standard
+// directories. The dialect check stays out of those, because nobody in the build
+// wrote them and nobody in the build can fix them; a construct the preprocessor
+// meets in one takes the same exemption.
+fn (p Processor) in_system_file() bool {
+	if p.frames.len == 0 {
+		return false
+	}
+	path := p.frames.last().path
+	for file in p.files {
+		if file.path == path {
+			return file.system
+		}
+	}
+	return false
+}
+
 // Conditional is one #if being read. A branch that is not taken still has to be
 // followed, because an #else flips it and the #endif closes it, and the nested
 // ones need a stack of their own state to stay straight.
@@ -320,13 +337,23 @@ fn (mut p Processor) apply_command_line_defines() {
 				}
 			}
 		}
+		replacement := tokenize.lex_fragment(body, standard.has_digraphs(p.opts.dialect))
+		at := tokenize.Token{
+			kind: .identifier
+			text: name
+			line: 1
+			col:  1
+			file: '<command line>'
+		}
+		writes_va_opt := p.check_replacement(at, replacement, variadic)
 		p.macros[name] = Macro{
 			name:          name
 			function_like: function_like
 			params:        params
 			variadic:      variadic
 			variadic_name: variadic_name
-			body:          tokenize.lex_fragment(body, standard.has_digraphs(p.opts.dialect))
+			has_va_opt:    writes_va_opt
+			body:          replacement
 			file:          '<command line>'
 			line:          1
 			col:           1
@@ -1002,13 +1029,16 @@ fn (mut p Processor) define(tok tokenize.Token, args string) {
 		}
 		body_text = text[close + 1..]
 	}
+	body := tokenize.lex_fragment(body_text, standard.has_digraphs(p.opts.dialect))
+	has_va_opt := p.check_replacement(tok, body, variadic)
 	p.macros[name] = Macro{
 		name:          name
 		function_like: function_like
 		params:        params
 		variadic:      variadic
 		variadic_name: variadic_name
-		body:          tokenize.lex_fragment(body_text, standard.has_digraphs(p.opts.dialect))
+		has_va_opt:    has_va_opt
+		body:          body
 		file:          p.frames.last().path
 		line:          tok.line
 		col:           tok.col

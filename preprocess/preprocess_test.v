@@ -28,6 +28,19 @@ fn diagnostics_of(source string) []string {
 	return messages
 }
 
+// diagnostics_in is `diagnostics_of` under a named dialect, for the constructs
+// whose answer is the mode's and not the reader's.
+fn diagnostics_in(source string, mode standard.Mode) []string {
+	result := preprocess(source, 'test.c', Options{
+		dialect: mode
+	})
+	mut messages := []string{}
+	for diagnostic in result.diagnostics {
+		messages << diagnostic.msg
+	}
+	return messages
+}
+
 // processed_in is `processed` under a named dialect, which is the mode main.v
 // hands the preprocessor. It is what a test about the phases needs, because the
 // mode decides a phase's answer and nothing else about the read.
@@ -468,6 +481,101 @@ fn test_a_comma_that_is_only_there_when_there_are_arguments() {
 		'1',
 		')',
 	]
+}
+
+fn test_va_opt_is_its_content_only_when_there_are_variadic_arguments() {
+	// C23 6.10.4.1: __VA_OPT__ is its content when __VA_ARGS__ is non-empty and
+	// nothing otherwise. Measured on gcc 16.2.1, `V("a")` and `V("a",)` both
+	// expand the content to nothing, because the variadic argument is absent or
+	// empty, while `V("a", 1)` expands it.
+	assert processed('#define V(fmt, ...) send(fmt __VA_OPT__(,) __VA_ARGS__)\nV("a")\n') == [
+		'send',
+		'(',
+		'"a"',
+		')',
+	]
+	assert processed('#define V(fmt, ...) send(fmt __VA_OPT__(,) __VA_ARGS__)\nV("a", 1)\n') == [
+		'send',
+		'(',
+		'"a"',
+		',',
+		'1',
+		')',
+	]
+	assert processed('#define V(fmt, ...) send(fmt __VA_OPT__(,) __VA_ARGS__)\nV("a",)\n') == [
+		'send',
+		'(',
+		'"a"',
+		')',
+	]
+}
+
+fn test_the_va_opt_content_is_read_as_part_of_the_replacement() {
+	// The content is spliced in before the body is walked, so a macro it names
+	// is expanded like any other token of the replacement, and two operators in
+	// one body answer the same question separately.
+	assert processed('#define COMMA ,\n#define V(fmt, ...) send(fmt __VA_OPT__(COMMA) __VA_ARGS__)\nV("a", 1)\n') == [
+		'send',
+		'(',
+		'"a"',
+		',',
+		'1',
+		')',
+	]
+	assert processed('#define COMMA ,\n#define V(fmt, ...) send(fmt __VA_OPT__(COMMA) __VA_ARGS__)\nV("a")\n') == [
+		'send',
+		'(',
+		'"a"',
+		')',
+	]
+	assert processed('#define W(fmt, ...) send(__VA_OPT__(prefix) fmt __VA_OPT__(,) __VA_ARGS__)\nW("a")\n') == [
+		'send',
+		'(',
+		'"a"',
+		')',
+	]
+	assert processed('#define W(fmt, ...) send(__VA_OPT__(prefix) fmt __VA_OPT__(,) __VA_ARGS__)\nW("a", 1)\n') == [
+		'send',
+		'(',
+		'prefix',
+		'"a"',
+		',',
+		'1',
+		')',
+	]
+}
+
+fn test_va_opt_is_a_c23_construct_the_gnu_dialects_take() {
+	// Measured on gcc 16.2.1 first: a strict c99 run takes the operator and
+	// reports "'__VA_OPT__' is not available until C23" only under -pedantic,
+	// while c23 and gnu99 say nothing even under -pedantic-errors. The row is a
+	// pedantic message for the strict mode and a GNU extension, so the reader
+	// reports the message for c99 and none for c23, gnu99 or the default.
+	source := '#define V(fmt, ...) send(fmt __VA_OPT__(,) __VA_ARGS__)\n'
+	c99 := diagnostics_in(source, .c99)
+	assert c99.len == 1
+	assert c99[0] == 'ISO C99 forbids the __VA_OPT__ operator'
+	assert diagnostics_in(source, .c23).len == 0
+	assert diagnostics_in(source, .gnu99).len == 0
+	assert diagnostics_in(source, .none).len == 0
+}
+
+fn test_va_opt_outside_a_variadic_macro_is_refused_by_name() {
+	messages := diagnostics_of('#define O(x) x __VA_OPT__(y)\n')
+	assert messages.len == 1
+	assert messages[0] == "'__VA_OPT__' may only appear in the replacement list of a variadic macro"
+}
+
+fn test_a_va_opt_inside_a_va_opt_is_refused_by_name() {
+	messages := diagnostics_of('#define N(...) a __VA_OPT__(b __VA_OPT__(c))\n')
+	assert messages.len == 1
+	assert messages[0] == "'__VA_OPT__' may not appear inside a '__VA_OPT__'"
+}
+
+fn test_va_opt_without_its_content_is_refused_by_name() {
+	messages := diagnostics_of('#define V(...) a __VA_OPT__\n')
+	assert messages.len == 1
+	assert messages[0] == "'__VA_OPT__' is written as __VA_OPT__( content )"
 }
 
 fn test_an_if_can_call_a_macro_that_takes_arguments() {
