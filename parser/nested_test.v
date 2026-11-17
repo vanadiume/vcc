@@ -83,8 +83,12 @@ fn test_a_nested_function_of_another_function_does_not_share_the_symbol() {
 	assert nested_decls(result).len == 2
 	// Both are written `f`, and each is emitted under the symbol of the function
 	// that writes it, so the two do not collide.
-	first := result.unit.decls[0].body[0].nested_fn() or { ast.FnDecl{} }
-	second := result.unit.decls[1].body[0].nested_fn() or { ast.FnDecl{} }
+	first := result.unit.decls[0].body[0].nested_fn() or {
+		panic('the first declaration carries no nested function')
+	}
+	second := result.unit.decls[1].body[0].nested_fn() or {
+		panic('the second declaration carries no nested function')
+	}
 	assert first.name == 'main.f'
 	assert second.name == 'other.f'
 }
