@@ -1109,3 +1109,5 @@ it owns the change, which is the same vocabulary the commits use.
 * docs: the release install is the front door (a0eb21a)
 * docs: the changelog records the install path (a5512bd)
 * printer: a nested function statement reads its declaration through the option (855e96f)
+* docs: the changelog records the nested function read (3460e47)
+* parser: the nested function test reads its declarations through the option (00c5b36)
