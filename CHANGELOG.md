@@ -1108,3 +1108,4 @@ it owns the change, which is the same vocabulary the commits use.
 * tools: uninstall and update-install close the install path (c5e528a)
 * docs: the release install is the front door (a0eb21a)
 * docs: the changelog records the install path (a5512bd)
+* printer: a nested function statement reads its declaration through the option (855e96f)
