@@ -50,6 +50,12 @@ mut:
 	seconds f64
 }
 
+// Runtime is the archive a run built, or why it could not.
+struct Runtime {
+	archive string
+	error   string
+}
+
 enum Verdict {
 	passed
 	failed
@@ -155,62 +161,119 @@ fn step_build(mut ctx Context, args []string) Outcome {
 // define for itself: a link that pulls the member is the proof the archive is
 // found and read, and its exit status is the proof of what it computed.
 //
-// The sibling tree is where libvcc lives in a vanadium checkout. A tree without
-// it skips the step rather than failing: this compiler builds and runs without a
-// runtime archive beside it, and the missing tree is a fact about the checkout.
+// The tree comes from the libvcc repository at the commit the release workflow
+// pins, cloned into the user's cache, so a checkout with no sibling tree builds
+// the same runtime a release carries. LIBVCC_COMMIT names another commit for a
+// probe.
 fn step_libvcc(mut ctx Context) Outcome {
-	libvcc := os.join_path(os.dir(ctx.root), 'libvcc')
-	runner := os.join_path(libvcc, 'build.vsh')
-	if !os.exists(runner) {
-		return Outcome{
-			verdict: .skipped
-			name:    'libvcc'
-			detail:  'no ${runner}, so there is no runtime tree to build'
+	runtime := provision_runtime(mut ctx, '')
+	if runtime.error != '' {
+		return failed('libvcc', runtime.error)
+	}
+	problem := probe_archive(mut ctx, ctx.compiler, runtime.archive)
+	if problem != '' {
+		return failed('libvcc', problem)
+	}
+	return Outcome{ verdict: .passed, name: 'libvcc', detail: runtime.archive }
+}
+
+// provision_runtime builds libvcc with the compiler this run built and answers
+// the archive it wrote. A named tree is used as it is; with no name the
+// repository is cloned at the commit release.yml pins, into the cache directory
+// tools/runtime.vsh uses for the same commit, so the two scripts share one clone
+// and neither trusts a tree that has moved.
+fn provision_runtime(mut ctx Context, tree string) Runtime {
+	mut where := tree
+	if where == '' {
+		where = libvcc_tree(ctx.root) or {
+			return Runtime{ error: 'no libvcc: ${err}' }
 		}
+	} else if !os.exists(os.join_path(where, 'build.vsh')) {
+		return Runtime{ error: 'no ${os.join_path(where, 'build.vsh')}' }
 	}
 	compiler := ensure_compiler(mut ctx)
 	if compiler == '' {
-		return failed('libvcc', 'the compiler did not build')
+		return Runtime{ error: 'the compiler did not build' }
 	}
 	// libvcc's own build looks for vcc through $VCC before PATH, which is how it
 	// is handed the binary this step just built rather than whichever one a
 	// shell would find.
 	os.setenv('VCC', compiler, true)
-	if run_in(libvcc, 'v run build.vsh build --cc vcc') != 0 {
-		return failed('libvcc', 'libvcc did not build with the compiler')
+	if run_in(where, 'v run build.vsh build --cc vcc') != 0 {
+		return Runtime{ error: 'libvcc did not build with the compiler' }
 	}
-	archive := os.join_path(libvcc, 'target', 'vcc', 'libvcc.a')
+	archive := os.join_path(where, 'target', 'vcc', 'libvcc.a')
 	if !os.exists(archive) {
-		return failed('libvcc', 'the build wrote no ${archive}')
+		return Runtime{ error: 'the build at ${where} wrote no ${archive}' }
 	}
+	return Runtime{ archive: archive }
+}
+
+// libvcc_tree is the clone a run builds: the repository and commit release.yml
+// names, in the cache directory keyed by the commit. Reading the pin out of the
+// release workflow keeps the build step and the tarball on one commit.
+fn libvcc_tree(root string) !string {
+	workflows := os.join_path(root, '.github', 'workflows')
+	repo := read_named(workflows, 'release.yml', 'LIBVCC_REPO:')
+	commit := os.getenv_opt('LIBVCC_COMMIT') or {
+		read_named(workflows, 'release.yml', 'LIBVCC_COMMIT:')
+	}
+	if repo == '' || commit == '' {
+		return error('release.yml names no LIBVCC_REPO or LIBVCC_COMMIT')
+	}
+	cache := os.getenv_opt('XDG_CACHE_HOME') or { os.join_path(os.home_dir(), '.cache') }
+	tree := os.join_path(cache, 'vcc', 'libvcc-${commit}')
+	if os.exists(os.join_path(tree, 'build.vsh')) {
+		head := capture('git -C ${os.quoted_path(tree)} rev-parse HEAD').trim_space()
+		if head == commit {
+			return tree
+		}
+	}
+	os.rmdir_all(tree) or {}
+	os.mkdir_all(os.dir(tree)) or { return error('cannot make ${os.dir(tree)}: ${err}') }
+	clone := os.exec(['git', 'clone', '--quiet', repo, tree])
+	if clone.exit_code != 0 {
+		return error('could not clone ${repo} (git exited ${clone.exit_code})')
+	}
+	pin := os.exec(['git', '-C', tree, 'checkout', '--quiet', commit])
+	if pin.exit_code != 0 {
+		return error('there is no commit ${commit} in ${repo}')
+	}
+	return tree
+}
+
+// probe_archive links a program against one archive and runs it. The program
+// calls __divdi3, which only a runtime answers, and exits with the quotient of
+// 84 by 2.
+fn probe_archive(mut ctx Context, compiler string, archive string) string {
 	os.mkdir_all(ctx.scratch) or {}
 	program := os.join_path(ctx.scratch, 'runtime_helper.c')
 	binary := os.join_path(ctx.scratch, 'runtime_helper')
 	body := 'long long __divdi3(long long a, long long b);\nint main(void) { return (int)__divdi3(84, 2); }\n'
-	os.write_file(program, body) or { return failed('libvcc', 'could not write a program: ${err}') }
-	if run_in(ctx.root, '${os.quoted_path(compiler)} ${os.quoted_path(program)} -L ${os.quoted_path(os.dir(archive))} -o ${os.quoted_path(binary)}') != 0 {
-		return failed('libvcc', 'the compiler could not link a program against ${archive}')
+	os.write_file(program, body) or { return 'could not write a program: ${err}' }
+	if run_in('', '${os.quoted_path(compiler)} ${os.quoted_path(program)} -L ${os.quoted_path(os.dir(archive))} -o ${os.quoted_path(binary)}') != 0 {
+		return 'the compiler could not link a program against ${archive}'
 	}
 	status := run_in('', os.quoted_path(binary))
 	if status != 42 {
-		return failed('libvcc', 'the program answered ${status}, and the helper it called divides 84 by 2')
+		return 'the program answered ${status}, and the helper it called divides 84 by 2'
 	}
-	return Outcome{ verdict: .passed, name: 'libvcc', detail: archive }
+	return ''
 }
 
 // step_install puts the compiler and the runtime archive where a user's link
 // finds them: PREFIX/bin/vcc and PREFIX/lib/libvcc.a, /usr/local by default. The
 // archive is not optional, because a program that reaches one of its helpers is
-// refused by that helper's name when the archive is missing, so a tree with no
-// libvcc beside it fails here rather than installing half a compiler.
+// refused by that helper's name when the archive is missing, so a run that
+// cannot provide libvcc fails here rather than installing half a compiler.
 //
-// Both files come from this run: the compiler is built from this tree, and
-// libvcc is built with that compiler, which is the pair the install is for.
+// The compiler is built from this tree and libvcc comes from its repository at
+// the commit release.yml pins, unless --libvcc names a tree to build instead.
 // What is left behind is then proved as a pair: a program that calls a helper
 // only the archive defines is compiled by the installed binary and run.
 fn step_install(mut ctx Context, args []string) Outcome {
 	mut prefix := '/usr/local'
-	mut tree := os.join_path(os.dir(ctx.root), 'libvcc')
+	mut tree := ''
 	mut i := 0
 	for i < args.len {
 		arg := args[i]
@@ -235,22 +298,12 @@ fn step_install(mut ctx Context, args []string) Outcome {
 		}
 		i++
 	}
-	runner := os.join_path(tree, 'build.vsh')
-	if !os.exists(runner) {
-		return failed('install', 'no ${runner}: a program this compiler writes reaches libvcc.a for the helpers the machine has no instruction for, so the install needs the tree that builds it; name it with --libvcc DIR')
+	runtime := provision_runtime(mut ctx, tree)
+	if runtime.error != '' {
+		return failed('install', runtime.error)
 	}
-	compiler := ensure_compiler(mut ctx)
-	if compiler == '' {
-		return failed('install', 'the compiler did not build')
-	}
-	os.setenv('VCC', compiler, true)
-	if run_in(tree, 'v run build.vsh build --cc vcc') != 0 {
-		return failed('install', 'libvcc did not build with the compiler')
-	}
-	archive := os.join_path(tree, 'target', 'vcc', 'libvcc.a')
-	if !os.exists(archive) {
-		return failed('install', 'the build wrote no ${archive}')
-	}
+	compiler := ctx.compiler
+	archive := runtime.archive
 	// The shared runtime is part of the pair. A program linked with
 	// -shared-libvcc records the .so's own name, so the install carries the
 	// chain of names the library was written with: the versioned file and the
