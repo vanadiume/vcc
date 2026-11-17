@@ -8,8 +8,9 @@
 //   v run tools/gate.vsh --only format,pure         # named steps only
 //   v run tools/gate.vsh --only tests --shard 1/3   # one third of the suite
 //
-// Seven steps: formatting, the pure-V rule, the build, the production build, the
-// test suite, the links between the documents at the root, and the workflows.
+// Eight steps: formatting, the pure-V rule, the build, the production build, the
+// runners under tools/, the test suite, the links between the documents at the
+// root, and the workflows.
 // Each one reports on its own line, and the exit status is zero only when all of
 // them pass.
 //
@@ -65,6 +66,11 @@ const steps = [
 		name:  'prod build'
 		key:   'prod'
 		check: check_prod
+	},
+	Step{
+		name:  'scripts'
+		key:   'scripts'
+		check: check_scripts
 	},
 	Step{
 		name:  'tests'
@@ -344,6 +350,30 @@ fn check_prod(root string, _ Selection) []string {
 		return ['the compiler did not build with -prod: ${result.output.trim_space()}']
 	}
 	return []
+}
+
+// check_scripts compiles every runner under tools/ without running it. `v run`
+// compiles the gate itself, and the corpora runners are compiled by the jobs that
+// call them, but a script only the release calls is compiled nowhere until a
+// release reaches it: build.vsh held a `detail` that was added to without `mut`,
+// which every local check passed over and the release met at
+// `v run tools/build.vsh install`, twenty minutes in. -check type-checks rather
+// than builds, so eight scripts cost about five seconds and leave nothing behind.
+fn check_scripts(root string, _ Selection) []string {
+	mut files := os.walk_ext(os.join_path(root, 'tools'), '.vsh')
+	if files.len == 0 {
+		return ['no script under tools/, so this run compiled nothing']
+	}
+	files.sort()
+	mut problems := []string{}
+	for file in files {
+		relative := file.replace('${root}/', '')
+		result := run(root, 'v -check ${os.quoted_path(relative)}')
+		if result.exit_code != 0 {
+			problems << '${relative} does not compile: ${result.output.trim_space()}'
+		}
+	}
+	return problems
 }
 
 // shard_paths deals the tree's test files into `of` groups and hands back the

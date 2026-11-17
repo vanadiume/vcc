@@ -55,7 +55,7 @@ v run tools/gate.vsh --only format,pure         # named steps only
 v run tools/gate.vsh --only tests --shard 1/3   # a third of the suite
 ```
 
-Seven steps, each reporting on its own line, exit status zero only when all pass:
+Eight steps, each reporting on its own line, exit status zero only when all pass:
 
 - **formatting**: `v fmt -verify .`
 - **pure V**: no C sources in the tree apart from the test directories
@@ -64,19 +64,21 @@ Seven steps, each reporting on its own line, exit status zero only when all pass
 - **build**: `v -gc none -o <temp> .`
 - **prod build**: `v -prod -gc none -o <temp> .`, the build the image makes, where
   V's warnings are errors
+- **scripts**: `v -check` on every runner under `tools/`, so a script only the
+  release calls is compiled before a release reaches it
 - **tests**: `v -nocache test .`
 - **documents**: every relative link between the markdown files resolves
 - **workflows**: the files under `.github/workflows` pin the same V commit,
   and every action is pinned to a version rather than a branch that moves
 
-`--only` names the steps to take and `--without` the steps to leave out, each by
-a key (`format`, `pure`, `build`, `prod`, `tests`, `docs`, `workflows`), and a
-name neither flag knows is refused; `--shard K/N` runs the Kth of N groups of the
-test files, dealt in a snake from the tree's own walk so every file is in exactly
-one group. `ci.yml` uses them to split the gate across runners, and the gate job
-names what it leaves out so a step added later runs there without an edit. A run
-that took some of the steps says so on its last line rather than reporting the
-whole gate.
+`--only` names the steps to take and `--without` the steps to leave out, each
+by a key (`format`, `pure`, `build`, `prod`, `scripts`, `tests`, `docs`,
+`workflows`), and a name neither flag knows is refused; `--shard K/N` runs the
+Kth of N groups of the test files, dealt in a snake from the tree's own walk so
+every file is in exactly one group. `ci.yml` uses them to split the gate across
+runners, and the gate job names what it leaves out so a step added later runs
+there without an edit. A run that took some of the steps says so on its last
+line rather than reporting the whole gate.
 
 The pure-V step is the machine-checked half of the first constraint. It cannot
 prove the compiler is written in V, only that it has not started importing C.

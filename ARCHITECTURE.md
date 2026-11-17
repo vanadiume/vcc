@@ -199,10 +199,11 @@ answers; and `verbose_test.v`. `v test .` runs the suite, and `tools/tests.vsh`
 counts it for the badge, so the number is written by the runner.
 
 `tools/gate.vsh` is the same set of checks a pull request passes, and CI runs it.
-It reports seven steps: formatting (`v fmt -verify .`), the pure-V rule (C only in
+It reports eight steps: formatting (`v fmt -verify .`), the pure-V rule (C only in
 the test directories, no `#include`, `#flag` or `C.` interop in the compiler), a
-build, a production build (`v -prod`, where V's warnings are errors), the test
-suite, the links between root markdown files, and the workflows.
+build, a production build (`v -prod`, where V's warnings are errors), `v -check`
+on every runner under `tools/`, the test suite, the links between root markdown
+files, and the workflows.
 
 C lives in the three test directories and nowhere else, and all of it is C the
 compiler is handed rather than C the compiler is built from. `compliance/` holds

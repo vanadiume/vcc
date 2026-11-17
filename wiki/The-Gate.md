@@ -6,16 +6,16 @@ request does not meet an opinion the author could not have run first.
 
 ## v run tools/gate.vsh
 
-`v run tools/gate.vsh` runs seven steps, each reporting on its own line, and
-exits zero only when all seven pass.
+`v run tools/gate.vsh` runs eight steps, each reporting on its own line, and
+exits zero only when all eight pass.
 
 Two flags take part of it, for the runners that share the work: `--only` names
 the steps to take and `--without` names the steps to leave out, each by the key
-the step reports under (`format`, `pure`, `build`, `prod`, `tests`, `docs`,
-`workflows`), and `--shard K/N` runs the Kth of N groups of the test files. A run
-that took some of the steps says so on its last line instead of reporting the
-whole gate, and a step name it does not know is refused rather than ignored,
-since a typo would otherwise run nothing and exit zero.
+the step reports under (`format`, `pure`, `build`, `prod`, `scripts`, `tests`,
+`docs`, `workflows`), and `--shard K/N` runs the Kth of N groups of the test
+files. A run that took some of the steps says so on its last line instead of
+reporting the whole gate, and a step name it does not know is refused rather
+than ignored, since a typo would otherwise run nothing and exit zero.
 
 ```sh
 v run tools/gate.vsh                            # every step, the whole suite
@@ -46,6 +46,14 @@ warnings into errors, so a construct the plain build reports and carries on
 past stops this one. That is how the tree stopped building at all once upstream
 marked `os.system` deprecated, which the compiler used for the external link
 and for `-run`.
+
+The scripts step runs `v -check` on every `.vsh` under `tools/`. The gate itself
+is compiled by `v run`, and the corpora runners by the jobs that call them, but a
+script only the release calls is compiled nowhere until a release reaches it:
+`build.vsh` held a variable added to without `mut`, every local check passed over
+it, and the release met it at `v run tools/build.vsh install`. Checking rather
+than building costs about five seconds for eight scripts and leaves nothing in
+the tree.
 
 The tests step runs `v -nocache test .`. The cache makes the suite depend on
 which C compiler V uses for each file: V's implicit tcc cannot compile its own
