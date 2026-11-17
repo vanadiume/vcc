@@ -1102,3 +1102,8 @@ it owns the change, which is the same vocabulary the commits use.
 * tools: the gate compiles the runners under tools/ (53780c4)
 * github: the release starts where ci finishes (960abd4)
 * docs: the release path and the gate's scripts step (2c2896e)
+* docs: the changelog records the release path (922f2f1)
+* tools: the libvcc step pulls the runtime from GitHub (a777aa7)
+* tools: install --release takes the latest published tarball (2a83fa9)
+* tools: uninstall and update-install close the install path (c5e528a)
+* docs: the release install is the front door (a0eb21a)
