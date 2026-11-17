@@ -269,8 +269,11 @@ regressions badges, each counting with its own runner. Nothing runs against V
 master: master refuses this tree, which is why the pin is a commit and not a
 branch.
 
-`.github/workflows/release.yml` runs on a push to `main` and reads the version
-`v.mod` names. When no release carries that version, it runs the gate, checks
-the binary against `v.mod`, builds libvcc with that compiler, and attaches
+`.github/workflows/release.yml` starts when `ci` finishes green on a push to
+`main`, and reads the version `v.mod` names at the commit that run was given.
+When no release carries that version, it checks the binary against `v.mod`,
+builds libvcc with that compiler, and attaches
 `vcc-<version>-x86_64-linux.tar.gz` with its checksum. The tarball holds the
-install tree, `usr/bin/vcc` and `usr/lib/libvcc.a`.
+install tree, `usr/bin/vcc` and the runtime beside it. It does not run the
+gate a second time: a red `ci` on that commit means no release, and a manual
+dispatch, which has no `ci` run behind it, runs the gate itself.

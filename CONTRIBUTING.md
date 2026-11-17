@@ -161,20 +161,28 @@ open the pull request, so the review goes where the risk is.
 
 ## Releasing
 
-A release happens on a push to `main`, and `v.mod` decides when. Every push runs
-`.github/workflows/release.yml`, which reads the version in `v.mod`; if no
-release carries that version yet, it builds V at the pinned commit, puts the tree
-through the same gate a pull request goes through, checks that the binary reports
-the version `v.mod` names, compiles a program and runs it, builds libvcc with
-that compiler, and attaches `vcc-<version>-x86_64-linux.tar.gz` and its checksum
-to a GitHub release. The tarball is the install tree, `usr/bin/vcc` and
-`usr/lib/libvcc.a`, and a program that reaches a runtime helper needs both.
+A release happens on a push to `main`, and `v.mod` decides when. Every push
+runs `ci`, and `.github/workflows/release.yml` starts when that run finishes
+green: it reads the version `v.mod` names at the commit ci was given, and if
+no release carries that version yet, it builds V at the pinned commit, checks
+that the binary reports the version `v.mod` names, compiles a program and runs
+it, builds libvcc with that compiler, and attaches
+`vcc-<version>-x86_64-linux.tar.gz` and its checksum to a GitHub release. The
+tarball is the install tree, `usr/bin/vcc` and `usr/lib/libvcc.a`, and a
+program that reaches a runtime helper needs both.
+
+The gate is not run a second time. A release that failed its own copy of the
+suite would be a release of a commit whose `ci` failed, and that run is now a
+precondition: nothing is packaged unless `ci` passed on the same commit. A
+manual dispatch is the one path with no `ci` run behind it, so it runs the gate
+itself before it packages anything.
 
 So the way to cut a release is to bump `version` in `v.mod` and merge. The tag,
 the release title and the binary's `--version` all come from that one line, and
-a push whose version already has a release does nothing. The workflow stops on a
-failed gate, which is the intent: a compiler that reports a version it is not is
-a compiler V will key its cached build artifacts against incorrectly.
+a push whose version already has a release does nothing. No release starts from a
+commit whose `ci` failed, which is the intent: a compiler that reports a version
+it is not is a compiler V will key its cached build artifacts against
+incorrectly.
 
 ## The wiki
 
