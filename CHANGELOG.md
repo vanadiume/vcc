@@ -1107,3 +1107,4 @@ it owns the change, which is the same vocabulary the commits use.
 * tools: install --release takes the latest published tarball (2a83fa9)
 * tools: uninstall and update-install close the install path (c5e528a)
 * docs: the release install is the front door (a0eb21a)
+* docs: the changelog records the install path (a5512bd)
