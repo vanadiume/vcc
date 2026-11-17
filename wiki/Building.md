@@ -44,11 +44,16 @@ is wanted.
 
 An installed compiler comes with its runtime: `/usr/local/bin/vcc` with
 `/usr/local/lib/libvcc.a` and the `libvcc.so` chain by default, or the same under
-`--prefix`. `v run tools/build.vsh install` builds the compiler and libvcc with
-it, copies the runtime, and then compiles and runs a program that calls a helper
-from the archive and a second one that links with `-shared-libvcc` against the
-library, so the install is proved where it lands. A release ships the same tree
-as `vcc-<version>-x86_64-linux.tar.gz`, laid out under `usr/bin` and `usr/lib`.
+`--prefix`. `v run tools/build.vsh install --release` takes the latest GitHub
+release, verifies the digest published beside it, and places the pair; `install`
+without `--release` builds the compiler from this checkout and pulls libvcc from
+its repository at the pinned commit. Either path then compiles and runs a
+program that calls a helper from the archive and a second one that links with
+`-shared-libvcc` against the library, so the install is proved where it lands.
+`v run tools/build.vsh update-install` puts the latest release over an installed
+prefix, and `v run tools/build.vsh uninstall` removes the files the install
+placed. A release ships the same tree as `vcc-<version>-x86_64-linux.tar.gz`,
+laid out under `usr/bin` and `usr/lib`.
 
 ## A first program
 
@@ -103,9 +108,10 @@ to be there when the program starts. It is refused with `-static`, with
 on the libgcc side and needs `--link-libgcc` beside it, so the runtime it makes
 shared is the one the command line named.
 
-`v run tools/build.vsh libvcc` builds the archive from its sibling tree with
-this compiler and links a program against it. `v run tools/build.vsh install`
-puts the runtime and the compiler under a prefix.
+`v run tools/build.vsh libvcc` builds the archive from the libvcc repository
+with this compiler and links a program against it. `install --release` puts the
+latest release under a prefix, and plain `install` builds the runtime and the
+compiler first.
 
 `-O` today turns on one optimizer pass: a call whose value the compiler knows
 (`abs`, `labs`, `llabs`) with a literal argument folds to that value. `-O0`

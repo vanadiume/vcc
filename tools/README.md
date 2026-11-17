@@ -15,9 +15,13 @@ runners are still the way to pass a flag they alone take.
 ```sh
 v run tools/build.vsh                 # the compiler, libvcc, the gate, then both corpora
 v run tools/build.vsh build [-o PATH] # the compiler only; -o is where it lands
-v run tools/build.vsh libvcc          # ../libvcc with this compiler, then a program against it
-v run tools/build.vsh install [--prefix DIR] [--libvcc DIR]
-                                      # both into DIR/bin and DIR/lib, then a program with them
+v run tools/build.vsh libvcc          # libvcc from GitHub with this compiler, then a program against it
+v run tools/build.vsh install [--release] [--prefix DIR]
+                                      # the pair into DIR/bin and DIR/lib, proved there
+v run tools/build.vsh update-install [--prefix DIR]
+                                      # the latest release over the installed one
+v run tools/build.vsh uninstall [--prefix DIR]
+                                      # remove the compiler and runtime from DIR
 v run tools/build.vsh test            # `v -nocache test .`
 v run tools/build.vsh gate            # gate.vsh
 v run tools/build.vsh compliance      # compliance.vsh
@@ -26,22 +30,28 @@ v run tools/build.vsh corpora         # compliance and regress together
 v run tools/build.vsh bench [args]    # bench.vsh, args passed through
 v run tools/build.vsh docker          # build the image, then run the binary in it
 v run tools/build.vsh version         # the binary, v.mod, and the pinned V commit
-v run tools/build.vsh all             # every step but install, then a summary
+v run tools/build.vsh all             # every step but the install steps
 v run tools/build.vsh --list          # the steps, one line each
 ```
 
 Every step calls the runner that owns the check, so no count or floor is kept
 twice. The compiler is built under the temp directory for the steps that only
 need one to run cases, and no step leaves a `vcc` in the tree unless it was
-asked for by name (`build -o PATH`). `install` is the one step that writes
-outside the tree, so it is not in the default run and not in `all`: it copies
-the compiler and the archive into `/usr/local` by default, or under `--prefix`,
-and proves the pair by linking a program against a helper only the archive
-defines. `all` runs every step even when one fails and exits non-zero if any
-failed, so one run reports every failure. A step whose tool is missing is
-skipped and named in the summary; that fails the run only when the step was
-asked for by name. `version` prints what the binary reports, what `v.mod` names,
-and the V commit `ci.yml` pins, because those three drift.
+asked for by name (`build -o PATH`). `install`, `uninstall` and
+`update-install` write outside the tree, so they are not in the default run and
+not in `all`. `install --release` takes the latest GitHub release, checks the
+digest published beside it, and places the pair under `/usr/local` by default
+or `--prefix`; `install` without `--release` builds the compiler from this tree
+and pulls libvcc from its repository, and `--libvcc DIR` names a tree to stage
+from instead. `update-install` puts the latest release over an existing prefix
+and does nothing when it is already there, and `uninstall` removes the files
+the install placed. Every install path proves the pair by linking a program
+against a helper only the archive defines. `all` runs every step even when one
+fails and exits non-zero if any failed, so one run reports every failure. A
+step whose tool is missing is skipped and named in the summary; that fails the
+run only when the step was asked for by name. `version` prints what the binary
+reports, what `v.mod` names, and the V commit `ci.yml` pins, because those three
+drift.
 
 ## gate.vsh
 

@@ -60,6 +60,18 @@ emitter would receive, and stops without writing anything.
 
 ## Install
 
+The build script installs the latest release and checks it against the digest
+the release publishes before it copies anything:
+
+```sh
+git clone https://github.com/vanadiume/vcc
+cd vcc
+v run tools/build.vsh install --release              # /usr/local
+v run tools/build.vsh install --release --prefix /usr
+v run tools/build.vsh update-install                 # the latest release over the installed one
+v run tools/build.vsh uninstall                      # remove what the install placed
+```
+
 A release carries one tarball, `vcc-<version>-x86_64-linux.tar.gz`, holding an
 install tree:
 
@@ -71,22 +83,20 @@ usr/lib/libvcc.so.0 -> libvcc.so.0.1
 usr/lib/libvcc.so -> libvcc.so.0
 ```
 
-Untar it at the root, or build both files from this tree and let the build
-script place them:
-
-```sh
-sudo tar --extract --gzip --file vcc-<version>-x86_64-linux.tar.gz --directory /
-v run tools/build.vsh install                 # the compiler and both runtimes under /usr/local
-v run tools/build.vsh install --prefix /usr   # the same under /usr
-```
+`install --release` downloads that tarball and its `.sha256`, refuses a digest
+that does not match, and places the tree under the prefix. `install` without
+`--release` builds the compiler from this checkout and pulls libvcc from its
+repository at the commit the release workflow pins, which is the path for a
+change under test. A machine without V can unpack the tarball at the root and
+gets the same tree.
 
 The install is the compiler and its runtime, which is an archive and a shared
 library with the soname `libvcc.so.0`. vcc writes the machine code itself but
 links a program against the runtime for the helpers the machine has no
 instruction for, looking for it in the system library directories and then
 beside itself. A compiler installed without one still builds programs that call
-no helper, and refuses one that calls a helper by the name of the helper. The
-install step finishes by compiling and running a program that calls one from the
+no helper, and refuses one that calls a helper by the name of the helper. Both
+install paths finish by compiling and running a program that calls one from the
 archive, and a second that links with `-shared-libvcc` and calls one from the
 library, so an install that cannot find its own runtime fails there.
 

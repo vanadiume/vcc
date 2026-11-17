@@ -232,9 +232,13 @@ of the three failed, rather than reporting every complex case as a link error.
 ```sh
 v run tools/build.vsh                 # the compiler, libvcc, the gate, then both corpora
 v run tools/build.vsh build [-o PATH] # the compiler only; -o is where it lands
-v run tools/build.vsh libvcc          # ../libvcc with this compiler, then a program against it
-v run tools/build.vsh install [--prefix DIR] [--libvcc DIR]
-                                      # both into DIR/bin and DIR/lib, then a program with them
+v run tools/build.vsh libvcc          # libvcc from GitHub with this compiler, then a program against it
+v run tools/build.vsh install [--release] [--prefix DIR]
+                                      # the pair into DIR/bin and DIR/lib, proved there
+v run tools/build.vsh update-install [--prefix DIR]
+                                      # the latest release over the installed one
+v run tools/build.vsh uninstall [--prefix DIR]
+                                      # remove the compiler and runtime from DIR
 v run tools/build.vsh test            # `v test .`
 v run tools/build.vsh gate            # gate.vsh
 v run tools/build.vsh compliance      # compliance.vsh
@@ -243,7 +247,7 @@ v run tools/build.vsh corpora         # compliance and regress together
 v run tools/build.vsh bench [args]    # bench.vsh, args passed through
 v run tools/build.vsh docker          # build the image, then run the binary in it
 v run tools/build.vsh version         # the binary, v.mod, and the pinned V commit
-v run tools/build.vsh all             # every step but install, then a summary
+v run tools/build.vsh all             # every step but the install steps
 v run tools/build.vsh --list          # the steps, one line each
 ```
 
