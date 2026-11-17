@@ -142,7 +142,7 @@ fn step_build(mut ctx Context, args []string) Outcome {
 		return failed('build', 'the compiler did not build')
 	}
 	ctx.compiler = path
-	detail := if rest.len > 0 { path } else { 'scratch binary' }
+	mut detail := if rest.len > 0 { path } else { 'scratch binary' }
 	if production != '' {
 		detail += ', production'
 	}
