@@ -1,25 +1,40 @@
 name: release
 
-# A release is automatic, and v.mod decides when. Every push to main reads the
-# version v.mod names; if no release carries that version yet, the compiler and
-# its runtime are built, put through the same gate a pull request goes through,
-# run once, staged as /usr/bin/vcc with /usr/lib/libvcc.a and the libvcc.so
-# chain beside it, and attached as one tarball. A push whose v.mod version already has a release does nothing,
-# so the way to cut a release is to bump the version in v.mod and merge. v.mod is
-# the single source: the tag, the release title and the binary's `--version` all
-# come from it, and a compiler that reports the wrong version is one V will key
-# its cached builds against incorrectly (see Compatibility in README.md).
+# A release is automatic, and v.mod decides when. A push to main runs ci on the
+# commit it landed, and this workflow starts where ci finishes: when that run
+# completes green, it reads the version v.mod names at that commit, and if no
+# release carries that version yet, the compiler and its runtime are built, put
+# through the checks a tarball can fail, staged as /usr/bin/vcc with
+# /usr/lib/libvcc.a and the libvcc.so chain beside it, and attached as one
+# tarball. A push whose v.mod version already has a release does nothing, so the
+# way to cut a release is to bump the version in v.mod and merge. v.mod is the
+# single source: the tag, the release title and the binary's `--version` all come
+# from it, and a compiler that reports the wrong version is one V will key its
+# cached builds against incorrectly (see Compatibility in README.md).
+#
+# The gate is not run again here. It used to be: this job ran
+# `v run tools/gate.vsh` on a runner of its own, which is the suite ci had just
+# sharded across three, and it was twelve of the twenty minutes the job took.
+# Starting from ci's result is a precondition and not a copy, and a stronger one,
+# because this workflow cannot begin unless that run finished green. It also
+# checks out the commit ci was given rather than the head of main, because ci's
+# own badge steps push to main while the run is still going.
+#
+# A manual dispatch is the one path with no ci run behind it, so it runs the gate
+# itself before it packages anything.
 
 on:
-  push:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: write
 
-# One release run at a time: two pushes close together must not both find the
-# version unreleased and race to publish it.
+# One release run at a time: two ci runs finishing close together must not both
+# find the version unreleased and race to publish it.
 concurrency:
   group: release
   cancel-in-progress: false
@@ -43,12 +58,24 @@ jobs:
   version:
     name: version
     runs-on: ubuntu-latest
+    # Only a push to main that ci passed can be released. A pull request's run is
+    # a run of code nobody merged, and a red or cancelled run is not a tree to
+    # ship; `event == 'push'` keeps a fork's pull request branch named main from
+    # matching the workflow name above.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'push' && github.event.workflow_run.conclusion == 'success')
     outputs:
       version: ${{ steps.read.outputs.version }}
       tag: ${{ steps.read.outputs.tag }}
       published: ${{ steps.check.outputs.published }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          # The commit ci was given, which is not necessarily the head of main:
+          # the gate job's badge steps push to main before its run ends. A
+          # dispatch has no run behind it and takes the branch it was started on.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: read the version v.mod names
         id: read
@@ -80,19 +107,70 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      # The toolchain, from the cache the run this one follows already filled:
+      # ci's gate job builds the pin and saves it before its own gate step, and
+      # this job starts after that run ended, so the usual path is a restore and
+      # no build at all. A dispatch has nobody to take it from and builds it,
+      # which is the seven minutes that path still pays.
+      - name: restore the pinned V
+        id: toolchain
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.V_DIR }}
+          key: v-${{ env.V_COMMIT }}-${{ env.VC_COMMIT }}
 
       - name: build V at the pinned commit
+        id: build
+        if: steps.toolchain.outputs.cache-hit != 'true'
         run: |
           git clone --quiet https://github.com/vlang/v "$V_DIR"
           git -C "$V_DIR" checkout --quiet "$V_COMMIT"
+          # The bootstrap snapshot, cloned through a mirror whose master is the
+          # pinned commit. make's own update step pulls from that mirror, so the
+          # snapshot stays where it is; cloning vlang/vc directly would leave the
+          # pull pointing at the rolling HEAD, which is what refuses the pinned
+          # source and takes every job down with it.
           git clone --quiet https://github.com/vlang/vc "$(dirname "$V_DIR")/vc-pinned"
           git -C "$(dirname "$V_DIR")/vc-pinned" checkout --quiet -B master "$VC_COMMIT"
           git clone --quiet "$(dirname "$V_DIR")/vc-pinned" "$V_DIR/vc"
           make -C "$V_DIR"
-          echo "$V_DIR" >> "$GITHUB_PATH"
-          "$V_DIR/v" version
 
+      # Only a run that built the pin saves it. Losing the key to a ci run that
+      # started beside this one costs nothing, since the restore above is what
+      # every later run reads, so the failure is not worth a red release.
+      - name: save the pinned V
+        if: steps.toolchain.outputs.cache-hit != 'true' && steps.build.outcome == 'success'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.V_DIR }}
+          key: v-${{ env.V_COMMIT }}-${{ env.VC_COMMIT }}
+
+      # The version string carries the commit `v` was built from, so this is where
+      # a restored toolchain is held to the pin rather than assumed to be it.
+      - name: put V on PATH
+        run: |
+          echo "$V_DIR" >> "$GITHUB_PATH"
+          # A `case` rather than `| grep -q`, because grep leaves as soon as it
+          # matches and the runner's bash has pipefail on, which would read a
+          # SIGPIPE from the producer as a wrong toolchain.
+          version="$("$V_DIR/v" version)"
+          echo "$version"
+          case "$version" in
+            *"${V_COMMIT:0:7}"*) ;;
+            *)
+              echo "the V at $V_DIR is not the pinned commit ${V_COMMIT:0:7}"
+              exit 1
+              ;;
+          esac
+
+      # No ci run stands behind a dispatch, so that path runs the gate itself.
+      # Every step below this one checks the artifact rather than the tree.
       - name: gate
+        if: github.event_name == 'workflow_dispatch'
         run: v run tools/gate.vsh
 
       - name: the binary agrees with v.mod
@@ -193,8 +271,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           stem="vcc-${{ needs.version.outputs.version }}-x86_64-linux"
+          # The tag points at the commit ci passed, not at whatever main holds
+          # now: the badge steps push while a run is going, so the head of main
+          # can be a commit no job has tested yet.
           gh release create "${{ needs.version.outputs.tag }}" \
             "$RUNNER_TEMP/${stem}.tar.gz" "$RUNNER_TEMP/${stem}.tar.gz.sha256" \
             --title "${{ needs.version.outputs.tag }}" \
-            --target "${GITHUB_SHA}" \
+            --target "${{ github.event.workflow_run.head_sha || github.sha }}" \
             --generate-notes
