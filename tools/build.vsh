@@ -14,6 +14,7 @@
 // the default run or of `all`: it copies the compiler and the runtime archive
 // into a prefix and proves they work as a pair.
 
+import json2
 import os
 import time
 
@@ -26,6 +27,10 @@ const default_steps = ['build', 'libvcc', 'gate', 'compliance', 'regress']
 // allocated before the next one runs, so there is nothing left for a collector
 // to find, and the binary carries none.
 const gc_flag = '-gc none'
+
+// The release an install takes with --release: the tarball GitHub calls the
+// latest, and the checksum beside it.
+const release_api = 'https://api.github.com/repos/vanadiume/vcc/releases/latest'
 
 // What `all` runs, each step once; `corpora` is those two runners together.
 const every_step = ['build', 'gate', 'test', 'compliance', 'regress', 'bench', 'libvcc', 'docker',
@@ -54,6 +59,40 @@ mut:
 struct Runtime {
 	archive string
 	error   string
+}
+
+// The release GitHub answers with, narrowed to the two fields the install reads.
+struct GithubAsset {
+	name                 string
+	browser_download_url string
+}
+
+struct GithubRelease {
+	tag_name string
+	assets   []GithubAsset
+}
+
+struct ReleaseInfo {
+	version      string
+	url          string
+	checksum_url string
+}
+
+// InstallOptions is what the install steps take; a step that does not take one
+// of the flags refuses it by name.
+struct InstallOptions {
+mut:
+	prefix  string
+	tree    string
+	release bool
+}
+
+// InstallFiles is one compiler and its runtime, before the copy: where the
+// binary, the archive, and the libvcc.so chain come from.
+struct InstallFiles {
+	binary  string
+	archive string
+	lib_dir string
 }
 
 enum Verdict {
@@ -170,7 +209,7 @@ fn step_libvcc(mut ctx Context) Outcome {
 	if runtime.error != '' {
 		return failed('libvcc', runtime.error)
 	}
-	problem := probe_archive(mut ctx, ctx.compiler, runtime.archive)
+	problem := probe_archive(mut ctx, 'the compiler', ctx.compiler, runtime.archive)
 	if problem != '' {
 		return failed('libvcc', problem)
 	}
@@ -245,14 +284,14 @@ fn libvcc_tree(root string) !string {
 // probe_archive links a program against one archive and runs it. The program
 // calls __divdi3, which only a runtime answers, and exits with the quotient of
 // 84 by 2.
-fn probe_archive(mut ctx Context, compiler string, archive string) string {
+fn probe_archive(mut ctx Context, label string, compiler string, archive string) string {
 	os.mkdir_all(ctx.scratch) or {}
 	program := os.join_path(ctx.scratch, 'runtime_helper.c')
 	binary := os.join_path(ctx.scratch, 'runtime_helper')
 	body := 'long long __divdi3(long long a, long long b);\nint main(void) { return (int)__divdi3(84, 2); }\n'
 	os.write_file(program, body) or { return 'could not write a program: ${err}' }
 	if run_in('', '${os.quoted_path(compiler)} ${os.quoted_path(program)} -L ${os.quoted_path(os.dir(archive))} -o ${os.quoted_path(binary)}') != 0 {
-		return 'the compiler could not link a program against ${archive}'
+		return '${label} could not link a program against ${archive}'
 	}
 	status := run_in('', os.quoted_path(binary))
 	if status != 42 {
@@ -261,57 +300,239 @@ fn probe_archive(mut ctx Context, compiler string, archive string) string {
 	return ''
 }
 
-// step_install puts the compiler and the runtime archive where a user's link
-// finds them: PREFIX/bin/vcc and PREFIX/lib/libvcc.a, /usr/local by default. The
-// archive is not optional, because a program that reaches one of its helpers is
-// refused by that helper's name when the archive is missing, so a run that
-// cannot provide libvcc fails here rather than installing half a compiler.
-//
-// The compiler is built from this tree and libvcc comes from its repository at
-// the commit release.yml pins, unless --libvcc names a tree to build instead.
-// What is left behind is then proved as a pair: a program that calls a helper
-// only the archive defines is compiled by the installed binary and run.
-fn step_install(mut ctx Context, args []string) Outcome {
-	mut prefix := '/usr/local'
-	mut tree := ''
+// parse_install_args reads the flags the install steps take. A step refuses a
+// flag it does not take by name rather than ignoring it, because an install that
+// quietly ignores --libvcc is not the install the command line described.
+fn parse_install_args(name string, args []string, allow_tree bool, allow_release bool) ?InstallOptions {
+	mut opts := InstallOptions{ prefix: '/usr/local' }
 	mut i := 0
 	for i < args.len {
 		arg := args[i]
 		if arg == '--prefix' || arg == '--libvcc' {
 			if i + 1 >= args.len {
-				return failed('install', '${arg} needs a directory')
+				eprintln('${name}: ${arg} needs a directory')
+				return none
 			}
 			if arg == '--prefix' {
-				prefix = args[i + 1]
+				opts.prefix = args[i + 1]
 			} else {
-				tree = args[i + 1]
+				if !allow_tree {
+					eprintln('${name}: --libvcc is not taken here')
+					return none
+				}
+				opts.tree = args[i + 1]
 			}
 			i += 2
 			continue
 		}
 		if arg.starts_with('--prefix=') {
-			prefix = arg.all_after('--prefix=')
+			opts.prefix = arg.all_after('--prefix=')
 		} else if arg.starts_with('--libvcc=') {
-			tree = arg.all_after('--libvcc=')
+			if !allow_tree {
+				eprintln('${name}: --libvcc is not taken here')
+				return none
+			}
+			opts.tree = arg.all_after('--libvcc=')
+		} else if arg == '--release' {
+			if !allow_release {
+				eprintln('${name}: --release is not taken here')
+				return none
+			}
+			opts.release = true
 		} else {
-			return failed('install', 'install takes --prefix DIR and --libvcc DIR, and not ${arg}')
+			eprintln('${name}: unknown argument ${arg}')
+			return none
 		}
 		i++
 	}
-	runtime := provision_runtime(mut ctx, tree)
+	if opts.prefix == '' {
+		eprintln('${name}: --prefix needs a directory')
+		return none
+	}
+	return opts
+}
+
+// step_install puts the compiler and the runtime archive where a user's link
+// finds them: PREFIX/bin/vcc and PREFIX/lib/libvcc.a, /usr/local by default.
+// With --release the pair comes out of the latest published tarball, verified
+// against the checksum beside it; without it the compiler is built from this
+// tree and libvcc from its repository at the pinned commit. Either way the
+// files are proved where they land.
+fn step_install(mut ctx Context, args []string) Outcome {
+	opts := parse_install_args('install', args, true, true) or {
+		return failed('install', 'the arguments were refused above')
+	}
+	if opts.release {
+		if opts.tree != '' {
+			return failed('install', '--release and --libvcc name two different runtimes')
+		}
+		info := latest_release() or {
+			return failed('install', 'the latest release could not be read')
+		}
+		return install_release(mut ctx, opts.prefix, info)
+	}
+	runtime := provision_runtime(mut ctx, opts.tree)
 	if runtime.error != '' {
 		return failed('install', runtime.error)
 	}
-	compiler := ctx.compiler
-	archive := runtime.archive
-	// The shared runtime is part of the pair. A program linked with
-	// -shared-libvcc records the .so's own name, so the install carries the
-	// chain of names the library was written with: the versioned file and the
-	// two symlinks beside it. A tree that built only the archive fails here
-	// rather than installing half a runtime.
-	shared := os.join_path(os.dir(archive), 'libvcc.so')
+	files := InstallFiles{
+		binary:  ctx.compiler
+		archive: runtime.archive
+		lib_dir: os.dir(runtime.archive)
+	}
+	mut outcome := place_pair(mut ctx, 'install', opts.prefix, files)
+	if outcome.verdict != .passed {
+		return outcome
+	}
+	outcome.detail = 'built from this tree: ${outcome.detail}'
+	return outcome
+}
+
+// install_release downloads the latest tarball and its checksum, refuses a
+// tarball the checksum does not match, and places the tree it carries. Nothing
+// is compiled on this path: the release is the artifact, and the proofs run
+// after it lands.
+fn install_release(mut ctx Context, prefix string, info ReleaseInfo) Outcome {
+	os.mkdir_all(ctx.scratch) or { return failed('install', 'cannot make ${ctx.scratch}: ${err}') }
+	tarball := os.join_path(ctx.scratch, 'vcc-${info.version}-x86_64-linux.tar.gz')
+	checksum := '${tarball}.sha256'
+	if !download(info.url, tarball) {
+		return failed('install', 'could not download ${info.url}')
+	}
+	if !download(info.checksum_url, checksum) {
+		return failed('install', 'could not download ${info.checksum_url}')
+	}
+	expected := checksum_of(checksum)
+	actual := checksum_of_file(tarball)
+	if expected == '' || actual == '' || expected != actual {
+		return failed('install', '${info.url} does not match the checksum release ${info.version} publishes')
+	}
+	stage := os.join_path(ctx.scratch, 'release')
+	os.mkdir_all(stage) or { return failed('install', 'cannot make ${stage}: ${err}') }
+	if os.system_args(['tar', '--extract', '--gzip', '--file', tarball, '--directory', stage]) != 0 {
+		return failed('install', 'could not extract ${tarball}')
+	}
+	files := InstallFiles{
+		binary:  os.join_path(stage, 'usr', 'bin', 'vcc')
+		archive: os.join_path(stage, 'usr', 'lib', 'libvcc.a')
+		lib_dir: os.join_path(stage, 'usr', 'lib')
+	}
+	if !os.exists(files.binary) {
+		return failed('install', 'release ${info.version} carries no usr/bin/vcc')
+	}
+	if !os.exists(files.archive) {
+		return failed('install', 'release ${info.version} carries no usr/lib/libvcc.a')
+	}
+	if !os.exists(os.join_path(files.lib_dir, 'libvcc.so')) {
+		return failed('install', 'release ${info.version} carries no usr/lib/libvcc.so')
+	}
+	mut outcome := place_pair(mut ctx, 'install', prefix, files)
+	if outcome.verdict != .passed {
+		return outcome
+	}
+	outcome.detail = 'release ${info.version}: ${outcome.detail}'
+	return outcome
+}
+
+// latest_release reads the release GitHub calls the latest and the two assets
+// it carries. The tarball and its checksum are taken together: an install that
+// cannot verify what it downloaded is not one this script writes.
+fn latest_release() ?ReleaseInfo {
+	text := fetch(release_api)
+	if text.trim_space() == '' {
+		eprintln('install: could not read ${release_api}')
+		return none
+	}
+	release := json2.decode[GithubRelease](text) or {
+		eprintln('install: ${release_api} answered something that is not a release')
+		return none
+	}
+	tag := release.tag_name
+	if tag == '' {
+		eprintln('install: the latest release carries no tag')
+		return none
+	}
+	version := if tag.starts_with('v') { tag[1..] } else { tag }
+	stem := 'vcc-${version}-x86_64-linux.tar.gz'
+	mut url := ''
+	mut checksum := ''
+	for asset in release.assets {
+		if asset.name == stem {
+			url = asset.browser_download_url
+		} else if asset.name == '${stem}.sha256' {
+			checksum = asset.browser_download_url
+		}
+	}
+	if url == '' {
+		eprintln('install: release ${tag} carries no ${stem}')
+		return none
+	}
+	if checksum == '' {
+		eprintln('install: release ${tag} carries no ${stem}.sha256, so nothing is installed unverified')
+		return none
+	}
+	return ReleaseInfo{ version: version, url: url, checksum_url: checksum }
+}
+
+// fetch reads a URL as text, through curl or wget. Both are what a Linux box
+// with a network has; a machine with neither is told so rather than left with an
+// empty string that reads as an empty release.
+fn fetch(url string) string {
+	if (os.find_abs_path_of_executable('curl') or { '' }) != '' {
+		return capture('curl -fsSL ${os.quoted_path(url)}')
+	}
+	if (os.find_abs_path_of_executable('wget') or { '' }) != '' {
+		return capture('wget -q -O - ${os.quoted_path(url)}')
+	}
+	eprintln('install: neither curl nor wget is on PATH')
+	return ''
+}
+
+fn download(url string, path string) bool {
+	if (os.find_abs_path_of_executable('curl') or { '' }) != '' {
+		return os.system_args(['curl', '-fsSL', '--retry', '2', '-o', path, url]) == 0
+	}
+	if (os.find_abs_path_of_executable('wget') or { '' }) != '' {
+		return os.system_args(['wget', '-q', '-O', path, url]) == 0
+	}
+	eprintln('install: neither curl nor wget is on PATH')
+	return false
+}
+
+// checksum_of is the digest at the front of a published .sha256 line.
+fn checksum_of(path string) string {
+	fields := (os.read_file(path) or { '' }).trim_space().fields()
+	if fields.len == 0 {
+		return ''
+	}
+	return fields[0]
+}
+
+// checksum_of_file asks sha256sum for the digest of the file just downloaded.
+fn checksum_of_file(path string) string {
+	fields := capture('sha256sum ${os.quoted_path(path)}').trim_space().fields()
+	if fields.len == 0 {
+		return ''
+	}
+	return fields[0]
+}
+
+// place_pair writes one compiler and its runtime under a prefix and proves them
+// there. The shared runtime is part of the pair: a program linked with
+// -shared-libvcc records the .so's own name, so the install carries the chain of
+// names the library was written with, the versioned file and the symlinks beside
+// it. A source that holds the compiler and not the runtime fails here rather
+// than installing half a compiler.
+fn place_pair(mut ctx Context, name string, prefix string, files InstallFiles) Outcome {
+	if !os.exists(files.binary) {
+		return failed(name, 'there is no ${files.binary}')
+	}
+	if !os.exists(files.archive) {
+		return failed(name, 'there is no ${files.archive}')
+	}
+	shared := os.join_path(files.lib_dir, 'libvcc.so')
 	if !os.exists(shared) {
-		return failed('install', 'the build wrote no ${shared}, and -shared-libvcc links against it')
+		return failed(name, 'there is no ${shared}, and -shared-libvcc links against it')
 	}
 	binary := os.join_path(prefix, 'bin', 'vcc')
 	library := os.join_path(prefix, 'lib', 'libvcc.a')
@@ -320,40 +541,54 @@ fn step_install(mut ctx Context, args []string) Outcome {
 	// The copies go through it instead, and the line says which they were.
 	escalate := !writable(prefix)
 	if escalate {
-		println('install: ${prefix} is not writable, so the copies run under sudo')
+		println('${name}: ${prefix} is not writable, so the copies run under sudo')
 	}
-	if !place(compiler, binary, '755', escalate) {
-		return failed('install', 'could not write ${binary}')
+	if !place(files.binary, binary, '755', escalate) {
+		return failed(name, 'could not write ${binary}')
 	}
-	if !place(archive, library, '644', escalate) {
-		return failed('install', 'could not write ${library}')
+	if !place(files.archive, library, '644', escalate) {
+		return failed(name, 'could not write ${library}')
 	}
 	shared_dir := os.join_path(prefix, 'lib')
 	real := os.real_path(shared)
 	if !place(real, os.join_path(shared_dir, os.base(real)), '755', escalate) {
-		return failed('install', 'could not write ${os.join_path(shared_dir, os.base(real))}')
+		return failed(name, 'could not write ${os.join_path(shared_dir, os.base(real))}')
 	}
-	// Every other name in the lane directory is a symlink the library was
+	// Every other name in the library directory is a symlink the library was
 	// written with, and the loader asks for the soname rather than for the
 	// versioned file. Reproduce them rather than hardcoding the chain, because
 	// the version in the names comes from libvcc's own VERSION file.
-	for entry in os.ls(os.dir(archive)) or { []string{} } {
+	for entry in os.ls(files.lib_dir) or { []string{} } {
 		if entry == os.base(real) || !entry.starts_with('libvcc.so') {
 			continue
 		}
-		rel := os.readlink(os.join_path(os.dir(archive), entry)) or { '' }
+		rel := os.readlink(os.join_path(files.lib_dir, entry)) or { '' }
 		if rel == '' {
 			continue
 		}
 		if !make_link(rel, os.join_path(shared_dir, entry), escalate) {
-			return failed('install', 'could not link ${os.join_path(shared_dir, entry)} to ${rel}')
+			return failed(name, 'could not link ${os.join_path(shared_dir, entry)} to ${rel}')
 		}
 	}
-	os.mkdir_all(ctx.scratch) or {}
-	program := os.join_path(ctx.scratch, 'runtime_helper.c')
-	exe := os.join_path(ctx.scratch, 'runtime_helper')
-	body := 'long long __divdi3(long long a, long long b);\nint main(void) { return (int)__divdi3(84, 2); }\n'
-	os.write_file(program, body) or { return failed('install', 'could not write a program: ${err}') }
+	problem := prove_install(mut ctx, prefix, binary, library, shared_dir)
+	if problem != '' {
+		return failed(name, problem)
+	}
+	return Outcome{
+		verdict: .passed
+		name:    name
+		detail:  '${binary}, ${library}, ${os.join_path(shared_dir, os.base(real))}'
+	}
+}
+
+// prove_install runs the pair from where it landed: one program against the
+// archive, one against the shared library, both compiled by the installed
+// binary. An install that cannot find its own runtime fails here.
+fn prove_install(mut ctx Context, prefix string, binary string, library string, shared_dir string) string {
+	problem := probe_archive(mut ctx, 'the installed compiler', binary, library)
+	if problem != '' {
+		return problem
+	}
 	// The compiler searches the system's library directories and then its own,
 	// so a prefix that is one of those needs no flag; a staging prefix (the
 	// release tarball's tree) is in no search list and is given one. Either way
@@ -363,35 +598,21 @@ fn step_install(mut ctx Context, args []string) Outcome {
 	} else {
 		'-L ${os.quoted_path(os.join_path(prefix, 'lib'))}'
 	}
-	if run_in('', '${os.quoted_path(binary)} ${os.quoted_path(program)} ${search} -o ${os.quoted_path(exe)}') != 0 {
-		return failed('install', 'the installed compiler could not link a program against ${library}')
+	// And the shared runtime: a program that calls a complex helper, linked with
+	// -shared-libvcc so the image names the .so, run with the installed directory
+	// on the loader's path. It exits with the real part plus 5, which is 0.
+	program := os.join_path(ctx.scratch, 'shared_helper.c')
+	exe := os.join_path(ctx.scratch, 'shared_helper')
+	body := 'double _Complex __muldc3(double, double, double, double);\nint main(void) { double _Complex z = __muldc3(1.0, 2.0, 3.0, 4.0); return (int)__real__ z + 5; }\n'
+	os.write_file(program, body) or { return 'could not write a program: ${err}' }
+	if run_in('', '${os.quoted_path(binary)} ${os.quoted_path(program)} ${search} -shared-libvcc -o ${os.quoted_path(exe)}') != 0 {
+		return 'the installed compiler could not link a program with -shared-libvcc'
 	}
-	status := run_in('', os.quoted_path(exe))
-	if status != 42 {
-		return failed('install', 'the program answered ${status}, and the helper it called divides 84 by 2')
+	status := run_in('', 'LD_LIBRARY_PATH=${os.quoted_path(shared_dir)} ${os.quoted_path(exe)}')
+	if status != 0 {
+		return 'the -shared-libvcc program answered ${status}, and the helper it called multiplies (1+2i)(3+4i), whose real part is -5'
 	}
-	// And the shared runtime, which is the other half of what the tarball
-	// carries: a program that calls a complex helper, linked with -shared-libvcc
-	// so the image names the .so, run with the installed directory on the
-	// loader's path. It exits with the real part plus 5, which is 0.
-	shared_program := os.join_path(ctx.scratch, 'shared_helper.c')
-	shared_exe := os.join_path(ctx.scratch, 'shared_helper')
-	shared_body := 'double _Complex __muldc3(double, double, double, double);\nint main(void) { double _Complex z = __muldc3(1.0, 2.0, 3.0, 4.0); return (int)__real__ z + 5; }\n'
-	os.write_file(shared_program, shared_body) or {
-		return failed('install', 'could not write a program: ${err}')
-	}
-	if run_in('', '${os.quoted_path(binary)} ${os.quoted_path(shared_program)} ${search} -shared-libvcc -o ${os.quoted_path(shared_exe)}') != 0 {
-		return failed('install', 'the installed compiler could not link a program with -shared-libvcc')
-	}
-	shared_status := run_in('', 'LD_LIBRARY_PATH=${os.quoted_path(shared_dir)} ${os.quoted_path(shared_exe)}')
-	if shared_status != 0 {
-		return failed('install', 'the -shared-libvcc program answered ${shared_status}, and the helper it called multiplies (1+2i)(3+4i), whose real part is -5')
-	}
-	return Outcome{
-		verdict: .passed
-		name:    'install'
-		detail:  '${binary}, ${library}, ${os.join_path(shared_dir, os.base(real))}'
-	}
+	return ''
 }
 
 // writable says whether a run by this user can create a file under a directory
@@ -628,11 +849,12 @@ fn usage() {
 	println('  regress           the regression and golden corpora')
 	println('  corpora           compliance and regress together')
 	println('  bench [args]      tools/bench.vsh, args passed through')
-	println('  libvcc            build ../libvcc with this compiler, then link and run a')
-	println('                    program against the archive it writes')
-	println('  install [--prefix DIR] [--libvcc DIR]')
-	println('                    build both, copy them to DIR/bin/vcc and DIR/lib/libvcc.a')
-	println('                    (/usr/local), then link and run a program with them')
+	println('  libvcc            build libvcc from its repository with this compiler, then')
+	println('                    link and run a program against the archive it writes')
+	println('  install [--prefix DIR] [--release] [--libvcc DIR]')
+	println('                    install the compiler and its runtime under DIR (/usr/local);')
+	println('                    --release takes the latest GitHub release instead of this tree')
+	println('                    and verifies the checksum published beside it')
 	println('  docker            build the image, then run the binary in it')
 	println('  version           the binary, v.mod, and the pinned V commit')
 	println('  all               every step but install, then a summary')
