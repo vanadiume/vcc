@@ -10,9 +10,11 @@
 // runs every step even when one fails, and exits non-zero if any failed. A step
 // whose tool is missing is skipped, and fails only when asked for by name.
 //
-// `install` is the one step that writes outside the tree, so it is not part of
-// the default run or of `all`: it copies the compiler and the runtime archive
-// into a prefix and proves they work as a pair.
+// `install`, `uninstall` and `update-install` are the steps that write outside
+// the tree, so they are not part of the default run or of `all`: they put the
+// compiler and the runtime archive under a prefix, take them out again, or
+// replace them with the latest release, and the install paths prove the pair
+// where it lands.
 
 import json2
 import os
@@ -38,7 +40,7 @@ const every_step = ['build', 'gate', 'test', 'compliance', 'regress', 'bench', '
 
 // A step that is named and never run by default, because it writes outside the
 // tree or because its whole point is to be asked for.
-const named_steps = ['install']
+const named_steps = ['install', 'uninstall', 'update-install']
 
 struct Context {
 mut:
@@ -149,6 +151,8 @@ fn run_step(mut ctx Context, name string, args []string) Outcome {
 		'bench' { outcome = step_runner(mut ctx, 'bench', 'v run tools/bench.vsh', args) }
 		'libvcc' { outcome = step_libvcc(mut ctx) }
 		'install' { outcome = step_install(mut ctx, args) }
+		'uninstall' { outcome = step_uninstall(args) }
+		'update-install' { outcome = step_update_install(mut ctx, args) }
 		'compliance' { outcome = step_corpus(mut ctx, 'compliance', 'v run tools/compliance.vsh') }
 		'regress' { outcome = step_corpus(mut ctx, 'regress', 'v run tools/regress.vsh') }
 		'corpora' { outcome = step_corpora(mut ctx) }
@@ -615,6 +619,99 @@ fn prove_install(mut ctx Context, prefix string, binary string, library string, 
 	return ''
 }
 
+// step_update_install puts the latest release over an install that is already
+// there. It refuses a prefix with no compiler in it rather than installing from
+// nothing, and it does not touch a prefix that already runs the latest version.
+// The release path does the download, the checksum and the proofs.
+fn step_update_install(mut ctx Context, args []string) Outcome {
+	opts := parse_install_args('update-install', args, false, false) or {
+		return failed('update-install', 'the arguments were refused above')
+	}
+	binary := os.join_path(opts.prefix, 'bin', 'vcc')
+	if !os.exists(binary) {
+		return failed('update-install', 'nothing is installed at ${opts.prefix}; run install --release first')
+	}
+	installed := installed_version(binary)
+	info := latest_release() or {
+		return failed('update-install', 'the latest release could not be read')
+	}
+	if installed != '' && installed == info.version {
+		return Outcome{ verdict: .passed, name: 'update-install', detail: 'already ${info.version}' }
+	}
+	mut outcome := install_release(mut ctx, opts.prefix, info)
+	if outcome.verdict != .passed {
+		outcome.name = 'update-install'
+		return outcome
+	}
+	was := if installed == '' { 'the installed build' } else { installed }
+	return Outcome{
+		verdict: .passed
+		name:    'update-install'
+		detail:  '${was} -> ${info.version}, ${binary}'
+	}
+}
+
+// step_uninstall removes what an install placed: the compiler, the archive and
+// the libvcc.so chain, and nothing else under the prefix. A bin/vcc that answers
+// as something other than vcc stops the removal, because a prefix that names
+// another program is not one this script installed.
+fn step_uninstall(args []string) Outcome {
+	opts := parse_install_args('uninstall', args, false, false) or {
+		return failed('uninstall', 'the arguments were refused above')
+	}
+	prefix := opts.prefix
+	binary := os.join_path(prefix, 'bin', 'vcc')
+	library := os.join_path(prefix, 'lib', 'libvcc.a')
+	lib_dir := os.join_path(prefix, 'lib')
+	if os.exists(binary) {
+		answer := capture('${os.quoted_path(binary)} --version').trim_space()
+		if answer != '' && !answer.contains('vcc') {
+			return failed('uninstall', '${binary} is there and does not answer as vcc, so nothing is removed')
+		}
+	}
+	mut doomed := []string{}
+	if os.exists(binary) {
+		doomed << binary
+	}
+	if os.exists(library) {
+		doomed << library
+	}
+	for entry in os.ls(lib_dir) or { []string{} } {
+		if entry.starts_with('libvcc.so') {
+			doomed << os.join_path(lib_dir, entry)
+		}
+	}
+	if doomed.len == 0 {
+		return Outcome{ verdict: .passed, name: 'uninstall', detail: 'nothing installed under ${prefix}' }
+	}
+	escalate := !writable(prefix)
+	if escalate {
+		println('uninstall: ${prefix} is not writable, so the removals run under sudo')
+	}
+	for path in doomed {
+		if !remove(path, escalate) {
+			return failed('uninstall', 'could not remove ${path}')
+		}
+	}
+	return Outcome{ verdict: .passed, name: 'uninstall', detail: '${doomed.len} files under ${prefix}' }
+}
+
+// installed_version is the version field of an installed compiler's --version.
+fn installed_version(binary string) string {
+	fields := capture('${os.quoted_path(binary)} --version').trim_space().fields()
+	if fields.len < 2 {
+		return ''
+	}
+	return fields[1]
+}
+
+fn remove(path string, escalate bool) bool {
+	if escalate {
+		return os.system_args(['sudo', 'rm', '-f', path]) == 0
+	}
+	return os.system_args(['rm', '-f', path]) == 0
+}
+
 // writable says whether a run by this user can create a file under a directory
 // that may not exist yet. The walk stops at the nearest directory that is there,
 // because that is the one a file would be created in.
@@ -855,8 +952,13 @@ fn usage() {
 	println('                    install the compiler and its runtime under DIR (/usr/local);')
 	println('                    --release takes the latest GitHub release instead of this tree')
 	println('                    and verifies the checksum published beside it')
+	println('  uninstall [--prefix DIR]')
+	println('                    remove the compiler, the archive and the libvcc.so chain')
+	println('                    that install placed under DIR (/usr/local)')
+	println('  update-install [--prefix DIR]')
+	println('                    install the latest release over the one under DIR')
 	println('  docker            build the image, then run the binary in it')
 	println('  version           the binary, v.mod, and the pinned V commit')
-	println('  all               every step but install, then a summary')
+	println('  all               every step but the install steps, then a summary')
 	println('with no step: the compiler, libvcc, the gate, then both corpora')
 }
