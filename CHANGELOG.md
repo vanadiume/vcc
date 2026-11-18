@@ -1119,3 +1119,4 @@ it owns the change, which is the same vocabulary the commits use.
 * linking: a link runs through the vlk library (d213bd5)
 * cli: -fuse-vlk runs the link through the library (801c7a2)
 * docs: the bridge, the flag and the build's prerequisite
+* docs: the -fuse-vlk flag and the link through the library (3a99168)
