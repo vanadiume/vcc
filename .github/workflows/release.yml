@@ -48,7 +48,7 @@ env:
   # vlk is the linker library this compiler's link runs through. Pinned for the
   # same reason V is: a red run has to be about this tree and not about a library
   # that moved underneath it.
-  VLK_COMMIT: aefbdc2a72b56f0cfb44ed2fcba2b40d1e744ec2
+  VLK_COMMIT: 1db3c264223396a87cacf67f817ec3dec790de1c
   # libvcc is the runtime every program that reaches a helper links against, and
   # the release carries both the archive and the shared library beside the
   # compiler. It is pinned for the same reason V is: a release is built from

@@ -35,7 +35,7 @@ ARG V_COMMIT=c6bb06f5c04d78f9f6d22a57c257d27e835ba40a
 ARG VC_COMMIT=bcfdc7f33e7b7908ee40f76d059c0e2894fb4a3b
 # The linker library the compiler imports, pinned for the same reason and
 # reachable at the module path the compiler's own code writes.
-ARG VLK_COMMIT=aefbdc2a72b56f0cfb44ed2fcba2b40d1e744ec2
+ARG VLK_COMMIT=1db3c264223396a87cacf67f817ec3dec790de1c
 
 ENV DEBIAN_FRONTEND=noninteractive
 
