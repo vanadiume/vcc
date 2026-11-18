@@ -50,7 +50,7 @@ Three consequences for changes that touch the command line:
   refused by name rather than recorded: a build that reads a recorded
   `-Wl,-z,now` has been told the option took effect when it did not. The
   options the linker does implement change the image; with
-  `-external-linker=NAME` they belong to that linker and are passed through
+  `-fuse-ld=NAME` they belong to that linker and are passed through
   untouched. The rest of what V passes, `-bt25` among them, is still accepted
   and recorded.
 - `--version` stays stable and machine-parseable. Changing its shape changes

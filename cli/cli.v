@@ -104,16 +104,16 @@ pub mut:
 	// compiler defines in place of its own, so that a program branching on
 	// __GNUC__, __clang__ or __TINYC__ sees the compiler the flag names.
 	emulation preprocess.Emulation
-	// external_linker is -external-linker: a program on PATH that performs the
+	// fuse_ld is -fuse-ld: a program on PATH that performs the
 	// final link in place of this compiler's own emitter path, so that the
 	// inputs it cannot consume yet — a relocatable object, an archive — can be
 	// linked before an in-house linker exists. An empty name is the flag unset,
 	// which is every behaviour exactly as it was. The name is a command-line
 	// fact; whether it may be used at all is policy, and it is refused where the
 	// flag is read.
-	external_linker string
-	input_type      string
-	compile_only    bool
+	fuse_ld      string
+	input_type   string
+	compile_only bool
 	// shared is -shared: the link writes a shared object another program loads
 	// rather than a program the kernel starts. It is a kind of link and not a
 	// kind of compilation, so it says nothing about a run that stops before a
@@ -245,7 +245,7 @@ pub mut:
 	// link_args holds the payload of each -Wl, flag, in command-line order: the
 	// options the link is asked for beyond the link itself. They are kept as
 	// written because which linker reads them is not decided here. An external
-	// linker named by -external-linker gets them untouched; this compiler's own
+	// linker named by -fuse-ld gets them untouched; this compiler's own
 	// linker reads the ones it implements and refuses the rest by name, because
 	// it does the link itself and an option it dropped would leave a build
 	// believing something happened that did not.
@@ -559,15 +559,23 @@ pub fn parse(args []string) !Options {
 			opts.emulation = preprocess.emulation_from_spelling(cursor.value_of('')!)!
 		} else if arg.starts_with('-femulation=') {
 			opts.emulation = preprocess.emulation_from_spelling(arg[12..])!
-		} else if arg == '-external-linker' {
-			// The value is a program name and not this compiler's own feature,
-			// so the flag is not spelled -f: the -f spelling is the feature
-			// family (-fno-builtin, -fvcc-exts), and linking is not a feature
-			// of the C the program is in. It is read and never recorded, so a
-			// build cannot pass it and be told later that nothing happened.
-			opts.external_linker = cursor.value_of('')!
-		} else if arg.starts_with('-external-linker=') {
-			opts.external_linker = arg['-external-linker='.len..]
+		} else if arg == '-fuse-ld' {
+			// The value is a program name and not a feature of the C the
+			// program is in, but the spelling is gcc's and clang's, and a
+			// build that already passes -fuse-ld=lld should not have to be
+			// told twice. gcc reads the joined spelling only, and the
+			// separated one is here for the reason -femulation has it: a
+			// person writes both. It is read and never recorded, so a build
+			// cannot pass it and be told later that nothing happened.
+			opts.fuse_ld = cursor.value_of('')!
+		} else if arg.starts_with('-fuse-ld=') {
+			opts.fuse_ld = arg['-fuse-ld='.len..]
+		} else if arg == '-external-linker' || arg.starts_with('-external-linker=') {
+			// The flag this one replaces. It is refused rather than recorded
+			// as ignored, because a build that still passes it asked for a
+			// link performed by another program and would otherwise be told
+			// nothing while this compiler linked the inputs itself.
+			return error('-external-linker is now -fuse-ld: name the linker with -fuse-ld=NAME')
 		} else if arg == '-x' {
 			opts.input_type = cursor.value_of('')!
 		} else if arg == '-B' {
@@ -578,11 +586,11 @@ pub fn parse(args []string) !Options {
 			// was not. gcc refuses it the same way.
 			return error('-Wl takes its linker options joined with commas: -Wl,-z,now')
 		} else if arg.starts_with('-Wl,') {
-			// Kept as written and decided where the link happens: an external
-			// linker gets them untouched, and this compiler's own linker reads
-			// the ones it implements and refuses the rest by name. Parsing
-			// cannot make that call, because -external-linker may name the
-			// tool further down the same command line.
+			// Kept as written and decided where the link happens: the linker
+			// -fuse-ld names gets them untouched, and this compiler's own
+			// linker reads the ones it implements and refuses the rest by
+			// name. Parsing cannot make that call, because -fuse-ld may name
+			// the tool further down the same command line.
 			opts.link_args << arg['-Wl,'.len..]
 		} else if optimization.accept_flag(arg) {
 			// The optimizer recognized it: -O levels and the -f(no-)builtin
@@ -817,7 +825,7 @@ pub fn usage(all bool) string {
 	out << '  -fno-vcc-exts=all         or all of them'
 	out << '  -femulation=NAME  define the identity macros of NAME (gcc, clang or'
 	out << '                    tcc) in place of the ones this compiler invented'
-	out << '  -external-linker=NAME  hand the final link to NAME, a linker found on'
+	out << '  -fuse-ld=NAME     hand the final link to NAME, a linker found on'
 	out << '                    PATH. This compiler compiles each .c input with its'
 	out << '                    own -c machinery, then NAME links those objects and'
 	out << '                    the inputs it cannot read: a relocatable object, an'
@@ -832,7 +840,7 @@ pub fn usage(all bool) string {
 	out << '                compiler writes, and -soname,NAME gives a shared object the'
 	out << '                name it records as its own; any other option is refused by'
 	out << '                name rather than dropped in silence. With'
-	out << '                -external-linker=NAME the options go to NAME untouched'
+	out << '                -fuse-ld=NAME the options go to NAME untouched'
 	out << '  -shared               what the link writes: a shared object another'
 	out << '                        program loads, with no entry point and no loader.'
 	out << '                        A later vcc link reads one as an input, by file'
@@ -921,7 +929,7 @@ pub fn usage(all bool) string {
 		out << '                        its DT_NEEDED. One the linker cannot express is'
 		out << '                        refused by name, because the link is done here'
 		out << '                        and a recorded option is indistinguishable from'
-		out << '                        an applied one. With -external-linker=NAME they'
+		out << '                        an applied one. With -fuse-ld=NAME they'
 		out << '                        go to NAME untouched'
 		out << '  -print-ast            nothing is written and nothing is linked; the dump is'
 		out << '                        the tree after the optimizer, which is what the emitter'
@@ -945,7 +953,7 @@ pub fn usage(all bool) string {
 		out << 'The V toolchain also hands the compiler its own GC library,'
 		out << 'thirdparty/tcc/lib/libgc.a, as an ordinary input. An object or an'
 		out << 'archive is named as such and refused; linking one is not implemented'
-		out << 'yet, and neither is reading one as source. -external-linker=NAME is'
+		out << 'yet, and neither is reading one as source. -fuse-ld=NAME is'
 		out << 'the one answer to that: it hands the link, objects and archives'
 		out << 'included, to a linker the system already has.'
 	}

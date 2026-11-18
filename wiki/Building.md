@@ -84,7 +84,7 @@ statement may nest, 256 by default; 0 lifts the limit), `-fPIC`/`-fpic`,
 `-nostdinc`, `-undef`, `-include`,
 `-imacros`, the dependency flags `-M`/`-MM`/`-MD`/`-MMD`/`-MF`/`-MT`/`-MQ`,
 `-dM`, `-Wclass`/`-Wno-class`, `-femulation=NAME` (define the identity macros
-of gcc, clang or tcc instead of vcc's own), `-external-linker=NAME`,
+of gcc, clang or tcc instead of vcc's own), `-fuse-ld=NAME`,
 `-shared`, `-static`, `-nostdlib`, `-nodefaultlibs`, `--link-libgcc`,
 `-shared-libvcc`, `-shared-libgcc`, and the gcc `-print-` family.
 `./vcc -hh` prints the annotated surface.
@@ -117,7 +117,7 @@ compiler first.
 (`abs`, `labs`, `llabs`) with a literal argument folds to that value. `-O0`
 makes the call and `-O2` folds it. `-fno-builtin` takes the fold back.
 
-`-external-linker=NAME` hands the final link to a linker already on the
+`-fuse-ld=NAME` hands the final link to a linker already on the
 system, for an input the in-house linker cannot consume yet, such as an object
 carrying a section or a relocation it does not model. It refuses `cc`,
 `gcc`, `clang`, `c++` and `tcc` by name, because a C compiler finishing C

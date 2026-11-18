@@ -45,7 +45,7 @@ modules named after the stages. The order is:
 9. `write_object` or `write_image` writes the bytes, and `-run` executes the
    file and leaves with its exit status.
 
-`main.v` is the only place these functions are called. `-external-linker=NAME`
+`main.v` is the only place these functions are called. `-fuse-ld=NAME`
 with a link is the one branch that leaves the pipeline early, taken before the
 single-input refusals because it is the path those refusals exist to lift.
 `parser.parse(tokens)` is the second parser entry point, which calls
@@ -77,7 +77,7 @@ beside it, not a branch in a caller.
 | Path | Job |
 |---|---|
 | `main.v` | the driver: command line in, output file out, the pipeline in between |
-| `cli/` | flags, usage, version, input classification, the external-linker policy. Knows nothing about C grammar. |
+| `cli/` | flags, usage, version, input classification, the policy behind `-fuse-ld`. Knows nothing about C grammar. |
 | `tokenize/` | source text to tokens; defines `Token` and the `Diagnostic` struct every stage produces |
 | `diagnostics/` | what a diagnostic is: class, severity, `flag_classes`, and `render`, the one place a diagnostic becomes text |
 | `standard/` | the `-std=` modes and the dialect feature table |

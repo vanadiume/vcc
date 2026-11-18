@@ -153,9 +153,9 @@ What is missing:
   it. A dynamic program or shared object that names the library works.
 - An object or archive carrying a section or relocation the linker does not
   model. It is refused by name rather than placed at a guessed address.
-  `-external-linker=NAME` is the way through.
+  `-fuse-ld=NAME` is the way through.
 - GNU ld reading a shared object this compiler writes. ld wants a section
-  header table and this compiler writes none, so `-external-linker=ld` cannot
+  header table and this compiler writes none, so `-fuse-ld=ld` cannot
   consume one; vcc's own linker reads the dynamic table instead.
 - Speed. vcc is behind tcc, and the numbers are under Performance.
 - A complete V self-build. vcc does compile the C that V generates from vcc's
@@ -186,7 +186,7 @@ The common ones:
 `./vcc -hh` prints the rest, which includes `--version`, `-fno-builtin`,
 `-nostdinc`, `-undef`, `-include`, `-imacros`, the dependency flags,
 `-dM`, `-Wclass`/`-Wno-class`, `-fbracket-depth=N`, `-fvcc-exts=`,
-`-Wpedantic`, `-femulation=NAME`, `-external-linker=NAME`, `-target`,
+`-Wpedantic`, `-femulation=NAME`, `-fuse-ld=NAME`, `-target`,
 `--link-libgcc`, `-shared-libvcc`, `-shared-libgcc` and the gcc `-print-`
 family. A flag the compiler does not implement is recorded and never refused,
 so a build system that passes one does not stop here.

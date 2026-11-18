@@ -2,7 +2,7 @@ module cli
 
 import os
 
-// -external-linker hands the final link to a program on PATH. This file is the
+// -fuse-ld hands the final link to a program on PATH. This file is the
 // policy around that name: which names may be used at all, and how a name is
 // turned into something runnable. The flag's spelling and its value live in
 // cli.v beside every other flag; what a name means lives here.
@@ -18,14 +18,14 @@ import os
 // with the versioned and target-prefixed spellings handled by is_c_compiler_driver.
 const c_compiler_drivers = ['cc', 'gcc', 'clang', 'c++', 'tcc']
 
-// external_linker_refusal is the message for a name that may not be the external
+// fuse_ld_refusal is the message for a name that may not be the external
 // linker, and none when the name is one this compiler will hand a link to. It is
 // a refusal by name and not by what the name resolves to: `-print-prog-name=`
 // has already made the point that a name is not a path here, and a name this
 // compiler runs is a name the command line chose.
-pub fn external_linker_refusal(name string) ?string {
+pub fn fuse_ld_refusal(name string) ?string {
 	if is_c_compiler_driver(name) {
-		return '-external-linker=${name}: a C compiler is not a linker here; name a linker such as ld or lld'
+		return '-fuse-ld=${name}: a C compiler is not a linker here; name a linker such as ld or lld'
 	}
 	return none
 }
@@ -71,16 +71,16 @@ fn is_version_suffix(text string) bool {
 	return true
 }
 
-// external_linker_path resolves a name to the program on PATH, or an error when
+// fuse_ld_path resolves a name to the program on PATH, or an error when
 // the system does not have it. A name is a program name and not a path: a build
 // that wanted a particular file can put it on PATH. The caller reports the miss
 // rather than falling back to the in-house path, because a link handed to a tool
 // that is not there must not become a link this compiler performs itself.
-pub fn external_linker_path(name string) !string {
+pub fn fuse_ld_path(name string) !string {
 	return os.find_abs_path_of_executable(name)
 }
 
-// external_linker_prefix is the arguments a tool needs before the ones a link
+// fuse_ld_prefix is the arguments a tool needs before the ones a link
 // always takes, for a tool whose name alone does not tell it which linker it is.
 //
 // `lld` is the LLVM linkers' generic driver, a multicall binary that decides
@@ -89,7 +89,7 @@ pub fn external_linker_path(name string) !string {
 // `ld.lld` the same program needs nothing, and this answers nothing for every
 // other tool, including the GNU ones that would reject the word. The prefix goes
 // first: the generic driver reads it before it dispatches.
-pub fn external_linker_prefix(name string) []string {
+pub fn fuse_ld_prefix(name string) []string {
 	if os.base(name) == 'lld' {
 		return ['-flavor', 'gnu']
 	}

@@ -25,7 +25,7 @@ Linux x86-64.
    anywhere else is a failure. A `.v` file inside a test directory is still this
    compiler's source, so `#include`, `#flag` and `C.` stay out of it there too.
    One exception to the linking rule, named and off by default.
-   `-external-linker=NAME` hands the link to a linker the
+   `-fuse-ld=NAME` hands the link to a linker the
    system already has, for the inputs this compiler
    cannot consume yet: a relocatable object, an archive. It exists so that
    linking behaviour is available before an in-house linker is written, not so

@@ -181,7 +181,7 @@ pub fn link(units []image.Program, options Options) !image.Program {
 			// to read the object's address out of the table, which is a
 			// reference this linker does not build. It is named rather than
 			// pointed at a wrong address.
-			return error('${relocation.name} is an object a relocatable object reaches through the global offset table, and this linker builds no such reference: -external-linker links an input this compiler cannot place yet')
+			return error('${relocation.name} is an object a relocatable object reaches through the global offset table, and this linker builds no such reference: -fuse-ld links an input this compiler cannot place yet')
 		}
 		if relocation.name in names.imports && relocation.name !in plts {
 			plts << relocation.name

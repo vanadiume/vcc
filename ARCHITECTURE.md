@@ -60,7 +60,7 @@ named after the stages. The order it runs is:
 9. `write_object` or `write_image` writes the bytes, and `-run` executes the file
    and leaves with its exit status.
 
-`main.v` is the only place these functions are called. `-external-linker=NAME`
+`main.v` is the only place these functions are called. `-fuse-ld=NAME`
 with a link is the one branch that leaves the pipeline early, taken before the
 single-input refusals because it is the path those refusals exist to lift.
 
@@ -73,7 +73,7 @@ second with `backend.host()`, and the tests use it; the driver uses the second.
 | Path | Lines (files) | Job |
 |---|---|---|
 | `main.v` | 1,694 | the driver: command line in, output file out |
-| `cli/` | 990 (3) | flags, usage, version, input classification, the external-linker policy |
+| `cli/` | 990 (3) | flags, usage, version, input classification, the policy behind `-fuse-ld` |
 | `tokenize/` | 930 (2) | source text to tokens; defines `Token` and `Diagnostic` |
 | `preprocess/` | 2,867 (5) | the C preprocessor |
 | `standard/` | 994 (2) | the `-std=` modes and the dialect feature table |
@@ -128,7 +128,7 @@ and an unresolved clause carries the zero value of `types.Type`, whose kind is
 `linking/` is the in-house linker: `symbols/` resolves names across units,
 `place/` lays the image out, `reloc/` fills the references in, `output/` wraps
 it, and `object/` and `archive/` read a relocatable file and an `ar` archive the
-command line names. `-external-linker=NAME` is the fallback for an input this
+command line names. `-fuse-ld=NAME` is the fallback for an input this
 linker cannot consume, and an object carrying a section or a relocation it does
 not model is refused by name rather than placed at a guessed address.
 

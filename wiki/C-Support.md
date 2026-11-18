@@ -168,7 +168,7 @@ runs the same checks a pull request has to pass.
   It resolves what its archives provide and refuses the import it could not
   resolve, naming it.
 - An object or archive carrying a section or a relocation the reader does not
-  model. It is refused by name; `-external-linker=NAME` is the way through.
+  model. It is refused by name; `-fuse-ld=NAME` is the way through.
 - The last step of the V self-build: V itself built by vcc and passing V's own
   suite. The C V generates from vcc's own source does compile and the result
   runs. [[Interop]] has what V asks of a C compiler.

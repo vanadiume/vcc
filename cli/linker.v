@@ -10,7 +10,7 @@ module cli
 // else is refused with the option as it was written.
 //
 // The flags are read here and not in `parse` because which linker sees them is
-// a command-line fact that parse cannot know yet: -external-linker may name the
+// a command-line fact that parse cannot know yet: -fuse-ld may name the
 // tool further down the same line, and that path forwards them untouched.
 
 // LinkerOptions is what the -Wl, options this compiler's own linker implements
@@ -112,12 +112,12 @@ pub fn linker_options(args []string) !LinkerOptions {
 	return options
 }
 
-// external_linker_arguments is the same payloads in the shape the other linker
+// fuse_ld_arguments is the same payloads in the shape the other linker
 // reads. It is a passthrough: nothing is interpreted and nothing is refused,
-// because the tool named by -external-linker is the one that decides what its
+// because the tool named by -fuse-ld is the one that decides what its
 // own options mean. A comma is the separator gcc uses between the options
 // inside one -Wl, word, so `-Wl,-z,now` reaches the linker as `-z now`.
-pub fn external_linker_arguments(args []string) []string {
+pub fn fuse_ld_arguments(args []string) []string {
 	mut out := []string{}
 	for payload in args {
 		for word in payload.split(',') {

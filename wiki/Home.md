@@ -11,7 +11,7 @@ is BSD 3-Clause and adds no dependency to `v.mod`.
 compiler, no vendored C library. If a piece cannot be written in V yet, it
 stays unimplemented and the construct is refused with a diagnostic rather than
 worked around. There is one exception, named and off by default:
-`-external-linker=NAME` hands the final link to a linker already on the
+`-fuse-ld=NAME` hands the final link to a linker already on the
 system, for the inputs vcc cannot consume yet, such as an object carrying a
 relocation the reader does not model. It refuses `cc`, `gcc`, `clang`, `c++`
 and `tcc` by name, because a C compiler finishing C compilation is the one
