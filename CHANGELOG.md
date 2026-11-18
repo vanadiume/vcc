@@ -1120,3 +1120,5 @@ it owns the change, which is the same vocabulary the commits use.
 * cli: -fuse-vlk runs the link through the library (801c7a2)
 * docs: the bridge, the flag and the build's prerequisite
 * docs: the -fuse-vlk flag and the link through the library (3a99168)
+* docs: the changelog records the flag's documents (53c2f4c)
+* tree: the vlk pin takes the encoders' new names (549f0e6)
