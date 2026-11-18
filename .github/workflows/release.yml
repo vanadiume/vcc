@@ -45,6 +45,10 @@ env:
   # `.github/workflows/ci.yml` says why the snapshot is pinned.
   VC_COMMIT: bcfdc7f33e7b7908ee40f76d059c0e2894fb4a3b
   V_DIR: /opt/v
+  # vlk is the linker library this compiler's link runs through. Pinned for the
+  # same reason V is: a red run has to be about this tree and not about a library
+  # that moved underneath it.
+  VLK_COMMIT: aefbdc2a72b56f0cfb44ed2fcba2b40d1e744ec2
   # libvcc is the runtime every program that reaches a helper links against, and
   # the release carries both the archive and the shared library beside the
   # compiler. It is pinned for the same reason V is: a release is built from
@@ -166,6 +170,17 @@ jobs:
               exit 1
               ;;
           esac
+
+      # The linker library this compiler imports, at a commit rather than a
+      # branch: a link in this tree is the library's code, so which commit that
+      # code came from has to be part of what a run measured. It installs under
+      # the module path the compiler's own files write, which is the only place
+      # V finds it.
+      - name: install vlk
+        run: |
+          mkdir -p ~/.vmodules/vanadiume
+          git clone --quiet https://github.com/vanadiume/vlk ~/.vmodules/vanadiume/vlk
+          git -C ~/.vmodules/vanadiume/vlk checkout --quiet "$VLK_COMMIT"
 
       # No ci run stands behind a dispatch, so that path runs the gate itself.
       # Every step below this one checks the artifact rather than the tree.

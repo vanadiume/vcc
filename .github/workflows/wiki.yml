@@ -35,6 +35,9 @@ concurrency:
 env:
   V_COMMIT: c6bb06f5c04d78f9f6d22a57c257d27e835ba40a
   VC_COMMIT: bcfdc7f33e7b7908ee40f76d059c0e2894fb4a3b
+  # Named for the same reason as the pair above: the gate refuses a set of
+  # workflows that disagree about it, and no step here runs the compiler.
+  VLK_COMMIT: aefbdc2a72b56f0cfb44ed2fcba2b40d1e744ec2
 
 jobs:
   publish:
