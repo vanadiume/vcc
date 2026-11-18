@@ -358,7 +358,7 @@ pub fn read(bytes []u8, target backend.Target) !image.Program {
 		hidden:              map[string]bool{}
 		weak_imports:        map[string]bool{}
 		tls_slots:           map[string]bool{}
-		read_only_globals:   map[string]GlobalSlot{}
+		read_only_globals:   map[string]image.GlobalSlot{}
 		strings:             map[string]int{}
 		wide_strings:        map[string]int{}
 		doubles:             map[string]int{}
