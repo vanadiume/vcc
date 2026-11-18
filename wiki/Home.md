@@ -3,7 +3,8 @@
 vcc is a general-purpose C compiler for Linux x86-64, written in V. It has its
 own preprocessor, parser, optimizer, code generator and linker, and writes
 ELF64 executables, relocatable objects, shared objects and static programs. It
-is BSD 3-Clause and adds no dependency to `v.mod`.
+is BSD 3-Clause, and its one dependency is `vanadiume.vlk`, the linker library
+from the same author. There is no dependency from outside vanadium.
 
 ## Two constraints
 

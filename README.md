@@ -25,9 +25,10 @@ the system but a C library: no assembler and no system linker.
 It accepts the C that real projects are written in, C89 through C23 and their
 GNU variants, with the gaps listed under Status. It writes ELF64 executables,
 relocatable objects, shared objects and static binaries. The source is plain V
-in separate modules. Its one dependency is the vlk linker library, which is
-installed rather than declared in `v.mod`: the registry has no release to point
-at yet, so the path is the same one its own code imports by.
+in separate modules. Its one dependency is `vanadiume.vlk`, the linker library
+from the same author, and there is no dependency from outside vanadium. The
+library has no tagged release yet, so the quick start clones a checkout into
+`~/.vmodules/vanadiume/vlk` rather than running `v install`.
 
 ## Quick start
 
@@ -46,9 +47,11 @@ v test .                             # run the suite
 ```
 
 vcc performs its link through the vlk library, so the compiler imports
-`vanadiume.vlk` and a checkout builds only where that path resolves. CI clones
-it at the commit `.github/workflows/ci.yml` pins, and the library's own README
-says why it has to sit there.
+`vanadiume.vlk`, which `v.mod` names as its only dependency, and a checkout
+builds only where that path resolves. The registry has no release to install
+yet, so the clone above stands in for `v install`, and CI clones it at the
+commit `.github/workflows/ci.yml` pins. The library's own README says why it has
+to sit there.
 
 `v run tools/build.vsh build` is the official way to build the compiler. It
 builds vcc with V and reports where the binary landed; `-o PATH` names the

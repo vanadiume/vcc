@@ -195,8 +195,8 @@ logical change per commit, each one building on its own.
 
 ## Do not
 
-- Add a dependency to `v.mod` without raising it first. Empty dependencies is a
-  feature here.
+- Add a dependency to `v.mod` without raising it first. A dependency has to come
+  from vanadium, and `vanadiume.vlk` is the only one.
 - Reformat or refactor files that your change does not touch.
 - Weaken a test, a diagnostic, or an assertion to make a change land.
 - Write a file into the user's tree to check your own work. Scratch goes in
