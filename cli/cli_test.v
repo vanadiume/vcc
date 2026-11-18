@@ -534,6 +534,32 @@ fn test_fuse_ld_is_in_the_help() {
 	assert usage(true).contains('-fuse-ld')
 }
 
+// -fuse-vlk asks this compiler's link to run through the vlk library. It is a
+// flag with no value and it is not recorded as ignored, and a command line that
+// also names a linker program is refused: a link has one linker.
+fn test_fuse_vlk_is_read_and_refused_beside_a_named_linker() {
+	asked := parse(['-fuse-vlk', 'a.c'])!
+	assert asked.fuse_vlk
+	assert asked.fuse_ld == ''
+	assert !asked.ignored.contains('-fuse-vlk')
+	assert parse(['a.c'])!.fuse_vlk == false
+	// A run that stops before a link has nothing for the flag to do, which is
+	// the answer -fuse-ld gets as well: the flag is read and not refused.
+	assert parse(['-c', '-fuse-vlk', 'a.c'])!.fuse_vlk
+	both := parse(['-fuse-vlk', '-fuse-ld=ld', 'a.c'])!.linker_conflict_refusal() or {
+		assert false, '-fuse-vlk beside -fuse-ld should be refused'
+		''
+	}
+	assert both.contains('-fuse-vlk')
+	assert both.contains('-fuse-ld=ld')
+	assert parse(['-fuse-vlk', 'a.c'])!.linker_conflict_refusal() == none
+}
+
+fn test_fuse_vlk_is_in_the_help() {
+	assert usage(false).contains('-fuse-vlk')
+	assert usage(true).contains('-fuse-vlk')
+}
+
 // The two flags that name a kind of link are read and not recorded: a build that
 // passes one and is told nothing has been told the flag was passed over, and
 // what it asked for is the file that comes out.

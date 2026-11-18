@@ -114,6 +114,12 @@ pub mut:
 	fuse_ld      string
 	input_type   string
 	compile_only bool
+	// fuse_vlk is -fuse-vlk: the link runs through the vlk library, which the
+	// other path in this tree is being replaced by, rather than through
+	// `linking/`. It is off by default so a build that does not ask for it keeps
+	// the linker it had, and it is one flag because the choice is one choice: a
+	// link has one linker and the two cannot both perform it.
+	fuse_vlk bool
 	// shared is -shared: the link writes a shared object another program loads
 	// rather than a program the kernel starts. It is a kind of link and not a
 	// kind of compilation, so it says nothing about a run that stops before a
@@ -576,6 +582,11 @@ pub fn parse(args []string) !Options {
 			// link performed by another program and would otherwise be told
 			// nothing while this compiler linked the inputs itself.
 			return error('-external-linker is now -fuse-ld: name the linker with -fuse-ld=NAME')
+		} else if arg == '-fuse-vlk' {
+			// A linker chosen rather than named: the library is this
+			// compiler's own dependency, and the flag says which of the two
+			// links this tree carries performs the link.
+			opts.fuse_vlk = true
 		} else if arg == '-x' {
 			opts.input_type = cursor.value_of('')!
 		} else if arg == '-B' {
@@ -708,6 +719,17 @@ pub fn (opts Options) link_kind_conflict_refusal() ?string {
 	return none
 }
 
+// linker_conflict_refusal is the message for a command line that names two
+// linkers, and none when it names at most one. -fuse-ld hands the link to a
+// program on PATH and -fuse-vlk asks the vlk library to perform it here, so a
+// link that took one of them would drop the other without a word.
+pub fn (opts Options) linker_conflict_refusal() ?string {
+	if opts.fuse_ld != '' && opts.fuse_vlk {
+		return '-fuse-ld=${opts.fuse_ld} and -fuse-vlk name two linkers: -fuse-ld hands the link to a program and -fuse-vlk runs it through the vlk library'
+	}
+	return none
+}
+
 // runtime_conflict_refusal is the message for a command line that names two
 // runtimes, or a runtime that cannot be the one the link writes, and none when
 // the command line asks for at most one thing a program can link.
@@ -835,6 +857,14 @@ pub fn usage(all bool) string {
 	out << '                    -print-ast) has nothing for NAME to do and the flag'
 	out << '                    goes unused. With the flag unset every input is'
 	out << '                    refused exactly as before'
+	out << '  -fuse-vlk         the link runs through the vlk library instead of the'
+	out << '                    linker this compiler carries. The library performs'
+	out << '                    the merge, the library check and the container, on'
+	out << '                    the same units and the same command line, so a run'
+	out << '                    that names it writes the image through the other'
+	out << '                    implementation of one link. It is refused with'
+	out << '                    -fuse-ld=NAME, because a link has one linker, and a'
+	out << '                    run that stops before a link has nothing for it to do'
 	out << '  -Wl,opt       an option for the link: -z execstack, -z noexecstack, -z now,'
 	out << '                -z lazy, -z relro and -z norelro change the image this'
 	out << '                compiler writes, and -soname,NAME gives a shared object the'

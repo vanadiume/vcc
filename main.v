@@ -93,6 +93,12 @@ fn main() {
 		eprintln(cli.usage(false))
 		exit(1)
 	}
+	// Two linkers on one command line is one of them dropped in silence, so the
+	// pair is refused before either path is taken: -fuse-ld is dispatched below
+	// and would otherwise answer for a link -fuse-vlk also asked for.
+	if refusal := opts.linker_conflict_refusal() {
+		abort(refusal)
+	}
 	// -fuse-ld is its own path: it links the inputs this compiler cannot
 	// consume and is taken before the single-input refusals below, because those
 	// refusals are what the flag exists to lift. A run that stops before a link
@@ -111,6 +117,15 @@ fn main() {
 	// that took one flag would drop the other without a word.
 	if refusal := opts.link_kind_conflict_refusal() {
 		abort(refusal)
+	}
+	// -fuse-vlk asks the link to run through the vlk library, and that path
+	// reads the whole command line as one link: it takes every input the way
+	// the multi-input path does, whether the line named one file or ten,
+	// because the library's merge is what the flag asks for and the
+	// single-input path below writes its container without one.
+	if opts.fuse_vlk && opts.links() {
+		link_inputs(opts)
+		return
 	}
 	// More than one input is a link, and a link is the linker's job: every
 	// input is compiled as one unit of it, the merge settles the references
@@ -957,20 +972,34 @@ fn link_inputs(opts cli.Options) {
 	}
 	units << pulled
 	mut started := time.now()
-	merged := linking.link(units, linking.Options{
+	merge_options := linking.Options{
 		entry:                entry
 		target:               target
 		libraries:            opts.libraries
 		library_dirs:         opts.library_dirs
 		shared_libraries:     shared
 		no_default_libraries: !default_libraries(opts, target)
-	}) or {
-		abort(err.msg())
-		return
 	}
-	bytes := output.image(merged, target, link_kind(opts), link_options) or {
-		abort(err.msg())
-		return
+	// The two linkers take the same units and the same options, and they differ
+	// in whose code performs the link. vlk's high entry does the merge, the
+	// library check and the container in one call and answers the image's
+	// bytes; this tree's own path does the merge and hands the merged program to
+	// the container. -fuse-vlk is the one place the two are chosen between, so
+	// the phases below are measured over whichever ran.
+	bytes := if opts.fuse_vlk {
+		linking.link_vlk(units, merge_options, link_kind(opts), link_options) or {
+			abort(err.msg())
+			return
+		}
+	} else {
+		merged := linking.link(units, merge_options) or {
+			abort(err.msg())
+			return
+		}
+		output.image(merged, target, link_kind(opts), link_options) or {
+			abort(err.msg())
+			return
+		}
 	}
 	linked := time.since(started).microseconds()
 	// One line per phase for the whole command, because a build reading -bench
