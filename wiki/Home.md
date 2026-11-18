@@ -3,7 +3,8 @@
 vcc is a general-purpose C compiler for Linux x86-64, written in V. It has its
 own preprocessor, parser, optimizer, code generator and linker, and writes
 ELF64 executables, relocatable objects, shared objects and static programs. It
-is BSD 3-Clause and adds no dependency to `v.mod`.
+is BSD 3-Clause, and its one dependency is `vanadiume.vlk`, the linker library
+from the same author. There is no dependency from outside vanadium.
 
 ## Two constraints
 
@@ -11,7 +12,7 @@ is BSD 3-Clause and adds no dependency to `v.mod`.
 compiler, no vendored C library. If a piece cannot be written in V yet, it
 stays unimplemented and the construct is refused with a diagnostic rather than
 worked around. There is one exception, named and off by default:
-`-external-linker=NAME` hands the final link to a linker already on the
+`-fuse-ld=NAME` hands the final link to a linker already on the
 system, for the inputs vcc cannot consume yet, such as an object carrying a
 relocation the reader does not model. It refuses `cc`, `gcc`, `clang`, `c++`
 and `tcc` by name, because a C compiler finishing C compilation is the one

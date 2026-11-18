@@ -1746,7 +1746,7 @@ pub fn (t &Target) static_support_libraries(given []string, runtime string) []st
 }
 
 // external_link_arguments is the command line a linker named with
-// -external-linker is given. The loader, the start files and the library
+// -fuse-ld is given. The loader, the start files and the library
 // directories all come from the system's description through linux, so the
 // external link and the in-house image name the same places and a second system
 // is a second directory rather than a second set of strings here.

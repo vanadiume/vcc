@@ -25,7 +25,10 @@ the system but a C library: no assembler and no system linker.
 It accepts the C that real projects are written in, C89 through C23 and their
 GNU variants, with the gaps listed under Status. It writes ELF64 executables,
 relocatable objects, shared objects and static binaries. The source is plain V
-in separate modules with no dependency in `v.mod`.
+in separate modules. Its one dependency is `vanadiume.vlk`, the linker library
+from the same author, and there is no dependency from outside vanadium. The
+library has no tagged release yet, so the quick start clones a checkout into
+`~/.vmodules/vanadiume/vlk` rather than running `v install`.
 
 ## Quick start
 
@@ -37,9 +40,18 @@ pins the commit it tests with in `.github/workflows/ci.yml`.
 ```sh
 git clone https://github.com/vlang/v && cd v && make   # once
 git clone https://github.com/HuntedByTheIRS/vcc && cd vcc
+mkdir -p ~/.vmodules/vanadiume
+git clone https://github.com/vanadiume/vlk ~/.vmodules/vanadiume/vlk   # once, the linker library
 v run tools/build.vsh build -o vcc   # the official build
 v test .                             # run the suite
 ```
+
+vcc performs its link through the vlk library, so the compiler imports
+`vanadiume.vlk`, which `v.mod` names as its only dependency, and a checkout
+builds only where that path resolves. The registry has no release to install
+yet, so the clone above stands in for `v install`, and CI clones it at the
+commit `.github/workflows/ci.yml` pins. The library's own README says why it has
+to sit there.
 
 `v run tools/build.vsh build` is the official way to build the compiler. It
 builds vcc with V and reports where the binary landed; `-o PATH` names the
@@ -153,9 +165,9 @@ What is missing:
   it. A dynamic program or shared object that names the library works.
 - An object or archive carrying a section or relocation the linker does not
   model. It is refused by name rather than placed at a guessed address.
-  `-external-linker=NAME` is the way through.
+  `-fuse-ld=NAME` is the way through.
 - GNU ld reading a shared object this compiler writes. ld wants a section
-  header table and this compiler writes none, so `-external-linker=ld` cannot
+  header table and this compiler writes none, so `-fuse-ld=ld` cannot
   consume one; vcc's own linker reads the dynamic table instead.
 - Speed. vcc is behind tcc, and the numbers are under Performance.
 - A complete V self-build. vcc does compile the C that V generates from vcc's
@@ -186,7 +198,7 @@ The common ones:
 `./vcc -hh` prints the rest, which includes `--version`, `-fno-builtin`,
 `-nostdinc`, `-undef`, `-include`, `-imacros`, the dependency flags,
 `-dM`, `-Wclass`/`-Wno-class`, `-fbracket-depth=N`, `-fvcc-exts=`,
-`-Wpedantic`, `-femulation=NAME`, `-external-linker=NAME`, `-target`,
+`-Wpedantic`, `-femulation=NAME`, `-fuse-ld=NAME`, `-fuse-vlk`, `-target`,
 `--link-libgcc`, `-shared-libvcc`, `-shared-libgcc` and the gcc `-print-`
 family. A flag the compiler does not implement is recorded and never refused,
 so a build system that passes one does not stop here.

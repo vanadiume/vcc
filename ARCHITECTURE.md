@@ -60,9 +60,11 @@ named after the stages. The order it runs is:
 9. `write_object` or `write_image` writes the bytes, and `-run` executes the file
    and leaves with its exit status.
 
-`main.v` is the only place these functions are called. `-external-linker=NAME`
-with a link is the one branch that leaves the pipeline early, taken before the
-single-input refusals because it is the path those refusals exist to lift.
+`main.v` is the only place these functions are called. A run that links leaves
+the pipeline early in two cases: `-fuse-ld=NAME` hands the link to another
+program, taken before the single-input refusals because it is the path those
+refusals exist to lift, and `-fuse-vlk` sends every input through the
+multi-input path, because the vlk library's merge is what it asks for.
 
 There are two parser entry points. `parser.parse(tokens)` parses for the host;
 `parser.parse_for(tokens, target)` parses for a named target. The first calls the
@@ -73,7 +75,7 @@ second with `backend.host()`, and the tests use it; the driver uses the second.
 | Path | Lines (files) | Job |
 |---|---|---|
 | `main.v` | 1,694 | the driver: command line in, output file out |
-| `cli/` | 990 (3) | flags, usage, version, input classification, the external-linker policy |
+| `cli/` | 990 (3) | flags, usage, version, input classification, the policy behind `-fuse-ld` |
 | `tokenize/` | 930 (2) | source text to tokens; defines `Token` and `Diagnostic` |
 | `preprocess/` | 2,867 (5) | the C preprocessor |
 | `standard/` | 994 (2) | the `-std=` modes and the dialect feature table |
@@ -88,7 +90,7 @@ second with `backend.host()`, and the tests use it; the driver uses the second.
 | `diagnostics/` | 264 | what a diagnostic is: class, severity, one renderer |
 | `interning/` | 69 | a pool of spellings: text asked for twice is one buffer |
 | `extensions/` | 152 | the `-fvcc-exts=` interface |
-| `linking/` | 3,186 (7) | the in-house linker: units in, one image out |
+| `linking/` | 3,186 (7) | the linker: units in, one image out, and the same link through the vlk library |
 
 `tokenize/` owns the `Diagnostic` struct (`tokenize/token.v:60`), which every
 stage produces, and `errors()` beside it, which is the list of diagnostics that
@@ -128,9 +130,15 @@ and an unresolved clause carries the zero value of `types.Type`, whose kind is
 `linking/` is the in-house linker: `symbols/` resolves names across units,
 `place/` lays the image out, `reloc/` fills the references in, `output/` wraps
 it, and `object/` and `archive/` read a relocatable file and an `ar` archive the
-command line names. `-external-linker=NAME` is the fallback for an input this
+command line names. `-fuse-ld=NAME` is the fallback for an input this
 linker cannot consume, and an object carrying a section or a relocation it does
 not model is refused by name rather than placed at a guessed address.
+
+`linking/vlk.v` is the same link performed by the vlk library instead: it
+converts the units and the target into the library's values and calls
+`vlk.link`, which does the merge, the library check and the container. The two
+paths are handed the same units and the same options, so the image is the same
+work either way, and `-fuse-vlk` is the flag that chooses between them.
 
 ## The target description
 

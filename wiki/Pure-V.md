@@ -24,7 +24,7 @@ still this compiler's source, so the rule reaches there too.
 
 ## The one exception
 
-`-external-linker=NAME` hands the final link to a linker the system already
+`-fuse-ld=NAME` hands the final link to a linker the system already
 has. It exists for the inputs this compiler cannot consume yet, such as an
 object carrying a section or a relocation the reader does not model, so that
 linking behaviour is available before the in-house linker reads everything. It

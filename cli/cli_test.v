@@ -456,69 +456,108 @@ fn test_x_naming_c_overrides_the_bytes() {
 	assert classify_input(object, 'forced.o', 'assembler') == .object
 }
 
-// -external-linker names the program that performs the final link. Both
+// -fuse-ld names the program that performs the final link. Both
 // spellings work, the joined one and the separated one, and the value is read
 // rather than recorded: a build that passes the flag and finds the in-house path
-// taken anyway has been told nothing. The -f spelling is not the flag: -f is the
-// feature family and linking is not a feature of the C the program is in.
-fn test_the_external_linker_can_be_named_in_both_spellings() {
-	joined := parse(['-external-linker=ld', 'a.c', 'b.c', '-o', 'out'])!
-	separate := parse(['-external-linker', 'ld', 'a.c', 'b.c', '-o', 'out'])!
-	assert joined.external_linker == 'ld'
-	assert separate.external_linker == 'ld'
+// taken anyway has been told nothing. The spelling is gcc's and clang's, which
+// is why it carries -f even though it is not a language feature.
+fn test_fuse_ld_can_be_named_in_both_spellings() {
+	joined := parse(['-fuse-ld=ld', 'a.c', 'b.c', '-o', 'out'])!
+	separate := parse(['-fuse-ld', 'ld', 'a.c', 'b.c', '-o', 'out'])!
+	assert joined.fuse_ld == 'ld'
+	assert separate.fuse_ld == 'ld'
 	assert joined.inputs == ['a.c', 'b.c']
 	assert separate.inputs == ['a.c', 'b.c']
-	assert !joined.ignored.contains('-external-linker=ld')
-	assert !separate.ignored.contains('-external-linker')
-	assert parse(['a.c', '-o', 'out'])!.external_linker == ''
+	assert !joined.ignored.contains('-fuse-ld=ld')
+	assert !separate.ignored.contains('-fuse-ld')
+	assert parse(['a.c', '-o', 'out'])!.fuse_ld == ''
 }
 
-fn test_the_external_linker_needs_a_value() {
-	if _ := parse(['a.c', '-external-linker']) {
-		assert false, '-external-linker with nothing after it should be an error'
+fn test_fuse_ld_needs_a_value() {
+	if _ := parse(['a.c', '-fuse-ld']) {
+		assert false, '-fuse-ld with nothing after it should be an error'
 	}
 }
 
-// A C compiler may not be the external linker. vcc compiles C itself, so a C
-// compiler finishing the job would be circular, and the refusal names the flag
-// and points at a linker instead.
-fn test_a_c_compiler_may_not_be_the_external_linker() {
+// The spelling this flag replaced is refused rather than recorded as ignored.
+// A build that still passes it asked for a link another program performs, and
+// the in-house link it would get instead is a different answer to that request.
+fn test_the_spelling_fuse_ld_replaced_is_refused() {
+	for args in [['a.c', '-external-linker=ld'], ['a.c', '-external-linker', 'ld']] {
+		if _ := parse(args) {
+			assert false, '${args} should name -fuse-ld'
+		} else {
+			assert err.msg().contains('-fuse-ld=NAME')
+		}
+	}
+}
+
+// A C compiler may not be the linker -fuse-ld names. vcc compiles C itself, so
+// a C compiler finishing the job would be circular, and the refusal names the
+// flag and points at a linker instead.
+fn test_a_c_compiler_may_not_be_the_linker_fuse_ld_names() {
 	for name in ['gcc', 'cc', 'clang', 'c++', 'tcc'] {
-		said := external_linker_refusal(name) or {
+		said := fuse_ld_refusal(name) or {
 			assert false, '${name} is a C compiler and must be refused'
 			''
 		}
-		assert said.contains('-external-linker=${name}')
+		assert said.contains('-fuse-ld=${name}')
 		assert said.contains('a C compiler is not a linker')
 		assert said.contains('ld')
 		assert said.contains('lld')
 	}
 	// The versioned and target-prefixed spellings are the same driver.
-	assert external_linker_refusal('gcc-16') != none
-	assert external_linker_refusal('clang-15') != none
-	assert external_linker_refusal('x86_64-linux-gnu-gcc') != none
+	assert fuse_ld_refusal('gcc-16') != none
+	assert fuse_ld_refusal('clang-15') != none
+	assert fuse_ld_refusal('x86_64-linux-gnu-gcc') != none
 	// A program whose name merely starts with a driver's is a different
 	// program: clangd is a language server, not a compiler.
-	assert external_linker_refusal('ld') == none
-	assert external_linker_refusal('lld') == none
-	assert external_linker_refusal('ld.lld') == none
-	assert external_linker_refusal('ld.gold') == none
-	assert external_linker_refusal('clangd') == none
+	assert fuse_ld_refusal('ld') == none
+	assert fuse_ld_refusal('lld') == none
+	assert fuse_ld_refusal('ld.lld') == none
+	assert fuse_ld_refusal('ld.gold') == none
+	assert fuse_ld_refusal('clangd') == none
 }
 
 // lld is the LLVM linkers' generic driver: invoked as `lld` it cannot choose a
 // linker and wants `-flavor gnu` first. Every other name gets nothing before the
 // link, because the GNU linkers would reject the word.
 fn test_an_lld_name_gets_its_flavor_and_others_get_nothing() {
-	assert external_linker_prefix('lld') == ['-flavor', 'gnu']
-	assert external_linker_prefix('ld') == []
-	assert external_linker_prefix('ld.lld') == []
-	assert external_linker_prefix('ld.gold') == []
+	assert fuse_ld_prefix('lld') == ['-flavor', 'gnu']
+	assert fuse_ld_prefix('ld') == []
+	assert fuse_ld_prefix('ld.lld') == []
+	assert fuse_ld_prefix('ld.gold') == []
 }
 
-fn test_the_external_linker_is_in_the_help() {
-	assert usage(false).contains('-external-linker=NAME')
-	assert usage(true).contains('-external-linker')
+fn test_fuse_ld_is_in_the_help() {
+	assert usage(false).contains('-fuse-ld=NAME')
+	assert usage(true).contains('-fuse-ld')
+}
+
+// -fuse-vlk asks this compiler's link to run through the vlk library. It is a
+// flag with no value and it is not recorded as ignored, and a command line that
+// also names a linker program is refused: a link has one linker.
+fn test_fuse_vlk_is_read_and_refused_beside_a_named_linker() {
+	asked := parse(['-fuse-vlk', 'a.c'])!
+	assert asked.fuse_vlk
+	assert asked.fuse_ld == ''
+	assert !asked.ignored.contains('-fuse-vlk')
+	assert parse(['a.c'])!.fuse_vlk == false
+	// A run that stops before a link has nothing for the flag to do, which is
+	// the answer -fuse-ld gets as well: the flag is read and not refused.
+	assert parse(['-c', '-fuse-vlk', 'a.c'])!.fuse_vlk
+	both := parse(['-fuse-vlk', '-fuse-ld=ld', 'a.c'])!.linker_conflict_refusal() or {
+		assert false, '-fuse-vlk beside -fuse-ld should be refused'
+		''
+	}
+	assert both.contains('-fuse-vlk')
+	assert both.contains('-fuse-ld=ld')
+	assert parse(['-fuse-vlk', 'a.c'])!.linker_conflict_refusal() == none
+}
+
+fn test_fuse_vlk_is_in_the_help() {
+	assert usage(false).contains('-fuse-vlk')
+	assert usage(true).contains('-fuse-vlk')
 }
 
 // The two flags that name a kind of link are read and not recorded: a build that
@@ -557,8 +596,8 @@ fn test_a_run_that_stops_before_a_link_says_so() {
 	// ordinary path, and no linker is resolved for it. What the flag would have
 	// done is not lost either, because the flag and the run disagree about
 	// whether there is a link at all, and the run is the one that decides.
-	stopped := parse(['-c', '-external-linker=ld', 'x.c'])!
-	assert stopped.external_linker == 'ld'
+	stopped := parse(['-c', '-fuse-ld=ld', 'x.c'])!
+	assert stopped.fuse_ld == 'ld'
 	assert !stopped.links()
 	assert stopped.link_kind_conflict_refusal() == none
 }
@@ -957,7 +996,7 @@ fn test_a_value_that_looks_like_a_flag_is_still_a_value() {
 }
 
 // -Wl, options are kept as written at parse time, because which linker reads
-// them is not known yet: -external-linker may name another tool further down
+// them is not known yet: -fuse-ld may name another tool further down
 // the same command line. The option is applied or refused where the link
 // happens, and it is never in the ignored list, which is what a build reads to
 // learn that something was passed over.
@@ -1026,8 +1065,8 @@ fn test_a_link_option_the_image_cannot_express_is_refused_by_name() {
 // The other linker gets the payloads as its own words: a comma between the
 // options inside one -Wl, word is the separator gcc uses, and nothing here
 // interprets or refuses what it forwards.
-fn test_the_external_linker_gets_the_wl_options_as_its_own_words() {
-	assert external_linker_arguments(['-z,now']) == ['-z', 'now']
-	assert external_linker_arguments(['-rpath,/x', '--gc-sections']) == ['-rpath', '/x', '--gc-sections']
-	assert external_linker_arguments([]).len == 0
+fn test_fuse_ld_gets_the_wl_options_as_its_own_words() {
+	assert fuse_ld_arguments(['-z,now']) == ['-z', 'now']
+	assert fuse_ld_arguments(['-rpath,/x', '--gc-sections']) == ['-rpath', '/x', '--gc-sections']
+	assert fuse_ld_arguments([]).len == 0
 }

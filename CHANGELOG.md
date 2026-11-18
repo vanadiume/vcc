@@ -1111,3 +1111,16 @@ it owns the change, which is the same vocabulary the commits use.
 * printer: a nested function statement reads its declaration through the option (855e96f)
 * docs: the changelog records the nested function read (3460e47)
 * parser: the nested function test reads its declarations through the option (00c5b36)
+
+## 2026-11-17
+
+* cli: the final link is handed over by -fuse-ld (a2046ff)
+* tree: the build installs vlk at a pinned commit (0aec3ab)
+* linking: a link runs through the vlk library (d213bd5)
+* cli: -fuse-vlk runs the link through the library (801c7a2)
+* docs: the bridge, the flag and the build's prerequisite
+* docs: the -fuse-vlk flag and the link through the library (3a99168)
+* docs: the changelog records the flag's documents (53c2f4c)
+* tree: the vlk pin takes the encoders' new names (549f0e6)
+* docs: the changelog records the branch's last two commits (5895f56)
+* tree: v.mod names the vlk library as its only dependency (2d9ebf5)

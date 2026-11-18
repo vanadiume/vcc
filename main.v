@@ -93,15 +93,21 @@ fn main() {
 		eprintln(cli.usage(false))
 		exit(1)
 	}
-	// -external-linker is its own path: it links the inputs this compiler cannot
+	// Two linkers on one command line is one of them dropped in silence, so the
+	// pair is refused before either path is taken: -fuse-ld is dispatched below
+	// and would otherwise answer for a link -fuse-vlk also asked for.
+	if refusal := opts.linker_conflict_refusal() {
+		abort(refusal)
+	}
+	// -fuse-ld is its own path: it links the inputs this compiler cannot
 	// consume and is taken before the single-input refusals below, because those
 	// refusals are what the flag exists to lift. A run that stops before a link
 	// keeps to the ordinary path and the flag goes unused, the way a linker flag
 	// that names a tool a run never reaches does anywhere else: it asks for
 	// something the run does not do, and refusing the command line would make a
 	// flag that decides nothing an error.
-	if opts.external_linker != '' && opts.links() {
-		external_link(opts)
+	if opts.fuse_ld != '' && opts.links() {
+		fuse_ld_link(opts)
 		return
 	}
 	// -shared and -static decide what a link writes, and the path with no linker
@@ -111,6 +117,15 @@ fn main() {
 	// that took one flag would drop the other without a word.
 	if refusal := opts.link_kind_conflict_refusal() {
 		abort(refusal)
+	}
+	// -fuse-vlk asks the link to run through the vlk library, and that path
+	// reads the whole command line as one link: it takes every input the way
+	// the multi-input path does, whether the line named one file or ten,
+	// because the library's merge is what the flag asks for and the
+	// single-input path below writes its container without one.
+	if opts.fuse_vlk && opts.links() {
+		link_inputs(opts)
+		return
 	}
 	// More than one input is a link, and a link is the linker's job: every
 	// input is compiled as one unit of it, the merge settles the references
@@ -957,20 +972,34 @@ fn link_inputs(opts cli.Options) {
 	}
 	units << pulled
 	mut started := time.now()
-	merged := linking.link(units, linking.Options{
+	merge_options := linking.Options{
 		entry:                entry
 		target:               target
 		libraries:            opts.libraries
 		library_dirs:         opts.library_dirs
 		shared_libraries:     shared
 		no_default_libraries: !default_libraries(opts, target)
-	}) or {
-		abort(err.msg())
-		return
 	}
-	bytes := output.image(merged, target, link_kind(opts), link_options) or {
-		abort(err.msg())
-		return
+	// The two linkers take the same units and the same options, and they differ
+	// in whose code performs the link. vlk's high entry does the merge, the
+	// library check and the container in one call and answers the image's
+	// bytes; this tree's own path does the merge and hands the merged program to
+	// the container. -fuse-vlk is the one place the two are chosen between, so
+	// the phases below are measured over whichever ran.
+	bytes := if opts.fuse_vlk {
+		linking.link_vlk(units, merge_options, link_kind(opts), link_options) or {
+			abort(err.msg())
+			return
+		}
+	} else {
+		merged := linking.link(units, merge_options) or {
+			abort(err.msg())
+			return
+		}
+		output.image(merged, target, link_kind(opts), link_options) or {
+			abort(err.msg())
+			return
+		}
 	}
 	linked := time.since(started).microseconds()
 	// One line per phase for the whole command, because a build reading -bench
@@ -1517,7 +1546,7 @@ fn names_a_static_archive(opts cli.Options) bool {
 }
 
 // in_house_link_options reads the -Wl, options for this compiler's own linker.
-// The parser keeps their payloads untouched because -external-linker hands them
+// The parser keeps their payloads untouched because -fuse-ld hands them
 // to another tool; here they are interpreted, and one the image cannot express
 // is an error naming the flag rather than a line in a list nobody reads. The
 // image writer is where the answer has to be true: an option that reached this
@@ -1533,7 +1562,7 @@ fn in_house_link_options(opts cli.Options) !linux.LinkOptions {
 	}
 }
 
-// external_link performs the final link with the program -external-linker named.
+// fuse_ld_link performs the final link with the program -fuse-ld named.
 //
 // It is the one path that links more than one input and inputs that are not C:
 // each .c input runs the same stages -c runs and becomes a relocatable object, a
@@ -1543,18 +1572,18 @@ fn in_house_link_options(opts cli.Options) !linux.LinkOptions {
 // for: a link that quietly did nothing is the worst outcome this flag can have,
 // and the reason the tool is resolved before any object is written. A run that
 // stops before a link never arrives here; the caller asks `links()` first.
-fn external_link(opts cli.Options) {
+fn fuse_ld_link(opts cli.Options) {
 	// Two kinds of link at once is one kind of link dropped in silence: the
 	// linker would be given one of the two flags and the file would not be what
 	// the other asked for.
 	if refusal := opts.link_kind_conflict_refusal() {
 		abort(refusal)
 	}
-	if refusal := cli.external_linker_refusal(opts.external_linker) {
+	if refusal := cli.fuse_ld_refusal(opts.fuse_ld) {
 		abort(refusal)
 	}
-	program := cli.external_linker_path(opts.external_linker) or {
-		abort('cannot find ${opts.external_linker}: -external-linker names a linker the system must have on PATH')
+	program := cli.fuse_ld_path(opts.fuse_ld) or {
+		abort('cannot find ${opts.fuse_ld}: -fuse-ld names a linker the system must have on PATH')
 		return
 	}
 	target := backend.resolve(opts.target) or {
@@ -1627,8 +1656,8 @@ fn external_link(opts cli.Options) {
 	// -Wl, options follow untouched: what they mean is the linker's business,
 	// and a comma between them is the separator gcc gives the tool, so
 	// -Wl,-z,now reaches it as the two words `-z now`.
-	mut invocation := cli.external_linker_prefix(opts.external_linker)
-	invocation << cli.external_linker_arguments(opts.link_args)
+	mut invocation := cli.fuse_ld_prefix(opts.fuse_ld)
+	invocation << cli.fuse_ld_arguments(opts.link_args)
 	invocation << args
 	// A file an earlier link left is not allowed to stand in for one this run
 	// did not write: the run reports a failure and the output has to agree.
@@ -1637,9 +1666,9 @@ fn external_link(opts cli.Options) {
 	// this compiler could link itself is the case that must not look like the
 	// in-house path was taken quietly, so it says which tool did the link.
 	if all_source {
-		eprintln('vcc: every input is C this compiler could link itself; the link is handed to ${opts.external_linker} because -external-linker was given')
+		eprintln('vcc: every input is C this compiler could link itself; the link is handed to ${opts.fuse_ld} because -fuse-ld was given')
 	} else {
-		eprintln('vcc: the link is handed to ${opts.external_linker} (-external-linker)')
+		eprintln('vcc: the link is handed to ${opts.fuse_ld} (-fuse-ld)')
 	}
 	// What runs is the argument array and not one string a shell would read
 	// again, so a path or an argument holding a space stays one word. The line

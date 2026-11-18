@@ -502,6 +502,10 @@ fn check_workflows(root string, _ Selection) []string {
 	// another compiler answers a question nobody asked.
 	problems << check_one_pin(workflows, 'V_COMMIT')
 	problems << check_one_pin(workflows, 'VC_COMMIT')
+	// The linker library the compiler imports is pinned too: the link a run
+	// measured has to be the library's code at one commit, and every job builds
+	// against the commit the others do.
+	problems << check_one_pin(workflows, 'VLK_COMMIT')
 	return problems
 }
 

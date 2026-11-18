@@ -45,9 +45,11 @@ modules named after the stages. The order is:
 9. `write_object` or `write_image` writes the bytes, and `-run` executes the
    file and leaves with its exit status.
 
-`main.v` is the only place these functions are called. `-external-linker=NAME`
-with a link is the one branch that leaves the pipeline early, taken before the
-single-input refusals because it is the path those refusals exist to lift.
+`main.v` is the only place these functions are called. A run that links leaves
+the pipeline early in two cases: `-fuse-ld=NAME` hands the link to another
+program, taken before the single-input refusals because it is the path those
+refusals exist to lift, and `-fuse-vlk` sends every input through the
+multi-input path, because the vlk library's merge is what it asks for.
 `parser.parse(tokens)` is the second parser entry point, which calls
 `parser.parse_for(tokens, backend.host())`; the tests use it and the driver
 does not.
@@ -77,7 +79,7 @@ beside it, not a branch in a caller.
 | Path | Job |
 |---|---|
 | `main.v` | the driver: command line in, output file out, the pipeline in between |
-| `cli/` | flags, usage, version, input classification, the external-linker policy. Knows nothing about C grammar. |
+| `cli/` | flags, usage, version, input classification, the policy behind `-fuse-ld`. Knows nothing about C grammar. |
 | `tokenize/` | source text to tokens; defines `Token` and the `Diagnostic` struct every stage produces |
 | `diagnostics/` | what a diagnostic is: class, severity, `flag_classes`, and `render`, the one place a diagnostic becomes text |
 | `standard/` | the `-std=` modes and the dialect feature table |
@@ -91,7 +93,7 @@ beside it, not a branch in a caller.
 | `codegen/` | `ast` in, an emitted unit out |
 | `image/` | the emitted unit: machine code, the data it reads, the references between them |
 | `extensions/` | the `-fvcc-exts=` interface, built on the rows in `standard/features.v` |
-| `linking/` | the in-house linker: `symbols/` resolves names across units, `place/` lays the image out, `reloc/` fills the references in, `output/` wraps it, and `object/` and `archive/` read a relocatable file and an `ar` archive |
+| `linking/` | the linker: `symbols/` resolves names across units, `place/` lays the image out, `reloc/` fills the references in, `output/` wraps it, and `object/` and `archive/` read a relocatable file and an `ar` archive. `vlk.v` is the same link performed by the vlk library instead |
 | `tools/` | gate, benchmark and corpus scripts; not part of the compiler |
 | `compliance/`, `regression/`, `goldens/` | C the compiler is handed, not C it is built from |
 

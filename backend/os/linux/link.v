@@ -1,7 +1,7 @@
 module linux
 
 // The command line an external linker is given, built from this system's own
-// description of itself. The flag that reaches here is `-external-linker`, and
+// description of itself. The flag that reaches here is `-fuse-ld`, and
 // what it buys is a link for the inputs this compiler cannot consume yet: a
 // relocatable object, an archive. Nothing here decides that a link should
 // happen; it answers what a link on this system is made of.

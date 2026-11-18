@@ -85,7 +85,7 @@ own flags and `--version`. A flag it does not implement is recorded and never
 refused, with one exception: a `-Wl,` option is an instruction to the link, and
 vcc performs the link itself, so an option its linker cannot express is refused
 by name rather than recorded as if it had been applied. With
-`-external-linker=NAME` the options belong to that linker and are passed
+`-fuse-ld=NAME` the options belong to that linker and are passed
 through untouched. The other flags, `-bt25` among them, are still recorded and
 never refused, because V passes flags for work it expects done and a compiler
 that errors on `-bt25` fails a build it was meant to serve.
@@ -94,7 +94,7 @@ The extensions V's generated C uses (`typeof`, `__int128`, the atomic
 builtins, statement expressions, `__attribute__`) are in the dialect table
 because that C uses them, not because they were easy. [[C-Support]] has the
 dialect side. [[Pure-V]] has the one exception to the linking rule,
-`-external-linker=NAME`, which refuses `cc`, `gcc`, `clang`, `c++` and `tcc`
+`-fuse-ld=NAME`, which refuses `cc`, `gcc`, `clang`, `c++` and `tcc`
 by name, because a C compiler finishing C compilation is the one thing that
 rule exists to prevent.
 

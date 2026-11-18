@@ -33,6 +33,9 @@ FROM ubuntu:24.04@sha256:008173c23f95b170204355c12626cb5a965d779a7e1283b09e9cffb
 # is the pinned commit so make's own update step leaves it alone.
 ARG V_COMMIT=c6bb06f5c04d78f9f6d22a57c257d27e835ba40a
 ARG VC_COMMIT=bcfdc7f33e7b7908ee40f76d059c0e2894fb4a3b
+# The linker library the compiler imports, pinned for the same reason and
+# reachable at the module path the compiler's own code writes.
+ARG VLK_COMMIT=1db3c264223396a87cacf67f817ec3dec790de1c
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -63,6 +66,9 @@ ENV PATH=/opt/v:$PATH
 WORKDIR /src
 COPY . /src
 
+RUN mkdir -p /root/.vmodules/vanadiume \
+ && git clone --quiet https://github.com/vanadiume/vlk /root/.vmodules/vanadiume/vlk \
+ && git -C /root/.vmodules/vanadiume/vlk checkout --quiet "${VLK_COMMIT}"
 RUN v run tools/build.vsh build --prod -o /vcc \
  && objcopy --remove-section=.stab --remove-section=.stabstr /vcc
 

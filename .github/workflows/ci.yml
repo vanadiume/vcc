@@ -86,6 +86,10 @@ env:
   V_COMMIT: c6bb06f5c04d78f9f6d22a57c257d27e835ba40a
   VC_COMMIT: bcfdc7f33e7b7908ee40f76d059c0e2894fb4a3b
   V_DIR: /opt/v
+  # vlk is the linker library this compiler's link runs through. Pinned for the
+  # same reason V is: a red run has to be about this tree and not about a library
+  # that moved underneath it.
+  VLK_COMMIT: 1db3c264223396a87cacf67f817ec3dec790de1c
 
 jobs:
   gate:
@@ -158,6 +162,17 @@ jobs:
               exit 1
               ;;
           esac
+
+      # The linker library this compiler imports, at a commit rather than a
+      # branch: a link in this tree is the library's code, so which commit that
+      # code came from has to be part of what a run measured. It installs under
+      # the module path the compiler's own files write, which is the only place
+      # V finds it.
+      - name: install vlk
+        run: |
+          mkdir -p ~/.vmodules/vanadiume
+          git clone --quiet https://github.com/vanadiume/vlk ~/.vmodules/vanadiume/vlk
+          git -C ~/.vmodules/vanadiume/vlk checkout --quiet "$VLK_COMMIT"
 
       # Every step but the tests: the suite has the three runners of the `tests`
       # job below, and running it here as well would pay for it twice. Named as
@@ -324,6 +339,17 @@ jobs:
               ;;
           esac
 
+      # The linker library this compiler imports, at a commit rather than a
+      # branch: a link in this tree is the library's code, so which commit that
+      # code came from has to be part of what a run measured. It installs under
+      # the module path the compiler's own files write, which is the only place
+      # V finds it.
+      - name: install vlk
+        run: |
+          mkdir -p ~/.vmodules/vanadiume
+          git clone --quiet https://github.com/vanadiume/vlk ~/.vmodules/vanadiume/vlk
+          git -C ~/.vmodules/vanadiume/vlk checkout --quiet "$VLK_COMMIT"
+
       - name: test suite, shard ${{ matrix.shard }} of 3
         run: v run tools/gate.vsh --only tests --shard ${{ matrix.shard }}/3
 
@@ -386,6 +412,17 @@ jobs:
               exit 1
               ;;
           esac
+
+      # The linker library this compiler imports, at a commit rather than a
+      # branch: a link in this tree is the library's code, so which commit that
+      # code came from has to be part of what a run measured. It installs under
+      # the module path the compiler's own files write, which is the only place
+      # V finds it.
+      - name: install vlk
+        run: |
+          mkdir -p ~/.vmodules/vanadiume
+          git clone --quiet https://github.com/vanadiume/vlk ~/.vmodules/vanadiume/vlk
+          git -C ~/.vmodules/vanadiume/vlk checkout --quiet "$VLK_COMMIT"
 
       # The script builds the compiler from this tree itself, so the only thing
       # this job has to get right is which `v` is on PATH.
@@ -477,6 +514,17 @@ jobs:
               exit 1
               ;;
           esac
+
+      # The linker library this compiler imports, at a commit rather than a
+      # branch: a link in this tree is the library's code, so which commit that
+      # code came from has to be part of what a run measured. It installs under
+      # the module path the compiler's own files write, which is the only place
+      # V finds it.
+      - name: install vlk
+        run: |
+          mkdir -p ~/.vmodules/vanadiume
+          git clone --quiet https://github.com/vanadiume/vlk ~/.vmodules/vanadiume/vlk
+          git -C ~/.vmodules/vanadiume/vlk checkout --quiet "$VLK_COMMIT"
 
       # The script builds the compiler from this tree itself, so the only thing
       # this job has to get right is which `v` is on PATH. The run's summary is
