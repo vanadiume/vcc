@@ -125,6 +125,12 @@ compilation is the one thing the pure-V rule exists to prevent. It is the
 single exception to that rule, and it is off by default. [[Pure-V]] covers the
 rule.
 
+`-fuse-vlk` links through the vlk library instead of the linker in this tree.
+The units, the target and the options are the same on both paths, so the image
+is the same work, and the flag exists so the two implementations can be compared
+on one build. It is refused beside `-fuse-ld=NAME`, because a link has one
+linker.
+
 A flag the compiler does not implement is recorded and never refused, because
 a compiler that errors on `-bt25` fails a build it was supposed to serve.
 
