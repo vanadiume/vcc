@@ -633,6 +633,11 @@ fn link_inputs(opts cli.Options) {
 	// link reaches a library.
 	output_kind := link_kind(opts)
 	mut units := []unit.Program{cap: opts.inputs.len + 1}
+	// Where each imported name was written, by the input it was written in.
+	// The linker decides whether a name is missing; this map supplies the
+	// position the refusal names, which no unit alone can supply because it
+	// holds no path.
+	mut unit_sites := map[string]SourceSite{}
 	// The shared objects the command line named as files. They are not units:
 	// the link records them as libraries the image asks the loader for and
 	// leaves the names they define to the loader, so they travel beside the
@@ -789,6 +794,19 @@ fn link_inputs(opts cli.Options) {
 		}
 		note_unit(mut provided, mut needed, emitted.program)
 		units << emitted.program
+		// The link decides whether a name is missing, but this file is the
+		// only place that knows which input the unit came from: the unit's own
+		// sites are gathered here, and the first unit that imports a name is
+		// the one a refusal names.
+		for name, site in emitted.import_sites {
+			if name !in unit_sites {
+				unit_sites[name] = SourceSite{
+					path: path
+					line: site.line
+					col:  site.col
+				}
+			}
+		}
 	}
 	// The C library is on every image whether or not a -l named it, and the
 	// archives the ld script beside its shared object names are inputs of the
@@ -995,7 +1013,7 @@ fn link_inputs(opts cli.Options) {
 	// so the phases below are measured over whichever ran.
 	bytes := if opts.legacy_ld {
 		merged := linking.link(units, merge_options) or {
-			abort(err.msg())
+			report_link_refusal(err.msg(), unit_sites)
 			return
 		}
 		output.image(merged, target, link_kind(opts), link_options) or {
@@ -1004,7 +1022,7 @@ fn link_inputs(opts cli.Options) {
 		}
 	} else {
 		linking.link_vlk(units, merge_options, link_kind(opts), link_options) or {
-			abort(err.msg())
+			report_link_refusal(err.msg(), unit_sites)
 			return
 		}
 	}
@@ -1366,6 +1384,47 @@ fn report(path string, raised []tokenize.Diagnostic, policy diagnostics.Policy) 
 fn abort(message string) {
 	eprintln('vcc: ${message}')
 	exit(1)
+}
+
+// SourceSite is where a name the link could not resolve was written, with the
+// input file it was written in. A unit carries its own sites but no path; the
+// driver joins the two where it read the file.
+struct SourceSite {
+	path string
+	line int
+	col  int
+}
+
+// report_link_refusal writes a link's refusal, naming the file and line of the
+// missing name when an input recorded one. The linker decides what is missing:
+// this function supplies a position and never a verdict, so a name a sibling
+// unit or a library answers is not reported here.
+fn report_link_refusal(message string, sites map[string]SourceSite) {
+	name := undefined_reference_name(message) or {
+		abort(message)
+		return
+	}
+	site := sites[name] or {
+		abort(message)
+		return
+	}
+	eprintln('${site.path}:${site.line}:${site.col}: ${message}')
+	exit(1)
+}
+
+// undefined_reference_name reads the name out of a link refusal, and none when
+// the message is a different failure. Both linkers write the name between
+// backticks, which is the shape the refusal has carried since the in-house
+// linker refused its first name.
+fn undefined_reference_name(message string) ?string {
+	if !message.starts_with('undefined reference to `') {
+		return none
+	}
+	parts := message.split('`')
+	if parts.len < 3 || parts[1] == '' {
+		return none
+	}
+	return parts[1]
 }
 
 // runtime_library_name is the file a link takes for the helpers the machine has

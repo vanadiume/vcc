@@ -85,7 +85,7 @@ fn (mut e Emitter) emit_complex_helper(dest Slot, step ast.Binary, left Slot, ri
 			component++
 		}
 	}
-	e.write_runtime_helper_call(name)
+	e.write_runtime_helper_call(name, line, col)
 	return e.store_complex_helper_result(dest, single, line, col)
 }
 
@@ -140,7 +140,7 @@ fn (mut e Emitter) emit_long_double_complex_helper(dest Slot, step ast.Binary, l
 		}
 		argument--
 	}
-	e.write_runtime_helper_call(name)
+	e.write_runtime_helper_call(name, line, col)
 	e.release_call_stack(entry)
 	e.pop_extended_component(frame, dest.offset, line, col)!
 	return e.pop_extended_component(frame, dest.offset + component, line, col)
