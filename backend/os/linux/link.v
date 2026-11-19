@@ -89,9 +89,11 @@ pub fn link_arguments(kind LinkKind, interpreter string, dirs []string, objects 
 		.program {
 			// The loader is a program's own fact: the kernel hands the image to
 			// it. A shared object is loaded by whoever names it, and a static
-			// program is started with no loader at all.
-			args << '-dynamic-linker'
-			args << interpreter
+			// program is started with no loader at all. The spelling is the
+			// long one joined with its value, which GNU ld, lld and vvd all
+			// read: vvd is the frontend over the same library this tree links
+			// through, and it takes no separated `-dynamic-linker`.
+			args << '--dynamic-linker=${interpreter}'
 		}
 		.static_program {
 			args << '-static'

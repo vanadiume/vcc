@@ -863,7 +863,7 @@ pub fn usage(all bool) string {
 	out << '                    own -c machinery, then NAME links those objects and'
 	out << '                    the inputs it cannot read: a relocatable object, an'
 	out << '                    archive. NAME must not be a C compiler (cc, gcc,'
-	out << '                    clang, c++, tcc); name ld or lld instead. A run that'
+	out << '                    clang, c++, tcc); name ld, lld or vvd instead. A run that'
 	out << '                    stops before a link (-c, -E, -M, -MD, -dM,'
 	out << '                    -print-ast) has nothing for NAME to do and the flag'
 	out << '                    goes unused. With the flag unset every input is'

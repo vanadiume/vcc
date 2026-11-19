@@ -531,6 +531,18 @@ fn test_a_c_compiler_may_not_be_the_linker_fuse_ld_names() {
 	assert fuse_ld_refusal('ld.lld') == none
 	assert fuse_ld_refusal('ld.gold') == none
 	assert fuse_ld_refusal('clangd') == none
+	// vvd is the frontend over the vlk library this tree links through, so it
+	// is a linker and not a compiler driver.
+	assert fuse_ld_refusal('vvd') == none
+}
+
+// vvd reads no --start-group, and a static link is the one link that names
+// one. The refusal is by name and says which link kinds stay available.
+fn test_vvd_is_refused_for_a_static_link() {
+	assert fuse_ld_static_refusal('vvd') != none
+	assert fuse_ld_static_refusal('/opt/bin/vvd') != none
+	assert fuse_ld_static_refusal('ld') == none
+	assert fuse_ld_static_refusal('ld.lld') == none
 }
 
 // lld is the LLVM linkers' generic driver: invoked as `lld` it cannot choose a

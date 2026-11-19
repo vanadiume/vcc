@@ -42,9 +42,9 @@ fn test_the_link_arguments_name_the_loader_the_start_files_and_the_directories()
 	args := link_arguments(.program, host.interpreter, dirs, ['x.o'], ['m'], 'out', LinkOptions{}) or {
 		panic(err)
 	}
-	// The loader is the system's own, and it is written as the linker's flag.
-	assert args[0] == '-dynamic-linker'
-	assert args[1] == host.interpreter
+	// The loader is the system's own, and it is written as the linker's flag,
+	// joined with its value: GNU ld, lld and vvd all read that spelling.
+	assert args[0] == '--dynamic-linker=${host.interpreter}'
 	// The start files are full paths the same search finds, in the order the
 	// link passes them.
 	files := start_files(.program)
@@ -167,7 +167,7 @@ fn test_the_library_flags_shape_the_argument_list() {
 	assert crt1 !in without_std
 	assert crtn !in without_std
 	assert '-lc' !in without_std
-	assert '-dynamic-linker' in without_std
+	assert '--dynamic-linker=${host.interpreter}' in without_std
 }
 
 // The runtime archive the caller resolved is in the group before the toolchain's

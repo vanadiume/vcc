@@ -121,7 +121,8 @@ makes the call and `-O2` folds it. `-fno-builtin` takes the fold back.
 system, for an input the in-house linker cannot consume yet, such as an object
 carrying a section or a relocation it does not model. It refuses `cc`,
 `gcc`, `clang`, `c++` and `tcc` by name, because a C compiler finishing C
-compilation is the one thing the pure-V rule exists to prevent. It is the
+compilation is the one thing the pure-V rule exists to prevent. `vvd`, the
+frontend over the same vlk library, is one of the linkers it accepts. It is the
 single exception to that rule, and it is off by default. [[Pure-V]] covers the
 rule.
 
