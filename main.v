@@ -1086,8 +1086,10 @@ fn system_files(files []preprocess.SourceFile) map[string]bool {
 // wrote and the mode it names, so that a build reading the output can tell what
 // the flag bought.
 fn standard_line(opts cli.Options) string {
+	if opts.standard == '' {
+		return 'no -std (mode ${standard.default_mode.spelling()}, ${standard.default_mode.standard_name()}): the default'
+	}
 	match opts.dialect {
-		.none { return '(none asked for; V passes -std=gnu11, which is recorded and not refused)' }
 		.other {
 			return '${opts.standard} (a spelling this compiler does not implement; recorded, never refused)'
 		}

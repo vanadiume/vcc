@@ -473,6 +473,20 @@ fn test_fuse_ld_can_be_named_in_both_spellings() {
 	assert parse(['a.c', '-o', 'out'])!.fuse_ld == ''
 }
 
+// A command line with no -std reads gnu11. V passes that spelling to the C
+// compiler it builds with, and a program written for that command line should
+// not have to write the flag again; the spelling stays empty because no -std
+// was written, and a -std that is written overrides the default.
+fn test_no_std_selects_gnu11() {
+	plain := parse(['a.c'])!
+	assert plain.dialect == .gnu11
+	assert plain.standard == ''
+	assert parse(['-std=c99', 'a.c'])!.dialect == .c99
+	assert parse(['-std', 'gnu99', 'a.c'])!.dialect == .gnu99
+	// A spelling this compiler does not implement stays its own answer.
+	assert parse(['-std=c++20', 'a.c'])!.dialect == .other
+}
+
 fn test_fuse_ld_needs_a_value() {
 	if _ := parse(['a.c', '-fuse-ld']) {
 		assert false, '-fuse-ld with nothing after it should be an error'

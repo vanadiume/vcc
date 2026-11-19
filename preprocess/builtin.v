@@ -346,9 +346,10 @@ pub fn standard_defines(mode standard.Mode, emulation Emulation) []string {
 // themselves are not gated that way: char16_t and char32_t are
 // __uint_least16_t and __uint_least32_t in <uchar.h>, which the target's
 // headers define in every mode, and this compiler reads objects of them in
-// every mode too. So the gate follows the standard and not the type. No -std at
-// all, and a -std spelling this compiler does not implement, take the default
-// dialect's answer, which is the gnu-like one gcc's own default gives.
+// every mode too. So the gate follows the standard and not the type. A caller
+// that holds no dialect (`.none`), and a -std spelling this compiler does not
+// implement, take the gnu-like answer gcc's own default gives; a command line
+// with no -std reads gnu11 (standard.default_mode), which is such a dialect.
 //
 // __STDC_IEC_559_COMPLEX__ and __STDC_IEC_60559_COMPLEX__ are not defined in
 // any mode, on purpose. They claim the complex arithmetic conforms to IEC 60559,

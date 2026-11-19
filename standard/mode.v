@@ -4,12 +4,15 @@ module standard
 // the rest of the compiler asks of it: which constructs are standard, which
 // macros describe it, which pedantic messages a program can hear.
 //
-// Two answers have to be kept apart. `.none` is no -std at all, which is the
-// compiler's own default and not a standard it measured anything against.
-// `.other` is a spelling that names a language this compiler does not
-// implement. Everything it does implement is a mode here.
+// Two answers have to be kept apart. `.none` is no mode at all, which a caller
+// that holds none gets; no command line produces it, because a run without
+// `-std` reads `default_mode` below. `.other` is a spelling that names a
+// language this compiler does not implement. Everything it does implement is a
+// mode here.
 pub enum Mode {
-	// none: no -std was given.
+	// none: no mode at all. A command line that writes no -std gets
+	// `default_mode`, so this answer comes only from a caller that asks
+	// nothing of a dialect.
 	none
 	c89
 	c99
@@ -30,6 +33,14 @@ pub enum Mode {
 	// like any other.
 	other
 }
+
+// default_mode is the dialect a command line that names no -std reads. It is
+// gnu11 rather than one of the strict standards: V passes -std=gnu11 to the C
+// compiler it builds with, and a program written for that command line is the
+// one this compiler is asked to read when nobody says otherwise. `.none` stays
+// in the enum for a caller that holds no mode at all, and no command line
+// produces it.
+pub const default_mode = Mode.gnu11
 
 // from_spelling answers the mode a -std= spelling names. The map is total: every
 // string has an answer and no spelling is an error, which is the contract the
@@ -139,7 +150,7 @@ pub fn (m Mode) is_gnu() bool {
 // compiler accepts `inline` there as its own extension and reads it with the
 // rule that predates the word becoming standard.
 //
-// A mode that is no standard at all, no `-std` and a spelling this compiler does
+// A mode that is no standard at all, `.none` or a spelling this compiler does
 // not implement, takes the C99 rule, which is the one every compiler has used
 // for the twenty-five years since.
 pub fn (m Mode) inline_definitions_are_external() bool {
@@ -172,9 +183,9 @@ fn (m Mode) rank() int {
 }
 
 // includes says whether the mode takes in everything a construct that first
-// became standard in another mode has. A mode nobody ranked, which is no -std at
-// all or a spelling this compiler does not implement, includes nothing: it is
-// not a standard and it asks no question of a program.
+// became standard in another mode has. A mode nobody ranked, `.none` or a
+// spelling this compiler does not implement, includes nothing: it is not a
+// standard and it asks no question of a program.
 pub fn (m Mode) includes(since Mode) bool {
 	if m.rank() < 0 || since.rank() < 0 {
 		return false

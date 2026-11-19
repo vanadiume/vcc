@@ -325,6 +325,11 @@ pub fn parse(args []string) !Options {
 	mut opts := Options{
 		optimization:  optimizer.default_options()
 		bracket_depth: parser.default_bracket_depth
+		// No -std names the default dialect, which is gnu11: the language V
+		// passes to a C compiler, and the one a program written for a GNU
+		// default expects. The spelling stays empty because no -std was
+		// written.
+		dialect:       standard.default_mode
 	}
 	mut optimization := opts.optimization
 	mut positional := []string{}
@@ -835,7 +840,8 @@ pub fn usage(all bool) string {
 	out << '  -std=version  -std version   the dialect: the spelling selects the mode'
 	out << '                the construct table is checked against (c89 through c29'
 	out << '                and the gnu dialects of each); a spelling this compiler'
-	out << '                does not implement is recorded and never refused'
+	out << '                does not implement is recorded and never refused. With'
+	out << '                no -std the dialect is gnu11'
 	out << '  -Wpedantic -pedantic      report what the selected dialect forbids'
 	out << '  -pedantic-errors          the same as an error (-Werror=pedantic too)'
 	out << '  -Wclass -Wno-class        one class of diagnostic, on or off: the last'

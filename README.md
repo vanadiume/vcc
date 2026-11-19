@@ -117,8 +117,9 @@ library, so an install that cannot find its own runtime fails there.
 - The dialects: `-std=c89`, `c99`, `c11`, `c17`, `c23` and `c29`, the GNU
   spelling of each (`gnu89` through `gnu29`), the ISO spellings
   (`iso9899:1990` through `iso9899:2029`), and the `c90`, `c18`, `c2y` and
-  `gnu2y` aliases. A construct the selected mode forbids is a pedantic message,
-  silent until `-Wpedantic`; `-pedantic-errors` makes it an error.
+  `gnu2y` aliases. With no `-std` the dialect is `gnu11`. A construct the
+  selected mode forbids is a pedantic message, silent until `-Wpedantic`;
+  `-pedantic-errors` makes it an error.
 - A real preprocessor, including `#include_next`, function-like macros with `#`
   and `##`, variadic arguments, the full `#if` grammar, `#pragma once`,
   `#line`, `#error`, `_Pragma` and `__has_include`. Its output is compared with

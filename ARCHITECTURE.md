@@ -189,7 +189,9 @@ refused.
 ## Dialects and extensions
 
 `standard/mode.v` defines `Mode`, one value per `-std=` language, plus `.none`
-(no `-std`) and `.other` (a spelling this compiler does not implement).
+(no mode at all, which a command line does not produce) and `.other` (a spelling
+this compiler does not implement). A run without `-std` reads `default_mode`,
+which is `gnu11`.
 `from_spelling` is total: every spelling gets a mode and none is an error.
 `standard/features.v` is the dialect table in two parts: `Feature` (spellings,
 `since`, `gnu`, `reserved`, `invalid`, the extension name, the pedantic phrase,

@@ -53,8 +53,9 @@ pub mut:
 	// or a spelling this compiler does not implement. It is here because phase 1
 	// asks the language a question before a token exists — whether a `??x` is
 	// replaced — and `standard.replaces_trigraphs` is where the answer is
-	// written down. `.none`, no `-std` at all, is the default dialect, which is
-	// gnu-like, so it leaves the bytes alone too.
+	// written down. `.none` is a caller that names no dialect, and no command
+	// line produces it: a run without -std reads `standard.default_mode`, which
+	// is gnu11, and that leaves the bytes alone too.
 	dialect standard.Mode
 }
 

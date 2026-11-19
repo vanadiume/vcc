@@ -69,9 +69,9 @@ spellings include the ISO forms (`iso9899:1990` through `iso9899:2029`), the
 `c90` and `c18` and `c2y` aliases, and `gnu2y` for the next standard. Modes
 rank by the standard they name, so `gnu99` includes everything `c99` has.
 
-Two answers sit outside that ranking. `.none` is no `-std` at all, which is
-the compiler's own default and not a standard it measured anything against.
-`.other` is a spelling that names a language this compiler does not implement:
+Two answers sit outside that ranking. `.none` is a caller that holds no mode,
+which a command line does not produce: no `-std` reads `gnu11`. `.other` is a
+spelling that names a language this compiler does not implement:
 it is recorded and refused nothing, because tcc accepts every spelling and a
 compiler V may hand any spelling to must not fail on one.
 
