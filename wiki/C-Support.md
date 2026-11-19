@@ -52,9 +52,12 @@ with its libraries resolved into the file. Thread-local storage, `.eh_frame` and
 `.eh_frame_hdr`, and the runtime archive `libvcc.a` are part of what the
 compiler emits and links.
 
-The in-house linker merges translation units, reads relocatable objects and
-`ar` archives, reads a shared object's dynamic table for the names it defines,
-and refuses an unresolved import at compile time by name.
+Every link runs through the vlk library, which merges translation units,
+reads relocatable objects and `ar` archives, reads a shared object's dynamic
+table for the names it defines, and refuses an unresolved import by name.
+`-flegacy-ld` asks for the linker this tree carried before the library. That
+path is deprecated: it gets no more work after this merge and will be removed
+in a later 0.0.5 beta.
 
 ## Dialects and the -std= modes
 

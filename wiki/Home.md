@@ -30,9 +30,10 @@ is real, the front end reads what a real header is made of and the function
 definitions after it, and the back end writes a dynamically linked executable
 that calls into libc, so `#include <stdio.h>` and `puts` work end to end. `-c`
 writes a real ELF64 relocatable object, `-shared` writes a shared object, and
-`-static` writes a static program. The in-house linker merges translation
-units, reads objects and `ar` archives, and refuses an unresolved import by
-name.
+`-static` writes a static program. Every link runs through the vlk library,
+which merges translation units, reads objects and `ar` archives, and refuses an
+unresolved import by name. `-flegacy-ld` asks for the deprecated linker this
+tree carried before the library.
 
 The runners count the evidence: 1,725 tests, 1,154 conformance cases across
 the C dialects, and 126 regression cases. `README.md` carries the detail, and
