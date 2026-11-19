@@ -1132,3 +1132,5 @@ it owns the change, which is the same vocabulary the commits use.
 * cli: -fuse-ld accepts vvd as a linker (d699f9d)
 * codegen: an undefined reference names the line it was written on (044837c)
 * docs: the changelog records the default-dialect and linker batch (76c3ea3)
+* docs: the changelog records the batch entry it added (7ec6939)
+* cli: a static link through vvd is no longer refused (adaf64d)
