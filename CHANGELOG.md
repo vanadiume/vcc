@@ -1131,3 +1131,4 @@ it owns the change, which is the same vocabulary the commits use.
 * linking: the vlk library performs every link by default (62c96e5)
 * cli: -fuse-ld accepts vvd as a linker (d699f9d)
 * codegen: an undefined reference names the line it was written on (044837c)
+* docs: the changelog records the default-dialect and linker batch (76c3ea3)
