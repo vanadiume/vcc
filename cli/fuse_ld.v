@@ -25,7 +25,7 @@ const c_compiler_drivers = ['cc', 'gcc', 'clang', 'c++', 'tcc']
 // compiler runs is a name the command line chose.
 pub fn fuse_ld_refusal(name string) ?string {
 	if is_c_compiler_driver(name) {
-		return '-fuse-ld=${name}: a C compiler is not a linker here; name a linker such as ld or lld'
+		return '-fuse-ld=${name}: a C compiler is not a linker here; name a linker such as ld, lld or vvd'
 	}
 	return none
 }
@@ -69,6 +69,20 @@ fn is_version_suffix(text string) bool {
 		}
 	}
 	return true
+}
+
+// fuse_ld_static_refusal is the message for a static link handed to a tool that
+// reads no --start-group, and none for a tool this compiler can hand one. vvd
+// is the one such tool named here: its flag surface is ld.lld's, and it refuses
+// the group because its -l search makes a pass after every input. A static link
+// names the group around the runtime and the C library, measured needed: without
+// it vvd leaves `_Unwind_Resume` unresolved, so the command line this compiler
+// would build is one vvd cannot finish.
+pub fn fuse_ld_static_refusal(name string) ?string {
+	if os.base(name) != 'vvd' {
+		return none
+	}
+	return '-fuse-ld=${name} with -static: a static link names a --start-group around the runtime and the libraries, and vvd reads no group; use -fuse-ld=ld or the vlk library'
 }
 
 // fuse_ld_path resolves a name to the program on PATH, or an error when

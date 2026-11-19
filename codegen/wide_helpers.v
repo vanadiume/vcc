@@ -87,12 +87,12 @@ fn (mut e Emitter) load_wide_helper_pair(slot Slot, position int, line int, col 
 // leaves it for a linker while a program reaches it through the slot the loader
 // fills in. Both widths use it: a 128-bit operation and a complex product or
 // quotient become calls of the same shape.
-fn (mut e Emitter) write_runtime_helper_call(name string) {
+fn (mut e Emitter) write_runtime_helper_call(name string, line int, col int) {
 	if name in e.program.defined {
 		e.reference(e.target.call_near(0), .call_local, name, '')
 		return
 	}
-	e.import_symbol(name)
+	e.import_symbol(name, line, col)
 	if e.compile_only {
 		e.reference(e.target.call_near(0), .call_import, name, '')
 	} else {
@@ -107,7 +107,7 @@ fn (mut e Emitter) write_runtime_helper_call(name string) {
 fn (mut e Emitter) emit_wide_binary_helper(step ast.Binary, left Slot, right Slot, name string) !void {
 	e.load_wide_helper_pair(left, 0, step.line, step.col)!
 	e.load_wide_helper_pair(right, 2, step.line, step.col)!
-	e.write_runtime_helper_call(name)
+	e.write_runtime_helper_call(name, step.line, step.col)
 }
 
 // emit_wide_shift_helper writes a 128-bit shift by a constant count as the
@@ -117,7 +117,7 @@ fn (mut e Emitter) emit_wide_shift_helper_constant(step ast.Binary, left Slot, b
 	count := e.shift_helper_count_register(step.line, step.col)!
 	e.append(e.target.move_immediate32(count, u32(bits))!)
 	e.load_wide_helper_pair(left, 0, step.line, step.col)!
-	e.write_runtime_helper_call(name)
+	e.write_runtime_helper_call(name, step.line, step.col)
 }
 
 // emit_wide_shift_helper_register is the same call with a count the program
@@ -129,7 +129,7 @@ fn (mut e Emitter) emit_wide_shift_helper_register(step ast.Binary, left Slot, c
 	argument := e.shift_helper_count_register(step.line, step.col)!
 	e.append(e.target.move_register32(argument, count)!)
 	e.load_wide_helper_pair(left, 0, step.line, step.col)!
-	e.write_runtime_helper_call(name)
+	e.write_runtime_helper_call(name, step.line, step.col)
 }
 
 // shift_helper_count_register is where the third integer argument travels,

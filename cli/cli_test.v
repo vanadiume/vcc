@@ -473,6 +473,20 @@ fn test_fuse_ld_can_be_named_in_both_spellings() {
 	assert parse(['a.c', '-o', 'out'])!.fuse_ld == ''
 }
 
+// A command line with no -std reads gnu11. V passes that spelling to the C
+// compiler it builds with, and a program written for that command line should
+// not have to write the flag again; the spelling stays empty because no -std
+// was written, and a -std that is written overrides the default.
+fn test_no_std_selects_gnu11() {
+	plain := parse(['a.c'])!
+	assert plain.dialect == .gnu11
+	assert plain.standard == ''
+	assert parse(['-std=c99', 'a.c'])!.dialect == .c99
+	assert parse(['-std', 'gnu99', 'a.c'])!.dialect == .gnu99
+	// A spelling this compiler does not implement stays its own answer.
+	assert parse(['-std=c++20', 'a.c'])!.dialect == .other
+}
+
 fn test_fuse_ld_needs_a_value() {
 	if _ := parse(['a.c', '-fuse-ld']) {
 		assert false, '-fuse-ld with nothing after it should be an error'
@@ -517,6 +531,18 @@ fn test_a_c_compiler_may_not_be_the_linker_fuse_ld_names() {
 	assert fuse_ld_refusal('ld.lld') == none
 	assert fuse_ld_refusal('ld.gold') == none
 	assert fuse_ld_refusal('clangd') == none
+	// vvd is the frontend over the vlk library this tree links through, so it
+	// is a linker and not a compiler driver.
+	assert fuse_ld_refusal('vvd') == none
+}
+
+// vvd reads no --start-group, and a static link is the one link that names
+// one. The refusal is by name and says which link kinds stay available.
+fn test_vvd_is_refused_for_a_static_link() {
+	assert fuse_ld_static_refusal('vvd') != none
+	assert fuse_ld_static_refusal('/opt/bin/vvd') != none
+	assert fuse_ld_static_refusal('ld') == none
+	assert fuse_ld_static_refusal('ld.lld') == none
 }
 
 // lld is the LLVM linkers' generic driver: invoked as `lld` it cannot choose a
@@ -534,30 +560,44 @@ fn test_fuse_ld_is_in_the_help() {
 	assert usage(true).contains('-fuse-ld')
 }
 
-// -fuse-vlk asks this compiler's link to run through the vlk library. It is a
-// flag with no value and it is not recorded as ignored, and a command line that
-// also names a linker program is refused: a link has one linker.
-fn test_fuse_vlk_is_read_and_refused_beside_a_named_linker() {
-	asked := parse(['-fuse-vlk', 'a.c'])!
-	assert asked.fuse_vlk
+// -flegacy-ld asks for the linker this tree carried before the vlk library,
+// which is the default. It is a flag with no value and it is not recorded as
+// ignored, and a command line that also names a linker program is refused: a
+// link has one linker.
+fn test_legacy_ld_is_read_and_refused_beside_a_named_linker() {
+	asked := parse(['-flegacy-ld', 'a.c'])!
+	assert asked.legacy_ld
 	assert asked.fuse_ld == ''
-	assert !asked.ignored.contains('-fuse-vlk')
-	assert parse(['a.c'])!.fuse_vlk == false
+	assert !asked.ignored.contains('-flegacy-ld')
+	assert parse(['a.c'])!.legacy_ld == false
 	// A run that stops before a link has nothing for the flag to do, which is
 	// the answer -fuse-ld gets as well: the flag is read and not refused.
-	assert parse(['-c', '-fuse-vlk', 'a.c'])!.fuse_vlk
-	both := parse(['-fuse-vlk', '-fuse-ld=ld', 'a.c'])!.linker_conflict_refusal() or {
-		assert false, '-fuse-vlk beside -fuse-ld should be refused'
+	assert parse(['-c', '-flegacy-ld', 'a.c'])!.legacy_ld
+	both := parse(['-flegacy-ld', '-fuse-ld=ld', 'a.c'])!.linker_conflict_refusal() or {
+		assert false, '-flegacy-ld beside -fuse-ld should be refused'
 		''
 	}
-	assert both.contains('-fuse-vlk')
+	assert both.contains('-flegacy-ld')
 	assert both.contains('-fuse-ld=ld')
-	assert parse(['-fuse-vlk', 'a.c'])!.linker_conflict_refusal() == none
+	assert parse(['-flegacy-ld', 'a.c'])!.linker_conflict_refusal() == none
 }
 
-fn test_fuse_vlk_is_in_the_help() {
-	assert usage(false).contains('-fuse-vlk')
-	assert usage(true).contains('-fuse-vlk')
+// -fuse-vlk was the flag that asked for the library, and the library is the
+// default now. The old spelling is refused by name so a build that still passes
+// it is told where the other path went.
+fn test_fuse_vlk_is_refused_and_names_the_legacy_flag() {
+	if _ := parse(['-fuse-vlk', 'a.c']) {
+		assert false, '-fuse-vlk is the default and should be refused by name'
+	} else {
+		assert err.msg().contains('-flegacy-ld')
+		assert err.msg().contains('default')
+	}
+}
+
+fn test_legacy_ld_is_in_the_help() {
+	assert usage(false).contains('-flegacy-ld')
+	assert usage(true).contains('-flegacy-ld')
+	assert usage(false).contains('Deprecated')
 }
 
 // The two flags that name a kind of link are read and not recorded: a build that

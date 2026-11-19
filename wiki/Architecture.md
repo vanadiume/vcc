@@ -46,10 +46,11 @@ modules named after the stages. The order is:
    file and leaves with its exit status.
 
 `main.v` is the only place these functions are called. A run that links leaves
-the pipeline early in two cases: `-fuse-ld=NAME` hands the link to another
-program, taken before the single-input refusals because it is the path those
-refusals exist to lift, and `-fuse-vlk` sends every input through the
-multi-input path, because the vlk library's merge is what it asks for.
+the pipeline early: `-fuse-ld=NAME` hands the link to another program, taken
+before the single-input refusals because it is the path those refusals exist to
+lift, and every other link goes through the multi-input path, because the vlk
+library's merge is what writes the container now. `-flegacy-ld` asks for the
+single-input path and the linker this tree carried before the library.
 `parser.parse(tokens)` is the second parser entry point, which calls
 `parser.parse_for(tokens, backend.host())`; the tests use it and the driver
 does not.

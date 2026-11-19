@@ -61,10 +61,11 @@ named after the stages. The order it runs is:
    and leaves with its exit status.
 
 `main.v` is the only place these functions are called. A run that links leaves
-the pipeline early in two cases: `-fuse-ld=NAME` hands the link to another
-program, taken before the single-input refusals because it is the path those
-refusals exist to lift, and `-fuse-vlk` sends every input through the
-multi-input path, because the vlk library's merge is what it asks for.
+the pipeline early: `-fuse-ld=NAME` hands the link to another program, taken
+before the single-input refusals because it is the path those refusals exist to
+lift, and every other link goes through the multi-input path, because the vlk
+library's merge is what writes the container now. `-flegacy-ld` asks for the
+single-input path and the linker this tree carried before the library.
 
 There are two parser entry points. `parser.parse(tokens)` parses for the host;
 `parser.parse_for(tokens, target)` parses for a named target. The first calls the
@@ -138,7 +139,9 @@ not model is refused by name rather than placed at a guessed address.
 converts the units and the target into the library's values and calls
 `vlk.link`, which does the merge, the library check and the container. The two
 paths are handed the same units and the same options, so the image is the same
-work either way, and `-fuse-vlk` is the flag that chooses between them.
+work either way. The library is the default, and `-flegacy-ld` chooses this
+tree's own path. That path is deprecated: it gets no more work after this merge
+and will be removed in a later 0.0.5 beta.
 
 ## The target description
 
@@ -189,7 +192,9 @@ refused.
 ## Dialects and extensions
 
 `standard/mode.v` defines `Mode`, one value per `-std=` language, plus `.none`
-(no `-std`) and `.other` (a spelling this compiler does not implement).
+(no mode at all, which a command line does not produce) and `.other` (a spelling
+this compiler does not implement). A run without `-std` reads `default_mode`,
+which is `gnu11`.
 `from_spelling` is total: every spelling gets a mode and none is an error.
 `standard/features.v` is the dialect table in two parts: `Feature` (spellings,
 `since`, `gnu`, `reserved`, `invalid`, the extension name, the pedantic phrase,

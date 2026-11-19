@@ -118,6 +118,11 @@ pub:
 	program     image.Program
 	target      backend.Target
 	diagnostics []tokenize.Diagnostic
+	// import_sites is where each name this unit imports was first written, so
+	// a link that cannot resolve one can name the file and line the reader
+	// should look at. A link unit is not checked here, because a sibling may
+	// define the name, and the site travels with the unit for the link.
+	import_sites map[string]ImportSite
 }
 
 // Slot is where a local or a parameter lives: a displacement from the frame
@@ -408,6 +413,14 @@ struct Emitter {
 mut:
 	program     image.Program
 	diagnostics []tokenize.Diagnostic
+	// import_sites is where each imported name was first written in the
+	// source, so the import check can point at the use and not at the first
+	// line of the file. A helper call the compiler generated carries no site.
+	import_sites map[string]ImportSite
+	// declaration_sites is where each file-scope name was declared, which is
+	// the site an object import falls back to: global_of carries no source
+	// position, and the declaration is still a true place for the reader.
+	declaration_sites map[string]ImportSite
 	// signatures is the width of each parameter of every function whose
 	// parameter list this file declares, definition or not, so that a call
 	// hands each argument over at the width the declaration expects.
@@ -796,6 +809,8 @@ pub fn emit(unit ast.TranslationUnit, opts Options) Result {
 		library_dirs:         opts.library_dirs
 		no_default_libraries: opts.no_default_libraries
 		archive_names:        archive_name_set(opts.archive_names)
+		import_sites:         map[string]ImportSite{}
+		declaration_sites:    declaration_sites(unit)
 	}
 	// Nothing is written from a tree the model did not type. The check runs
 	// before the layout, so a tree it refuses produces no image at all. A
@@ -851,11 +866,30 @@ pub fn emit(unit ast.TranslationUnit, opts Options) Result {
 			diagnostics: emitter.diagnostics
 		}
 	}
+	// An object import is reached through global_of, which carries no source
+	// position, so its declaration supplies the site a link will name. The
+	// names are the ones the image asks a library to answer, and a name with a
+	// use site already keeps it.
+	for name in emitter.program.imports {
+		if name !in emitter.import_sites {
+			if site := emitter.declaration_sites[name] {
+				emitter.import_sites[name] = site
+			}
+		}
+	}
+	for name in emitter.program.copy_objects {
+		if name !in emitter.import_sites {
+			if site := emitter.declaration_sites[name] {
+				emitter.import_sites[name] = site
+			}
+		}
+	}
 	return Result{
-		bytes:       image_bytes
-		program:     emitter.program
-		target:      target
-		diagnostics: emitter.diagnostics
+		bytes:        image_bytes
+		program:      emitter.program
+		target:       target
+		diagnostics:  emitter.diagnostics
+		import_sites: emitter.import_sites
 	}
 }
 
@@ -883,6 +917,8 @@ pub fn start_stub(entry string, opts Options) Result {
 		link_kind:            opts.link_kind
 		link_options:         opts.link_options
 		no_default_libraries: opts.no_default_libraries
+		import_sites:         map[string]ImportSite{}
+		declaration_sites:    map[string]ImportSite{}
 	}
 	emitter.emit_start() or {
 		if emitter.diagnostics.len == 0 {
@@ -1356,7 +1392,18 @@ fn (mut e Emitter) build() ![]u8 {
 		}
 		if missing.len > 0 {
 			for name in missing {
-				e.diagnostics << problem(1, 1, 'undefined reference to `${name}`: no library the image names defines it')
+				// The name has a site if this unit wrote a use of it; an
+				// object import is reached through global_of, which carries
+				// no position, so its declaration is the honest fallback.
+				site := e.import_sites[name] or {
+					e.declaration_sites[name] or {
+						ImportSite{
+							line: 1
+							col:  1
+						}
+					}
+				}
+				e.diagnostics << problem(site.line, site.col, 'undefined reference to `${name}`: no library the image names defines it')
 			}
 			return error('unresolved imports')
 		}
@@ -1516,7 +1563,7 @@ fn (mut e Emitter) emit_start() !void {
 		return
 	}
 	e.append(e.target.move_register32(status, result)!)
-	e.import_symbol('exit')
+	e.import_symbol('exit', 0, 0)
 	e.reference(e.target.call_slot(0), .call_import, 'exit', '')
 	// The library's exit does not return. If it ever did, it would be a bug
 	// somewhere else, and stopping here is better than running into the bytes
@@ -11124,7 +11171,7 @@ fn (mut e Emitter) emit_function_address(name string, line int, col int) !void {
 		e.diagnostics << problem(line, col, 'unsupported: the address of ${name} is not implemented, and only a function this unit declares has one this back end can take')
 		return error('no function address')
 	}
-	e.import_symbol(name)
+	e.import_symbol(name, line, col)
 	if e.compile_only {
 		// An object has no slots and no loader of its own, so the reference is
 		// the one a linker builds the slot for: the instruction reads the
@@ -13004,7 +13051,7 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 		e.release_call_stack(entry_pushed)
 		return e.store_extended_result(call, call.line, call.col)
 	}
-	e.import_symbol(call.name)
+	e.import_symbol(call.name, call.line, call.col)
 	// A library function this compiler has no prototype for may be variadic, and
 	// the machine's convention wants the number of vector registers the call uses
 	// in the low byte of the result register before a call like that. A call with
@@ -13590,12 +13637,65 @@ fn (e Emitter) widening_or_narrowing_integer(actual int, expected int, arg ast.E
 	return actual in [1, 2, 4, 8] && expected in [1, 2, 4, 8]
 }
 
+// ImportSite is where a name the image imports was written. The import check
+// runs after the units are written, so the position has to travel beside the
+// name: reporting every missing import at 1:1 is what issue #139 reported, and
+// the first line of a file is rarely where the reader should look.
+pub struct ImportSite {
+pub:
+	line int
+	col  int
+}
+
+// declaration_sites is where each file-scope name in the unit was declared, by
+// spelling. The first declaration wins, because that is the one written first
+// and the one a reader looking for the name will find.
+fn declaration_sites(unit ast.TranslationUnit) map[string]ImportSite {
+	mut sites := map[string]ImportSite{}
+	for decl in unit.decls {
+		if decl.name !in sites {
+			sites[decl.name] = ImportSite{
+				line: decl.line
+				col:  decl.col
+			}
+		}
+	}
+	for object in unit.globals {
+		if object.name !in sites {
+			sites[object.name] = ImportSite{
+				line: object.line
+				col:  object.col
+			}
+		}
+	}
+	for object in unit.extern_objects {
+		if object.name !in sites {
+			sites[object.name] = ImportSite{
+				line: object.line
+				col:  object.col
+			}
+		}
+	}
+	return sites
+}
+
 // import_symbol records a library symbol the image needs, once. The order the
 // symbols are first called in is the order they appear in the image, so the same
-// source produces the same bytes.
-fn (mut e Emitter) import_symbol(name string) {
+// source produces the same bytes. The site is where the name was written in the
+// source, and the first use is the one kept; a generated call passes zero and
+// the import check falls back to the declaration.
+fn (mut e Emitter) import_symbol(name string, line int, col int) {
 	if name !in e.program.imports {
 		e.program.imports << name
+	}
+	if line > 0 {
+		known := e.import_sites[name] or { ImportSite{} }
+		if known.line == 0 {
+			e.import_sites[name] = ImportSite{
+				line: line
+				col:  col
+			}
+		}
 	}
 }
 
@@ -14195,7 +14295,7 @@ fn (mut e Emitter) write_data_address(address ast.AddressInit, at int) {
 		return
 	}
 	if address.name in e.returns {
-		e.import_symbol(address.name)
+		e.import_symbol(address.name, 0, 0)
 		e.program.data_fixups << image.DataFixup{
 			offset: at
 			kind:   .import_address

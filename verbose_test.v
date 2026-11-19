@@ -86,7 +86,15 @@ fn test_the_result_lines_name_the_work_this_compiler_does_itself() {
 		micros: 5
 	}], image.bytes, '/tmp/out')
 	assert lines[0] == 'phase: emit 5us'
-	assert lines.contains('link: no linker is run; this compiler writes the container itself')
+	assert lines.contains('link: the vlk library wrote the container')
+	// The legacy path says which linker it asked for, so a comparison against
+	// the default is readable from the report.
+	legacy := cli.parse(['-verbose', '-flegacy-ld', '-lm'])!
+	legacy_lines := verbose_result_lines(legacy, [cli.Phase{
+		name:   'emit'
+		micros: 5
+	}], image.bytes, '/tmp/out')
+	assert legacy_lines.contains('link: the legacy linker wrote the container (deprecated)')
 	assert lines.contains('  interpreter: ${host.interpreter}')
 	assert lines.contains('  library: ${host.base_library()} (the C library every image names)')
 	// The -l name is resolved here the same way the link resolves it, so the

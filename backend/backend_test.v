@@ -1913,8 +1913,7 @@ fn test_the_external_link_arguments_come_from_the_target() {
 		linux.LinkOptions{}) or {
 		panic(err)
 	}
-	assert args[0] == '-dynamic-linker'
-	assert args[1] == target.interpreter
+	assert args[0] == '--dynamic-linker=${target.interpreter}'
 	assert '-L/opt/lib' in args
 	assert '-lm' in args
 	assert '-lc' in args

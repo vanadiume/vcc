@@ -114,12 +114,13 @@ pub mut:
 	fuse_ld      string
 	input_type   string
 	compile_only bool
-	// fuse_vlk is -fuse-vlk: the link runs through the vlk library, which the
-	// other path in this tree is being replaced by, rather than through
-	// `linking/`. It is off by default so a build that does not ask for it keeps
-	// the linker it had, and it is one flag because the choice is one choice: a
-	// link has one linker and the two cannot both perform it.
-	fuse_vlk bool
+	// legacy_ld is -flegacy-ld: the link runs through `linking/`, the linker
+	// this tree carried before the vlk library, instead of through the
+	// library. The library is the default now, and this flag is the way back
+	// for one release: the legacy path is deprecated, gets no more work, and
+	// goes in a later 0.0.5 beta. It is one flag because the choice is one
+	// choice: a link has one linker and the two cannot both perform it.
+	legacy_ld bool
 	// shared is -shared: the link writes a shared object another program loads
 	// rather than a program the kernel starts. It is a kind of link and not a
 	// kind of compilation, so it says nothing about a run that stops before a
@@ -325,6 +326,11 @@ pub fn parse(args []string) !Options {
 	mut opts := Options{
 		optimization:  optimizer.default_options()
 		bracket_depth: parser.default_bracket_depth
+		// No -std names the default dialect, which is gnu11: the language V
+		// passes to a C compiler, and the one a program written for a GNU
+		// default expects. The spelling stays empty because no -std was
+		// written.
+		dialect:       standard.default_mode
 	}
 	mut optimization := opts.optimization
 	mut positional := []string{}
@@ -583,10 +589,13 @@ pub fn parse(args []string) !Options {
 			// nothing while this compiler linked the inputs itself.
 			return error('-external-linker is now -fuse-ld: name the linker with -fuse-ld=NAME')
 		} else if arg == '-fuse-vlk' {
-			// A linker chosen rather than named: the library is this
-			// compiler's own dependency, and the flag says which of the two
-			// links this tree carries performs the link.
-			opts.fuse_vlk = true
+			// The flag this default replaces. The library performs every link
+			// now, and a build that still passes the old spelling is told
+			// where the other path went rather than left to guess from an
+			// image whose bytes differ.
+			return error('-fuse-vlk is now the default: every link runs through the vlk library, and -flegacy-ld asks for the linker this tree used to carry')
+		} else if arg == '-flegacy-ld' {
+			opts.legacy_ld = true
 		} else if arg == '-x' {
 			opts.input_type = cursor.value_of('')!
 		} else if arg == '-B' {
@@ -721,11 +730,12 @@ pub fn (opts Options) link_kind_conflict_refusal() ?string {
 
 // linker_conflict_refusal is the message for a command line that names two
 // linkers, and none when it names at most one. -fuse-ld hands the link to a
-// program on PATH and -fuse-vlk asks the vlk library to perform it here, so a
-// link that took one of them would drop the other without a word.
+// program on PATH and -flegacy-ld asks for the linker this tree carried before
+// the vlk library, so a link that took one of them would drop the other without
+// a word.
 pub fn (opts Options) linker_conflict_refusal() ?string {
-	if opts.fuse_ld != '' && opts.fuse_vlk {
-		return '-fuse-ld=${opts.fuse_ld} and -fuse-vlk name two linkers: -fuse-ld hands the link to a program and -fuse-vlk runs it through the vlk library'
+	if opts.fuse_ld != '' && opts.legacy_ld {
+		return '-fuse-ld=${opts.fuse_ld} and -flegacy-ld name two linkers: -fuse-ld hands the link to a program and -flegacy-ld runs it through the linker this tree used to carry'
 	}
 	return none
 }
@@ -835,7 +845,8 @@ pub fn usage(all bool) string {
 	out << '  -std=version  -std version   the dialect: the spelling selects the mode'
 	out << '                the construct table is checked against (c89 through c29'
 	out << '                and the gnu dialects of each); a spelling this compiler'
-	out << '                does not implement is recorded and never refused'
+	out << '                does not implement is recorded and never refused. With'
+	out << '                no -std the dialect is gnu11'
 	out << '  -Wpedantic -pedantic      report what the selected dialect forbids'
 	out << '  -pedantic-errors          the same as an error (-Werror=pedantic too)'
 	out << '  -Wclass -Wno-class        one class of diagnostic, on or off: the last'
@@ -852,17 +863,16 @@ pub fn usage(all bool) string {
 	out << '                    own -c machinery, then NAME links those objects and'
 	out << '                    the inputs it cannot read: a relocatable object, an'
 	out << '                    archive. NAME must not be a C compiler (cc, gcc,'
-	out << '                    clang, c++, tcc); name ld or lld instead. A run that'
+	out << '                    clang, c++, tcc); name ld, lld or vvd instead. A run that'
 	out << '                    stops before a link (-c, -E, -M, -MD, -dM,'
 	out << '                    -print-ast) has nothing for NAME to do and the flag'
 	out << '                    goes unused. With the flag unset every input is'
 	out << '                    refused exactly as before'
-	out << '  -fuse-vlk         the link runs through the vlk library instead of the'
-	out << '                    linker this compiler carries. The library performs'
-	out << '                    the merge, the library check and the container, on'
-	out << '                    the same units and the same command line, so a run'
-	out << '                    that names it writes the image through the other'
-	out << '                    implementation of one link. It is refused with'
+	out << '  -flegacy-ld       the link runs through the linker this tree carried'
+	out << '                    before the vlk library, instead of through the'
+	out << '                    library, which is the default. Deprecated: the legacy'
+	out << '                    linker gets no more work after this merge and will be'
+	out << '                    removed in a later 0.0.5 beta. It is refused with'
 	out << '                    -fuse-ld=NAME, because a link has one linker, and a'
 	out << '                    run that stops before a link has nothing for it to do'
 	out << '  -Wl,opt       an option for the link: -z execstack, -z noexecstack, -z now,'

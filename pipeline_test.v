@@ -4521,7 +4521,30 @@ fn test_a_nostdlib_program_with_an_unanswered_import_is_refused() {
 	})
 	assert emitted.diagnostics.len == 1
 	assert emitted.diagnostics[0].msg.contains('undefined reference to `puts`')
+	// The refusal names the call, not the first line of the file.
+	assert emitted.diagnostics[0].line == 2
+	assert emitted.diagnostics[0].col == 25
 	assert emitted.bytes.len == 0
+}
+
+// Issue #139: the import check runs after the unit is written, and the
+// position it used to carry was the constant 1:1. The site travels beside the
+// import now, so the refusal names the line the reader has to change.
+fn test_an_undefined_reference_is_reported_where_it_is_used() {
+	source := scratch('undefined_site.c')
+	body := '\n\nint f(void);\nint main(void) {\n    return f();\n}\n'
+	os.write_file(source, body) or { panic(err) }
+	opts := cli.parse([source]) or { panic(err) }
+	lexed := tokenize.lex(body)
+	parsed := parser.parse(lexed.tokens)
+	emitted := codegen.emit(parsed.unit, codegen.Options{
+		target: opts.target
+		entry:  'main'
+	})
+	assert emitted.diagnostics.len == 1
+	assert emitted.diagnostics[0].msg.contains('undefined reference to `f`')
+	assert emitted.diagnostics[0].line == 5
+	assert emitted.diagnostics[0].col == 12
 }
 
 // The same program with the library the name lives in named on the command line

@@ -121,15 +121,16 @@ makes the call and `-O2` folds it. `-fno-builtin` takes the fold back.
 system, for an input the in-house linker cannot consume yet, such as an object
 carrying a section or a relocation it does not model. It refuses `cc`,
 `gcc`, `clang`, `c++` and `tcc` by name, because a C compiler finishing C
-compilation is the one thing the pure-V rule exists to prevent. It is the
+compilation is the one thing the pure-V rule exists to prevent. `vvd`, the
+frontend over the same vlk library, is one of the linkers it accepts. It is the
 single exception to that rule, and it is off by default. [[Pure-V]] covers the
 rule.
 
-`-fuse-vlk` links through the vlk library instead of the linker in this tree.
-The units, the target and the options are the same on both paths, so the image
-is the same work, and the flag exists so the two implementations can be compared
-on one build. It is refused beside `-fuse-ld=NAME`, because a link has one
-linker.
+Every link runs through the vlk library, which performs the merge, the library
+check and the container. `-flegacy-ld` asks for the linker this tree carried
+before the library. That path is deprecated: it gets no more work after this
+merge and will be removed in a later 0.0.5 beta. It is refused beside
+`-fuse-ld=NAME`, because a link has one linker.
 
 A flag the compiler does not implement is recorded and never refused, because
 a compiler that errors on `-bt25` fails a build it was supposed to serve.

@@ -95,7 +95,7 @@ fn main() {
 	}
 	// Two linkers on one command line is one of them dropped in silence, so the
 	// pair is refused before either path is taken: -fuse-ld is dispatched below
-	// and would otherwise answer for a link -fuse-vlk also asked for.
+	// and would otherwise answer for a link -flegacy-ld also asked for.
 	if refusal := opts.linker_conflict_refusal() {
 		abort(refusal)
 	}
@@ -118,15 +118,22 @@ fn main() {
 	if refusal := opts.link_kind_conflict_refusal() {
 		abort(refusal)
 	}
-	// -fuse-vlk asks the link to run through the vlk library, and that path
-	// reads the whole command line as one link: it takes every input the way
-	// the multi-input path does, whether the line named one file or ten,
-	// because the library's merge is what the flag asks for and the
-	// single-input path below writes its container without one.
-	if opts.fuse_vlk && opts.links() {
+	// Every other link runs through the vlk library, which is the default now.
+	// That path reads the whole command line as one link: it takes every input
+	// the way the multi-input path does, whether the line named one file or
+	// ten, because the library's merge is what writes the container. The
+	// single-input path below writes that container from the one program its
+	// emitter produced instead, and -flegacy-ld is the flag that asks for it.
+	if opts.links() && !opts.legacy_ld {
 		link_inputs(opts)
 		return
 	}
+	// -flegacy-ld is the linker this tree carried before the library. It is
+	// deprecated and gets no more work after this merge, and it is kept for one
+	// release so a build that has to compare the two images can still ask for
+	// it. The paths below are unchanged from before the library became the
+	// default.
+	//
 	// More than one input is a link, and a link is the linker's job: every
 	// input is compiled as one unit of it, the merge settles the references
 	// between them, and the container writes the one program. The single-input
@@ -626,6 +633,11 @@ fn link_inputs(opts cli.Options) {
 	// link reaches a library.
 	output_kind := link_kind(opts)
 	mut units := []unit.Program{cap: opts.inputs.len + 1}
+	// Where each imported name was written, by the input it was written in.
+	// The linker decides whether a name is missing; this map supplies the
+	// position the refusal names, which no unit alone can supply because it
+	// holds no path.
+	mut unit_sites := map[string]SourceSite{}
 	// The shared objects the command line named as files. They are not units:
 	// the link records them as libraries the image asks the loader for and
 	// leaves the names they define to the loader, so they travel beside the
@@ -782,6 +794,19 @@ fn link_inputs(opts cli.Options) {
 		}
 		note_unit(mut provided, mut needed, emitted.program)
 		units << emitted.program
+		// The link decides whether a name is missing, but this file is the
+		// only place that knows which input the unit came from: the unit's own
+		// sites are gathered here, and the first unit that imports a name is
+		// the one a refusal names.
+		for name, site in emitted.import_sites {
+			if name !in unit_sites {
+				unit_sites[name] = SourceSite{
+					path: path
+					line: site.line
+					col:  site.col
+				}
+			}
+		}
 	}
 	// The C library is on every image whether or not a -l named it, and the
 	// archives the ld script beside its shared object names are inputs of the
@@ -983,21 +1008,21 @@ fn link_inputs(opts cli.Options) {
 	// The two linkers take the same units and the same options, and they differ
 	// in whose code performs the link. vlk's high entry does the merge, the
 	// library check and the container in one call and answers the image's
-	// bytes; this tree's own path does the merge and hands the merged program to
-	// the container. -fuse-vlk is the one place the two are chosen between, so
-	// the phases below are measured over whichever ran.
-	bytes := if opts.fuse_vlk {
-		linking.link_vlk(units, merge_options, link_kind(opts), link_options) or {
-			abort(err.msg())
-			return
-		}
-	} else {
+	// bytes; the legacy path does the merge and hands the merged program to
+	// the container. -flegacy-ld is the one place the two are chosen between,
+	// so the phases below are measured over whichever ran.
+	bytes := if opts.legacy_ld {
 		merged := linking.link(units, merge_options) or {
-			abort(err.msg())
+			report_link_refusal(err.msg(), unit_sites)
 			return
 		}
 		output.image(merged, target, link_kind(opts), link_options) or {
 			abort(err.msg())
+			return
+		}
+	} else {
+		linking.link_vlk(units, merge_options, link_kind(opts), link_options) or {
+			report_link_refusal(err.msg(), unit_sites)
 			return
 		}
 	}
@@ -1086,8 +1111,10 @@ fn system_files(files []preprocess.SourceFile) map[string]bool {
 // wrote and the mode it names, so that a build reading the output can tell what
 // the flag bought.
 fn standard_line(opts cli.Options) string {
+	if opts.standard == '' {
+		return 'no -std (mode ${standard.default_mode.spelling()}, ${standard.default_mode.standard_name()}): the default'
+	}
 	match opts.dialect {
-		.none { return '(none asked for; V passes -std=gnu11, which is recorded and not refused)' }
 		.other {
 			return '${opts.standard} (a spelling this compiler does not implement; recorded, never refused)'
 		}
@@ -1359,6 +1386,47 @@ fn abort(message string) {
 	exit(1)
 }
 
+// SourceSite is where a name the link could not resolve was written, with the
+// input file it was written in. A unit carries its own sites but no path; the
+// driver joins the two where it read the file.
+struct SourceSite {
+	path string
+	line int
+	col  int
+}
+
+// report_link_refusal writes a link's refusal, naming the file and line of the
+// missing name when an input recorded one. The linker decides what is missing:
+// this function supplies a position and never a verdict, so a name a sibling
+// unit or a library answers is not reported here.
+fn report_link_refusal(message string, sites map[string]SourceSite) {
+	name := undefined_reference_name(message) or {
+		abort(message)
+		return
+	}
+	site := sites[name] or {
+		abort(message)
+		return
+	}
+	eprintln('${site.path}:${site.line}:${site.col}: ${message}')
+	exit(1)
+}
+
+// undefined_reference_name reads the name out of a link refusal, and none when
+// the message is a different failure. Both linkers write the name between
+// backticks, which is the shape the refusal has carried since the in-house
+// linker refused its first name.
+fn undefined_reference_name(message string) ?string {
+	if !message.starts_with('undefined reference to `') {
+		return none
+	}
+	parts := message.split('`')
+	if parts.len < 3 || parts[1] == '' {
+		return none
+	}
+	return parts[1]
+}
+
 // runtime_library_name is the file a link takes for the helpers the machine has
 // no instruction for: this compiler's own libvcc, or the toolchain's libgcc when
 // --link-libgcc asked for it, and that one's shared form when -shared-libvcc or
@@ -1581,6 +1649,12 @@ fn fuse_ld_link(opts cli.Options) {
 	}
 	if refusal := cli.fuse_ld_refusal(opts.fuse_ld) {
 		abort(refusal)
+	}
+	if link_kind(opts) == .static_program {
+		if refusal := cli.fuse_ld_static_refusal(opts.fuse_ld) {
+			abort(refusal)
+			return
+		}
 	}
 	program := cli.fuse_ld_path(opts.fuse_ld) or {
 		abort('cannot find ${opts.fuse_ld}: -fuse-ld names a linker the system must have on PATH')
@@ -1968,18 +2042,21 @@ fn verbose_file_lines(files []preprocess.SourceFile) []string {
 	return out
 }
 
-// verbose_result_lines closes the report with what this compiler did instead of
-// running a linker: it wrote the container itself, so there is no command line to
-// show. What it can show is the phases and what the image will carry - the loader,
-// the C library, the libraries a -l named, and the file - which is the part of
-// gcc's -v a build reads to see what got linked.
+// verbose_result_lines closes the report with what performed the link and what
+// the image carries, which is the part of gcc's -v a build reads to see what
+// got linked. The link itself is in-process either way, so there is no command
+// line to show; the line says which of the two linkers wrote the bytes.
 fn verbose_result_lines(opts cli.Options, phases []cli.Phase, bytes []u8, out_path string) []string {
 	mut out := []string{}
 	for phase in phases {
 		out << 'phase: ${phase.name} ${phase.micros}us'
 	}
 	target := backend.resolve(opts.target) or { return out }
-	out << 'link: no linker is run; this compiler writes the container itself'
+	if opts.legacy_ld {
+		out << 'link: the legacy linker wrote the container (deprecated)'
+	} else {
+		out << 'link: the vlk library wrote the container'
+	}
 	out << '  interpreter: ${target.interpreter}'
 	out << '  library: ${target.base_library()} (the C library every image names)'
 	for library in target.resolve_libraries(opts.libraries, opts.library_dirs, link_kind(opts) == .static_program) or {
