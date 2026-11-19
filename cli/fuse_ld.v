@@ -71,20 +71,6 @@ fn is_version_suffix(text string) bool {
 	return true
 }
 
-// fuse_ld_static_refusal is the message for a static link handed to a tool that
-// reads no --start-group, and none for a tool this compiler can hand one. vvd
-// is the one such tool named here: its flag surface is ld.lld's, and it refuses
-// the group because its -l search makes a pass after every input. A static link
-// names the group around the runtime and the C library, measured needed: without
-// it vvd leaves `_Unwind_Resume` unresolved, so the command line this compiler
-// would build is one vvd cannot finish.
-pub fn fuse_ld_static_refusal(name string) ?string {
-	if os.base(name) != 'vvd' {
-		return none
-	}
-	return '-fuse-ld=${name} with -static: a static link names a --start-group around the runtime and the libraries, and vvd reads no group; use -fuse-ld=ld or the vlk library'
-}
-
 // fuse_ld_path resolves a name to the program on PATH, or an error when
 // the system does not have it. A name is a program name and not a path: a build
 // that wanted a particular file can put it on PATH. The caller reports the miss
