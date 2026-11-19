@@ -42,12 +42,11 @@ pub:
 	// unit gets an undefined reference. Like link, the result carries the
 	// image.Program and no container bytes.
 	start_only bool
-	// pic is -fPIC: a relocatable object reaches every top-level object another
-	// object may define through the global offset table, so that a shared link
-	// has no direct reference to a symbol that can be interposed. It only means
-	// anything for a relocatable object: the program this compiler writes has
-	// every address settled here, so its addressing is unchanged whether the
-	// flag is given or not.
+	// pic is -fPIC/-fPIE: a unit reaches every top-level object another unit
+	// may define through the global offset table, so that a shared link or a
+	// position-independent program has no direct reference to a symbol that can
+	// be interposed or moved. It applies to an object and to a program alike:
+	// a pie has to be built from code that does not assume where it is mapped.
 	pic bool
 	// ignore_natives is -fignore-natives: a 128-bit operation this machine has
 	// instructions for is written as a call to the runtime's helper anyway, so
@@ -366,8 +365,10 @@ struct Emitter {
 	// The stub is the one body emit_start carries, so a linker that wants it in
 	// a unit of its own gets exactly the instructions a program gets.
 	start_only bool
-	// pic says a relocatable object reaches a non-static top-level object
-	// through the global offset table rather than through a direct reference.
+	// pic says a unit reaches a non-static top-level object through the global
+	// offset table rather than through a direct reference. It is what a shared
+	// object and a position-independent program need, so it is read for both a
+	// relocatable object and a program.
 	pic bool
 	// ignore_natives says a 128-bit operation the machine has instructions for
 	// is a call to the runtime's helper rather than an inline sequence, which is
@@ -14615,7 +14616,7 @@ fn (mut e Emitter) reference_object_address(register backend.Register, name stri
 		}
 		return
 	}
-	if e.compile_only && e.pic && !e.internal[storage] {
+	if e.pic && !e.internal[storage] {
 		e.reference(e.target.load_slot_value(register, 0), .got_address, storage, e.target.name_of(register))
 		return
 	}

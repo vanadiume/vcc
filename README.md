@@ -189,7 +189,8 @@ The common ones:
 -std=version      select a dialect
 -I -D -U -L -l    the include, define and library paths
 -O0..-O3 -Os      optimization level
--fPIC -fpic       position-independent code
+-fPIC -fpic -fPIE -fpie  position-independent code
+-pie              write a position-independent executable
 -shared           write a shared object
 -static           write a static program
 -w                suppress warnings

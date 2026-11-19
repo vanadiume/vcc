@@ -322,7 +322,7 @@ fn main() {
 	// be reported undefined by a link that never opened the file. Reading the
 	// members' names here is what hands the run to the link, which pulls them.
 	mut archive_names := map[string]bool{}
-	if !opts.compile_only && link_kind(opts) == .program {
+	if !opts.compile_only && (link_kind(opts) == .program || link_kind(opts) == .pie) {
 		if opts.default_libraries() {
 			archive_names = runtime_names(opts, run_target)
 		}
@@ -938,7 +938,7 @@ fn link_inputs(opts cli.Options) {
 		// away from every link, including the one whose entry point is this
 		// compiler's own stub.
 		if start_files(opts, target) {
-			before, after := target.stub_start_file_paths(opts.library_dirs) or {
+			before, after := target.stub_start_file_paths(output_kind, opts.library_dirs) or {
 				abort(err.msg())
 				return
 			}
@@ -1587,6 +1587,9 @@ fn link_kind(opts cli.Options) linux.LinkKind {
 	}
 	if opts.static_link {
 		return .static_program
+	}
+	if opts.pie {
+		return .pie
 	}
 	return .program
 }

@@ -1661,8 +1661,8 @@ pub fn (t &Target) start_file_paths(kind linux.LinkKind, given []string) !([]str
 
 // stub_start_file_paths is start_file_paths for a link that brings its own entry point:
 // the same resolution over the set with crt1.o left out.
-pub fn (t &Target) stub_start_file_paths(given []string) !([]string, []string) {
-	return t.resolve_start_files(linux.stub_start_files(), given)
+pub fn (t &Target) stub_start_file_paths(kind linux.LinkKind, given []string) !([]string, []string) {
+	return t.resolve_start_files(linux.stub_start_files(kind), given)
 }
 
 // resolve_start_files resolves one set of start files in the directories a link

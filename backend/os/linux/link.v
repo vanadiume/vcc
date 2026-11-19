@@ -95,6 +95,12 @@ pub fn link_arguments(kind LinkKind, interpreter string, dirs []string, objects 
 			// through, and it takes no separated `-dynamic-linker`.
 			args << '--dynamic-linker=${interpreter}'
 		}
+		.pie {
+			// A pie is a program the loader places, so it names the same loader
+			// and asks for the position-independent image with -pie.
+			args << '-pie'
+			args << '--dynamic-linker=${interpreter}'
+		}
 		.static_program {
 			args << '-static'
 		}
