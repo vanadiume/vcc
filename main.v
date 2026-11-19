@@ -1650,12 +1650,6 @@ fn fuse_ld_link(opts cli.Options) {
 	if refusal := cli.fuse_ld_refusal(opts.fuse_ld) {
 		abort(refusal)
 	}
-	if link_kind(opts) == .static_program {
-		if refusal := cli.fuse_ld_static_refusal(opts.fuse_ld) {
-			abort(refusal)
-			return
-		}
-	}
 	program := cli.fuse_ld_path(opts.fuse_ld) or {
 		abort('cannot find ${opts.fuse_ld}: -fuse-ld names a linker the system must have on PATH')
 		return
