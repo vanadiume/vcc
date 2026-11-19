@@ -58,16 +58,19 @@ pub const libgcc_shared_library = 'libgcc_s.so.1'
 // libgcc_shared_flag is the -l name that search is asked with.
 pub const libgcc_shared_flag = 'gcc_s'
 
-// LinkKind is which link a command line asked for. The three differ in the
+// LinkKind is which link a command line asked for. The four differ in the
 // arguments a linker is given and in nothing else, so they are one value with
-// three cases rather than three ways to build a command line.
+// four cases rather than four ways to build a command line.
 //
 // A program is the dynamic one: the kernel hands it to the loader in
-// `interpreter`. A static program names no loader and resolves every library
-// into itself, and a shared object is a file another program loads rather than
-// one the kernel starts, so it has no entry point and no loader either.
+// `interpreter`. A pie is the same program placed by that loader, so it names
+// the loader too and is started by the kernel, and its addresses are offsets.
+// A static program names no loader and resolves every library into itself, and
+// a shared object is a file another program loads rather than one the kernel
+// starts, so it has no entry point and no loader either.
 pub enum LinkKind {
 	program
+	pie
 	static_program
 	shared
 }
@@ -109,6 +112,17 @@ pub fn start_files(kind LinkKind) StartFiles {
 				after:  ['crtend.o', 'crtn.o']
 			}
 		}
+		.pie {
+			// A pie is linked like a shared object and started by the kernel:
+			// Scrt1.o is the entry point the C library gives one, and the S pair
+			// is the shared-position-independent pair crtbegin.o/crtend.o would
+			// otherwise stand in for. crt1.o is not in the set because Scrt1.o
+			// is its position-independent form.
+			StartFiles{
+				before: ['Scrt1.o', 'crti.o', 'crtbeginS.o']
+				after:  ['crtendS.o', 'crtn.o']
+			}
+		}
 		.shared {
 			StartFiles{
 				before: ['crti.o', 'crtbeginS.o']
@@ -126,11 +140,11 @@ pub fn start_files(kind LinkKind) StartFiles {
 // atexit reaches for. A program built without them links with an undefined
 // __dso_handle and stops, which is the same shape as the program that takes the C
 // library's own entry and names all of them.
-pub fn stub_start_files() StartFiles {
-	files := start_files(.program)
+pub fn stub_start_files(kind LinkKind) StartFiles {
+	files := start_files(kind)
 	mut before := []string{cap: files.before.len}
 	for start in files.before {
-		if start != 'crt1.o' {
+		if start != 'crt1.o' && start != 'Scrt1.o' {
 			before << start
 		}
 	}

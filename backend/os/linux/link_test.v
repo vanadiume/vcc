@@ -27,13 +27,45 @@ fn start_file_in(dirs []string, stem string) string {
 // program's start files, and crtbegin.o is the one that matters: it is where
 // __dso_handle is defined, which libc_nonshared.a's atexit reaches for.
 fn test_the_stub_start_files_leave_out_the_entry_point_and_keep_the_rest() {
-	stub := stub_start_files()
+	stub := stub_start_files(.program)
 	program := start_files(.program)
 	assert 'crt1.o' !in stub.before
 	assert 'crti.o' in stub.before
 	assert 'crtbegin.o' in stub.before
 	assert stub.before.len == program.before.len - 1
 	assert stub.after == program.after
+}
+
+// A pie brings its own entry point the same way, and its pair is the shared
+// object's: Scrt1.o is left out with crt1.o, and crtbeginS.o is the one that
+// registers frames in a position-independent image.
+fn test_a_pie_stub_keeps_the_shared_start_pair_and_no_entry_point() {
+	stub := stub_start_files(.pie)
+	pie := start_files(.pie)
+	assert 'Scrt1.o' !in stub.before
+	assert 'crt1.o' !in stub.before
+	assert 'crti.o' in stub.before
+	assert 'crtbeginS.o' in stub.before
+	assert 'crtbegin.o' !in stub.before
+	assert stub.before.len == pie.before.len - 1
+	assert stub.after == pie.after
+}
+
+fn test_a_pie_names_its_loader_and_the_shared_start_pair() {
+	host := backend.host() or { panic('this test needs the host target') }
+	dirs := host.link_dirs([]string{})
+	args := link_arguments(.pie, host.interpreter, dirs, ['x.o'], []string{}, 'out', LinkOptions{}) or {
+		panic(err)
+	}
+	assert '-pie' in args
+	assert '--dynamic-linker=${host.interpreter}' in args
+	assert start_file_in(dirs, 'Scrt1.o') in args
+	assert start_file_in(dirs, 'crtbeginS.o') in args
+	assert start_file_in(dirs, 'crtendS.o') in args
+	assert start_file_in(dirs, 'crt1.o') !in args
+	assert start_file_in(dirs, 'crtbegin.o') !in args
+	assert '-shared' !in args
+	assert '-static' !in args
 }
 
 fn test_the_link_arguments_name_the_loader_the_start_files_and_the_directories() {

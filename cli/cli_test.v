@@ -77,25 +77,56 @@ fn test_what_v_passes_is_accepted_rather_than_refused() {
 	assert opts.ignored.contains('-B/opt/tcc/lib/tcc')
 }
 
-// -fPIC and -fpic are the two spellings gcc offers for one thing, and -fno-pic
-// takes the addressing back. The flag is read rather than recorded: it decides
-// the form of every reference to a top-level object another object may define,
-// and a build that passes it and is told nothing is a build that has been told
-// nothing. -fPIE names an executable, which is not a shape this compiler
-// writes, so it stays in the accepted-and-ignored list rather than being read
-// as -fPIC.
+// -fPIC, -fpic, -fPIE and -fpie are the spellings gcc offers for
+// position-independent code, and -fno-pic, -fno-PIC, -fno-pie and -fno-PIE take
+// the addressing back. The flag is read rather than recorded: it decides the
+// form of every reference to a top-level object another unit may define, and a
+// build that passes it and is told nothing is a build that has been told
+// nothing.
 fn test_the_position_independent_flag_is_read_from_either_spelling() {
 	upper := parse(['-fPIC', 'src.c'])!
 	assert upper.pic
 	lower := parse(['-fpic', 'src.c'])!
 	assert lower.pic
+	executable_upper := parse(['-fPIE', 'src.c'])!
+	assert executable_upper.pic
+	assert !executable_upper.ignored.contains('-fPIE')
+	executable_lower := parse(['-fpie', 'src.c'])!
+	assert executable_lower.pic
 	off := parse(['-fPIC', '-fno-pic', 'src.c'])!
 	assert !off.pic
+	executable_off := parse(['-fPIE', '-fno-pie', 'src.c'])!
+	assert !executable_off.pic
 	absent := parse(['src.c'])!
 	assert !absent.pic
-	pie := parse(['-fPIE', 'src.c'])!
-	assert !pie.pic
-	assert pie.ignored.contains('-fPIE')
+}
+
+// -pie is the link flag for a position-independent executable. It asks for the
+// kind and for position-independent code in the same run, because a one-shot
+// command line compiles and links in one go; -no-pie asks for the fixed-base
+// program again.
+fn test_pie_asks_for_both_the_kind_and_the_code() {
+	asked := parse(['-pie', 'src.c'])!
+	assert asked.pie
+	assert asked.pic
+	off := parse(['-pie', '-no-pie', 'src.c'])!
+	assert !off.pie
+	assert !parse(['src.c'])!.pie
+}
+
+fn test_static_pie_is_refused_by_name() {
+	parse(['-static-pie', 'src.c']) or {
+		assert err.msg().contains('-static-pie')
+		return
+	}
+	assert false, '-static-pie was accepted'
+}
+
+fn test_pie_and_the_legacy_linker_are_refused_together() {
+	opts := parse(['-pie', '-flegacy-ld', 'src.c'])!
+	refusal := opts.link_kind_conflict_refusal() or { panic('a pie has no legacy link') }
+	assert refusal.contains('-pie')
+	assert refusal.contains('-flegacy-ld')
 }
 
 // -fignore-natives asks the back end for the runtime's copy of a 128-bit
@@ -643,12 +674,20 @@ fn test_the_kind_of_link_is_read_and_only_the_pair_is_refused() {
 	assert parse(['-E', '-static', 'x.c'])!.link_kind_conflict_refusal() == none
 	assert parse(['-shared', 'x.c'])!.link_kind_conflict_refusal() == none
 	assert parse(['-static', 'x.c'])!.link_kind_conflict_refusal() == none
+	assert parse(['-pie', 'x.c'])!.link_kind_conflict_refusal() == none
 	assert parse(['-shared', 'x.c'])!.shared
 	assert parse(['-static', 'x.c'])!.static_link
+	assert parse(['-pie', 'x.c'])!.pie
 	both := parse(['-shared', '-static', 'x.c'])!.link_kind_conflict_refusal() or {
 		panic('a shared object and a static program are different links')
 	}
 	assert both.contains('-shared') && both.contains('-static')
+	for pair in [['-pie', '-shared'], ['-pie', '-static']] {
+		refusal := parse([pair[0], pair[1], 'x.c'])!.link_kind_conflict_refusal() or {
+			panic('${pair[0]} and ${pair[1]} are different links')
+		}
+		assert refusal.contains(pair[0]) && refusal.contains(pair[1])
+	}
 }
 
 // Both flags at once are refused on either path. A linker given the two takes one
@@ -666,6 +705,7 @@ fn test_two_kinds_of_link_at_once_are_refused() {
 
 fn test_the_kind_of_link_is_in_the_help() {
 	assert usage(false).contains('-shared')
+	assert usage(false).contains('-pie')
 	assert usage(false).contains('-static')
 }
 
@@ -914,9 +954,10 @@ fn test_a_repeated_boolean_flag_is_decided_by_the_last_spelling() {
 fn test_the_ignored_list_holds_the_flags_that_were_passed_over() {
 	opts := parse(['-bt25', '-Wl,-rpath,/opt/v', '-fwrapv', '-fPIE', '-B/some/dir', 'x.c', '-o',
 		'out'])!
-	for flag in ['-bt25', '-fwrapv', '-fPIE', '-B/some/dir'] {
+	for flag in ['-bt25', '-fwrapv', '-B/some/dir'] {
 		assert opts.ignored.contains(flag), '${flag} should be recorded, not refused'
 	}
+	assert !opts.ignored.contains('-fPIE'), '-fPIE is read and not recorded'
 	for read_flag in ['-o', 'out', '-c', '-w', '-verbose', '-print-search-dirs', '-shared',
 		'-Wl,-rpath,/opt/v'] {
 		assert !opts.ignored.contains(read_flag), '${read_flag} is read and not recorded'

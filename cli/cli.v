@@ -126,16 +126,20 @@ pub mut:
 	// kind of compilation, so it says nothing about a run that stops before a
 	// link, which is what -c does.
 	shared bool
-	// pic is -fPIC/-fpic: the object a compile writes reaches every top-level
-	// object another object may define through the global offset table rather
-	// than through a direct reference, which is what lets the object be linked
-	// into a shared object. -fno-pic and -fno-PIC turn it off again. It is a
-	// fact about a relocatable object, so it says nothing about the program the
-	// path with no -c and no linker writes: that image has every address
-	// settled here and a direct reference is what it uses. -fPIE and -fpie are
-	// not read: PIE names an executable, which is not a shape this compiler
-	// writes, so those spellings stay in `ignored` like the rest of the -f
-	// family it cannot honor.
+	// pie is -pie: the link writes a position-independent executable, a program
+	// the kernel starts and the loader may place anywhere. Every address inside
+	// it is an offset beside a relocation, so the code it is built from has to
+	// be position independent: -pie turns the code generation for this run on
+	// as well, because a one-shot command line compiles and links in one go.
+	// -no-pie asks for the fixed-base program again.
+	pie bool
+	// pic is -fPIC/-fpic/-fPIE/-fpie: the unit reaches every top-level object
+	// another unit may define through the global offset table rather than
+	// through a direct reference, which is what lets it be linked into a shared
+	// object or a position-independent program. -fno-pic, -fno-PIC, -fno-pie
+	// and -fno-PIE turn it off again. It is read for a relocatable object and
+	// for the program a one-shot line writes: -pie sets it as well, because a
+	// pie cannot assume where it is mapped.
 	pic bool
 	// ignore_natives is -fignore-natives: a 128-bit operation the machine has
 	// instructions for is written as a call to the runtime's helper anyway. A
@@ -376,6 +380,18 @@ pub fn parse(args []string) !Options {
 			// source is read. -c stops before a link, so the two do not
 			// conflict and a run with both writes an object.
 			opts.shared = true
+		} else if arg == '-pie' {
+			// A pie is a program the loader may place anywhere, so the code this
+			// run emits has to reach a name another object may define through
+			// the table. The flag sets both facts because a one-shot line
+			// compiles and links in one run; -fno-pic after it can still turn
+			// the addressing off, and the link decides whether it can finish.
+			opts.pie = true
+			opts.pic = true
+		} else if arg == '-no-pie' {
+			opts.pie = false
+		} else if arg == '-static-pie' {
+			return error('-static-pie asks for a static position-independent program, and a pie this compiler writes names a loader the kernel hands it to')
 		} else if arg == '-static' {
 			opts.static_link = true
 		} else if arg == '-E' {
@@ -431,14 +447,17 @@ pub fn parse(args []string) !Options {
 			opts.bracket_depth = bracket_depth_value('-fbracket-depth', arg['-fbracket-depth='.len..])!
 		} else if arg == '-g' {
 			opts.debug = true
-		} else if arg == '-fPIC' || arg == '-fpic' {
-			// The two spellings gcc offers for the same thing. Read rather than
-			// recorded: a build that passes -fPIC and gets an object a shared
-			// link refuses has been told nothing by a flag that landed in a
-			// list. -fno-pic and -fno-PIC are the other half of the pair, so a
-			// build can turn it back off.
+		} else if arg == '-fPIC' || arg == '-fpic' || arg == '-fPIE' || arg == '-fpie' {
+			// The spellings gcc offers for position-independent code. -fPIE and
+			// -fpie are the executable's pair and -fPIC and -fpic the shared
+			// object's, and on this machine's ABI they ask for the same
+			// addressing. Read rather than recorded: it decides the form of
+			// every reference to a top-level object another unit may define,
+			// and a build that passes it and is told nothing has been told
+			// nothing. -fno-pic and -fno-PIE are the other half of the pair.
 			opts.pic = true
-		} else if arg == '-fno-pic' || arg == '-fno-PIC' {
+		} else if arg == '-fno-pic' || arg == '-fno-PIC' || arg == '-fno-pie'
+			|| arg == '-fno-PIE' {
 			opts.pic = false
 		} else if arg == '-fignore-natives' {
 			// A feature of the code this compiler writes and not of the C it
@@ -725,6 +744,15 @@ pub fn (opts Options) link_kind_conflict_refusal() ?string {
 	if opts.shared && opts.static_link {
 		return '-shared and -static ask for different links: a shared object is loaded by a program that names it, and a static program is started with its libraries inside it'
 	}
+	if opts.pie && opts.shared {
+		return '-pie and -shared ask for different links: a pie is started by the kernel and a shared object is loaded by another program'
+	}
+	if opts.pie && opts.static_link {
+		return '-pie and -static ask for different links: a pie names the loader that places it, and a static program names none'
+	}
+	if opts.pie && opts.legacy_ld {
+		return '-pie needs the vlk linker, and -flegacy-ld names the linker this tree carried before it, which has no position-independent program'
+	}
 	return none
 }
 
@@ -816,10 +844,11 @@ pub fn usage(all bool) string {
 	out << '  -O0 -O1 -O2 -O3 -Os   optimization level (default -O0)'
 	out << '  -fno-builtin  do not compute calls to library functions the compiler knows'
 	out << '  -fno-builtin-NAME  the same for one function'
-	out << '  -fPIC -fpic   position-independent code for a relocatable object: a'
-	out << '                top-level object another object may define is reached'
-	out << '                through the global offset table, so the object links into'
-	out << '                a shared object; -fno-pic turns it back off'
+	out << '  -fPIC -fpic   position-independent code: a top-level object another'
+	out << '                unit may define is reached through the global offset'
+	out << '                table, so the unit links into a shared object or a pie;'
+	out << '                -fPIE and -fpie are the executable spellings of the same'
+	out << '                request, and -fno-pic turns it back off'
 	out << '  -fignore-natives  call the runtime archive for a 128-bit operation the'
 	out << '                machine has instructions for, rather than writing them'
 	out << '  -fbracket-depth=N  how deep a parenthesis, bracket, brace, statement or'
@@ -887,6 +916,13 @@ pub fn usage(all bool) string {
 	out << '                        or through -l. It carries no section header'
 	out << '                        table, and GNU ld will not link against a file'
 	out << '                        without one'
+	out << '  -pie                  what the link writes: a position-independent'
+	out << '                        program. The kernel starts it and the loader'
+	out << '                        chooses where it is mapped, so every address'
+	out << '                        inside it is an offset beside a relocation. The'
+	out << '                        code is built position independent for this run'
+	out << '                        even when -fPIC was not written; -no-pie asks'
+	out << '                        for the fixed-base program again'
 	out << '  -static               a program with every library resolved into itself'
 	out << '                        and no loader named in it'
 	out << '  --link-libgcc         the runtime archive a program links is the'
@@ -945,15 +981,13 @@ pub fn usage(all bool) string {
 		out << '  -fno-vcc-exts=NAME      turn one off again'
 		out << '  -fno-vcc-exts=all       or all of them'
 		out << '  the names are ${extensions.names().join(', ')}'
-		out << '  -fPIC -fpic -fno-pic  the addressing of a relocatable object: a'
-		out << '                        top-level object another object may define is'
+		out << '  -fPIC -fpic -fPIE -fpie -fno-pic  the addressing of a unit: a'
+		out << '                        top-level object another unit may define is'
 		out << '                        reached through the global offset table when'
 		out << '                        this is on, and through a direct reference'
-		out << '                        when it is off. It is a fact about an object,'
-		out << '                        so the program this compiler writes itself is'
-		out << '                        unchanged. -fPIE and -fpie are accepted and'
-		out << '                        ignored: they name an executable, which is not'
-		out << '                        a shape this compiler writes'
+		out << '                        when it is off. -fPIE and -fpie are the'
+		out << '                        executable spellings, and -pie uses it for the'
+		out << '                        program it links'
 		out << '  -fwrapv -g            accepted and ignored'
 		out << '  -Werror=name          accepted and ignored, except the classes above'
 		out << '  -Btcc -Idir          accepted; -I directories are searched for headers,'

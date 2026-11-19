@@ -86,13 +86,14 @@ fn vlk_target(machine backend.Target) !vtarget.Target {
 	}
 }
 
-// vlk_kind is which of the three containers the command line asked for. The
-// names are the same three in both trees, and the conversion is written out so a
+// vlk_kind is which of the four containers the command line asked for. The
+// names are the same four in both trees, and the conversion is written out so a
 // kind one side adds later is a file that does not compile rather than an image
 // written as a program.
 fn vlk_kind(kind linux.LinkKind) voutput.Kind {
 	match kind {
 		.program { return voutput.Kind.program }
+		.pie { return voutput.Kind.pie }
 		.static_program { return voutput.Kind.static_program }
 		.shared { return voutput.Kind.shared }
 	}

@@ -37,7 +37,7 @@ env:
   VC_COMMIT: bcfdc7f33e7b7908ee40f76d059c0e2894fb4a3b
   # Named for the same reason as the pair above: the gate refuses a set of
   # workflows that disagree about it, and no step here runs the compiler.
-  VLK_COMMIT: 1db3c264223396a87cacf67f817ec3dec790de1c
+  VLK_COMMIT: f94a252347fefc759cfab0dffb9a0921eec650a7
 
 jobs:
   publish:
