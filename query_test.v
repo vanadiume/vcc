@@ -117,7 +117,7 @@ fn test_the_search_dirs_answer_has_gccs_keys() {
 	assert lines.len == 3
 	assert lines[0].starts_with('install: ')
 	assert lines[1] == 'programs: ='
-	assert lines[2] == 'libraries: =${target.library_dirs.join(':')}'
+	assert lines[2] == 'libraries: =${target.link_dirs([]string{}).join(':')}'
 }
 
 // Every query is answerable with no input file and with a standard selected,

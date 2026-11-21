@@ -1969,7 +1969,7 @@ fn query_answer(opts cli.Options, target backend.Target) string {
 		// is the same fact in a form a build can use, so the run still exits 0.
 		return ''
 	}
-	return cli.search_dirs_text(install_dir(), []string{}, target.library_dirs_for(opts.library_dirs))
+	return cli.search_dirs_text(install_dir(), []string{}, target.link_dirs(opts.library_dirs))
 }
 
 // install_dir is the directory the running compiler is in. gcc names its private
