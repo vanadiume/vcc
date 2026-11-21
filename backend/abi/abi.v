@@ -21,12 +21,20 @@ import types
 // first_floating and second_floating say which file carries each of the first two
 // eightbytes: the floating-point one when every member the eightbyte covers is a
 // float or a double, and the general one otherwise.
+//
+// extended says the aggregate contains a long double or a _Float128 and is small
+// enough to be classified by its eightbytes. Such an object is X87UP in the
+// convention: no register file carries it. A call passes it in memory at the
+// extended type's alignment and a return leaves it on the x87 stack, the same two
+// answers a bare extended value gets. An object of more than two eightbytes is
+// memory in its own right and is returned through the address the caller lends.
 pub struct Class {
 pub:
 	bytes           int
 	count           int
 	first_floating  bool
 	second_floating bool
+	extended        bool
 }
 
 // class_of is how an object of an aggregate type is handed over by value on the
@@ -100,6 +108,7 @@ pub fn class_of(r types.Representation, declared types.Type) Class {
 		count:           count
 		first_floating:  eightbyte_is_floating(r, declared, 0)
 		second_floating: count == 2 && eightbyte_is_floating(r, declared, 1)
+		extended:        count <= 2 && object_contains_extended(r, declared, count)
 	}
 }
 
@@ -225,12 +234,25 @@ fn object_bytes(r types.Representation, declared types.Type) int {
 }
 
 // EightbyteCover is what a byte range of an object covers: whether a member of the
-// object has bytes in the range at all, and whether a member in it is anything but
-// a float or a double.
+// object has bytes in the range at all, whether a member in it is anything but a
+// float or a double, and whether one of them is an extended value.
 struct EightbyteCover {
 mut:
-	covered bool
-	other   bool
+	covered  bool
+	other    bool
+	extended bool
+}
+
+// object_contains_extended asks whether any member of an object is an extended
+// value, walking the same layout and the same members the eightbyte classes walk.
+// An extended member occupies both eightbytes of a two-eightbyte object, so one
+// cover across the whole object answers the question without a second walk.
+fn object_contains_extended(r types.Representation, declared types.Type, count int) bool {
+	mut cover := EightbyteCover{}
+	for which := 0; which < count; which++ {
+		note_eightbyte(r, declared, 0, which * 8, which * 8 + 8, mut cover)
+	}
+	return cover.extended
 }
 
 // eightbyte_is_floating says whether a register of the floating-point file carries
@@ -308,6 +330,9 @@ fn note_member(r types.Representation, typ types.Type, start int, low int, high 
 		return
 	}
 	cover.covered = true
+	if typ.kind.is_extended() {
+		cover.extended = true
+	}
 	if typ.kind !in [.float, .double] && !typ.kind.is_decimal() {
 		// A float is an SSE class the way a double is, so an eightbyte that
 		// covers only floats travels in the floating-point file. Measured on
