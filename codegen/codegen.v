@@ -2084,7 +2084,20 @@ fn (mut e Emitter) emit_function(decl ast.FnDecl) !void {
 			}
 			object := e.declare(param.name, written, count, object_bytes, stride, param.line, param.col,
 				false, param.resolved)!
+			if class.extended {
+				// An aggregate with an extended member arrives in memory at the
+				// extended type's alignment, so an odd number of words before it
+				// is a padding word the caller wrote and this side skips.
+				if stacked % 2 == 1 {
+					stacked++
+				}
+			}
 			stacked_at := 2 * e.target.word_size + stacked * e.target.word_size
+			if class.extended {
+				e.copy_stack_object(object, stacked_at, param.line, param.col)!
+				stacked += class.count
+				continue
+			}
 			if class.count > 2 {
 				// An object of more than two eightbytes is passed in memory: the
 				// caller put a copy of it on the stack, and the parameter is
@@ -2768,6 +2781,17 @@ fn (mut e Emitter) emit_return(stmt ast.Stmt) !void {
 		return e.emit_return_with_cleanups(expr, stmt)
 	}
 	if e.return_class.bytes > 0 {
+		if e.return_class.extended {
+			// An aggregate with an extended member is X87UP: no result register
+			// carries it, so the value comes back on the x87 stack the way a bare
+			// long double does. The object's bytes are the extended value, which
+			// a struct of one long double holds at its first byte.
+			e.object_hand_over_address(expr, e.return_class, 0)!
+			register := e.accumulator(stmt.line, stmt.col)!
+			e.append(e.target.load_extended(register)!)
+			e.append(e.target.frame_epilogue())
+			return
+		}
 		if e.return_class.count > 2 {
 			// The object goes to the address this call was given, which the function
 			// kept in the frame, and the call answers with that address in the
@@ -3720,6 +3744,15 @@ fn (mut e Emitter) assign_object(address Slot, width int, expr ast.Expr, line in
 				e.emit_expr_at(expr, depth + 1)!
 				return e.copy_frame_object(e.hidden, address, class.bytes, line, col)
 			}
+			if class.extended {
+				// The call left the address of its x87 result in a frame slot, so
+				// the object's bytes are copied from there rather than read out of
+				// result registers nothing put the value in.
+				e.emit_expr_at(expr, depth + 1)!
+				source := e.value_slot(depth + 1)
+				e.store_accumulator(source, line, col)!
+				return e.copy_address_object(source, address, width, line, col)
+			}
 			e.emit_expr_at(expr, depth + 1)!
 			base := e.scratch(line, col)!
 			e.load_argument(address, base, e.target.word_size, line, col)!
@@ -4162,6 +4195,13 @@ fn (mut e Emitter) field_object_address(expr ast.Expr, depth int) !void {
 	if expr.kind == .call {
 		call := e.unit.arena.call(expr)
 		if class := e.call_return_class(*call) {
+			if class.extended {
+				// An X87UP result is already a frame slot whose address the call
+				// left in the accumulator, like any other object a call hands
+				// back by memory. The member is read from there.
+				e.emit_expr_at(expr, depth + 1)!
+				return
+			}
 			if class.count > 2 {
 				e.emit_expr_at(expr, depth + 1)!
 				register := e.accumulator(call.line, call.col)!
@@ -12518,6 +12558,28 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 		}
 		class := e.aggregate_argument(call, i)
 		if c := class {
+			if c.extended {
+				// An aggregate of one or two eightbytes containing a long double
+				// is X87UP: no register file carries it, so it goes in memory at
+				// the extended type's alignment. An odd number of words already
+				// there takes a padding word first, the same rule a bare long
+				// double argument follows. The object's bytes are pushed from
+				// the address parked in the stack pass.
+				pad := stacked % 2 == 1
+				if pad {
+					stacked++
+				}
+				places << ArgPlace{
+					stack:    true
+					position: stacked
+					object:   true
+					extended: true
+					words:    c.count
+					pad:      pad
+				}
+				stacked += c.count
+				continue
+			}
 			if c.count > 2 {
 				// An object of more than two eightbytes is passed in memory: the
 				// convention puts no register on it at all, and the caller's copy
@@ -12637,10 +12699,12 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 			// the callee reads nothing for it.
 			continue
 		}
-		if place.extended {
+		if place.extended && !place.object {
 			// A long double is written in the stack pass, which pushes its two
 			// words straight from the value's sixteen bytes rather than parking
-			// the address of them in a slot.
+			// the address of them in a slot. An extended object is one of the
+			// objects below: its address is parked in the stack pass and the
+			// same push reads its words with the padding the type needs.
 			continue
 		}
 		if place.decimal {
@@ -12779,7 +12843,7 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 			arg := call.args[i]
 			line := e.expr_line(arg)
 			col := e.expr_col(arg)
-			if place.extended {
+			if place.extended && !place.object {
 				// The parameter is of the extended type, so the argument is
 				// materialized as a value of it: the argument's own bytes when
 				// it already is one, a conversion of it into a frame temporary
@@ -12846,7 +12910,9 @@ fn (mut e Emitter) emit_call(call ast.Call, depth int) !void {
 				// sixteen. A `long double _Complex` argument is the same shape
 				// at four words: the address of its thirty-two bytes, which the
 				// argument path builds where a real argument has to become a
-				// complex value first.
+				// complex value first. An extended object uses this same push:
+				// its address is parked by the object pass above and its words
+				// are the object's bytes.
 				// The value was materialized before the call's stack area was
 				// taken, so its words are read from the slot its address was
 				// parked in and no expression is evaluated here.

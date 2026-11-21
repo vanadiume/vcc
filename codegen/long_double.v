@@ -184,6 +184,20 @@ fn (e Emitter) is_extended(expr ast.Expr) bool {
 // expression is worth. A call that does not return one leaves the accumulator
 // as it found it.
 fn (mut e Emitter) store_extended_result(call ast.Call, line int, col int) !void {
+	if class := e.call_return_class(call) {
+		if class.extended {
+			// An X87UP aggregate comes back on the x87 stack like a bare extended
+			// value, but its bytes belong to an object the expression is worth the
+			// address of. Pop them into a frame slot of the object's size and
+			// leave that address, which is what every reader of an object expects.
+			temporary := e.reserve(class.bytes)
+			base := e.frame_pointer(line, col)!
+			register := e.scratch(line, col)!
+			e.append(e.target.address_of_slot(base, i32(temporary.offset), register))
+			e.append(e.target.store_extended(register)!)
+			return e.leave_address(temporary, line, col)
+		}
+	}
 	if e.returns_a_complex_long_double(call) {
 		// The pair comes back on the x87 stack, st(0) the real part and st(1)
 		// the imaginary one, so the first pop is the real part. It is written

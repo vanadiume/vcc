@@ -323,3 +323,31 @@ fn test_the_extended_type_is_the_one_that_carries_no_register() {
 	assert !travels_on_the_x87_stack(types.float_type())
 	assert !travels_on_the_x87_stack(types.int_type())
 }
+
+// An aggregate of at most two eightbytes that contains an extended member is
+// X87UP: the call passes it in memory at the extended alignment and the return
+// leaves it on the x87 stack, which is the answer a bare extended value gets.
+// A larger aggregate is memory in its own right and keeps the ordinary class.
+fn test_an_extended_member_makes_the_aggregate_extended() {
+	one := class(types.struct_type('one_long_double', [
+		member('a', types.long_double_type()),
+	]))
+	assert one.bytes == 16
+	assert one.count == 2
+	assert one.extended
+	assert !one.first_floating
+	assert !one.second_floating
+	two := class(types.struct_type('two_long_doubles', [
+		member('a', types.long_double_type()),
+		member('b', types.long_double_type()),
+	]))
+	assert two.bytes == 32
+	assert two.count == 4
+	assert !two.extended
+	plain := class(types.struct_type('two_doubles_not_extended', [
+		member('a', types.double_type()),
+		member('b', types.double_type()),
+	]))
+	assert !plain.extended
+	assert class(types.long_double_type()).extended == false
+}
